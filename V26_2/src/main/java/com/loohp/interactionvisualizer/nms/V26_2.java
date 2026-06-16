@@ -41,7 +41,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
@@ -63,6 +62,7 @@ import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.PositionMoveRotation;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.level.Level;
@@ -98,15 +98,16 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.potion.PotionEffectType;
 
 @SuppressWarnings("unused")
-public class V26_1_1 extends NMSWrapper {
+public class V26_2 extends NMSWrapper {
 
-    private final Field entityCountField;
     private final Field dataWatcherByteField;
     private final Field dataWatcherCustomNameField;
     private final Field dataWatcherCustomNameVisibleField;
     private final Field dataWatcherSilentField;
     private final Field dataWatcherNoGravityField;
     private final Field dataWatcherItemItemField;
+    private final Field dataWatcherItemFrameDataItemField;
+    private final Field dataWatcherItemFrameDataRotationField;
 
     //spigot specific
     private Field spigotWorldConfigField;
@@ -116,15 +117,16 @@ public class V26_1_1 extends NMSWrapper {
     private Field paperItemDespawnRateField;
     private Method worldServerEntityLookup;
 
-    public V26_1_1() {
+    public V26_2() {
         try {
-            entityCountField = ReflectionUtils.findDeclaredField(net.minecraft.world.entity.Entity.class, AtomicInteger.class, "ENTITY_COUNTER");
             dataWatcherByteField = ReflectionUtils.findDeclaredField(net.minecraft.world.entity.Entity.class, EntityDataAccessor.class, "DATA_SHARED_FLAGS_ID");
             dataWatcherCustomNameField = ReflectionUtils.findDeclaredField(net.minecraft.world.entity.Entity.class, EntityDataAccessor.class, "DATA_CUSTOM_NAME");
             dataWatcherCustomNameVisibleField = ReflectionUtils.findDeclaredField(net.minecraft.world.entity.Entity.class, EntityDataAccessor.class, "DATA_CUSTOM_NAME_VISIBLE");
             dataWatcherSilentField = ReflectionUtils.findDeclaredField(net.minecraft.world.entity.Entity.class, EntityDataAccessor.class, "DATA_SILENT");
             dataWatcherNoGravityField = ReflectionUtils.findDeclaredField(net.minecraft.world.entity.Entity.class, EntityDataAccessor.class, "DATA_NO_GRAVITY");
             dataWatcherItemItemField = ReflectionUtils.findDeclaredField(ItemEntity.class, EntityDataAccessor.class, "DATA_ITEM");
+            dataWatcherItemFrameDataItemField = ReflectionUtils.findDeclaredField(net.minecraft.world.entity.decoration.ItemFrame.class, EntityDataAccessor.class, "DATA_ITEM");
+            dataWatcherItemFrameDataRotationField = ReflectionUtils.findDeclaredField(net.minecraft.world.entity.decoration.ItemFrame.class, EntityDataAccessor.class, "DATA_ROTATION");
         } catch (NoSuchFieldException e) {
             throw new RuntimeException(e);
         }
@@ -279,13 +281,8 @@ public class V26_1_1 extends NMSWrapper {
 
     @Override
     public Future<Integer> getNextEntityId(World world) {
-        try {
-            entityCountField.setAccessible(true);
-            AtomicInteger counter = (AtomicInteger) entityCountField.get(null);
-            return CompletableFuture.completedFuture(counter.incrementAndGet());
-        } catch (IllegalAccessException e) {
-            throw new RuntimeException(e);
-        }
+        ServerLevel level = ((CraftWorld) world).getHandle();
+        return CompletableFuture.completedFuture(level.getNextEntityId());
     }
 
     @Override
@@ -406,12 +403,15 @@ public class V26_1_1 extends NMSWrapper {
         try {
             List<SynchedEntityData.DataValue<?>> dataWatcher = new ArrayList<>();
 
+            dataWatcherItemFrameDataItemField.setAccessible(true);
+            dataWatcherItemFrameDataRotationField.setAccessible(true);
+
             dataWatcherSilentField.setAccessible(true);
 
             dataWatcher.add(SynchedEntityData.DataValue.create((EntityDataAccessor<Boolean>) dataWatcherSilentField.get(null), frame.isSilent()));
 
-            dataWatcher.add(SynchedEntityData.DataValue.create(net.minecraft.world.entity.decoration.ItemFrame.DATA_ITEM, CraftItemStack.asNMSCopy(frame.getItem())));
-            dataWatcher.add(SynchedEntityData.DataValue.create(net.minecraft.world.entity.decoration.ItemFrame.DATA_ROTATION, frame.getFrameRotation()));
+            dataWatcher.add(SynchedEntityData.DataValue.create((EntityDataAccessor<net.minecraft.world.item.ItemStack>) dataWatcherItemFrameDataItemField.get(null), CraftItemStack.asNMSCopy(frame.getItem())));
+            dataWatcher.add(SynchedEntityData.DataValue.create((EntityDataAccessor<Integer>) dataWatcherItemFrameDataRotationField.get(null), frame.getFrameRotation()));
 
             return dataWatcher;
         } catch (Exception e) {
@@ -481,7 +481,7 @@ public class V26_1_1 extends NMSWrapper {
     @SuppressWarnings("unchecked")
     @Override
     public void spawnArmorStand(Collection<Player> players, ArmorStand entity) {
-        net.minecraft.world.entity.EntityType<net.minecraft.world.entity.decoration.ArmorStand> type = net.minecraft.world.entity.EntityType.ARMOR_STAND;
+        net.minecraft.world.entity.EntityType<net.minecraft.world.entity.decoration.ArmorStand> type = EntityTypes.ARMOR_STAND;
         Vec3 velocity = new Vec3(entity.getVelocity().getX(), entity.getVelocity().getY(), entity.getVelocity().getZ());
         ClientboundAddEntityPacket packet1 = new ClientboundAddEntityPacket(entity.getEntityId(), entity.getUniqueId(), entity.getLocation().getX(), entity.getLocation().getY(), entity.getLocation().getZ(), entity.getLocation().getPitch(), entity.getLocation().getYaw(), type, 0, velocity, entity.getLocation().getYaw());
 
@@ -551,7 +551,7 @@ public class V26_1_1 extends NMSWrapper {
             return;
         }
 
-        net.minecraft.world.entity.EntityType<ItemEntity> type = net.minecraft.world.entity.EntityType.ITEM;
+        net.minecraft.world.entity.EntityType<ItemEntity> type = EntityTypes.ITEM;
         Vec3 velocity = new Vec3(entity.getVelocity().getX(), entity.getVelocity().getY(), entity.getVelocity().getZ());
         ClientboundAddEntityPacket packet1 = new ClientboundAddEntityPacket(entity.getEntityId(), entity.getUniqueId(), entity.getLocation().getX(), entity.getLocation().getY(), entity.getLocation().getZ(), entity.getLocation().getPitch(), entity.getLocation().getYaw(), type, 0, velocity, entity.getLocation().getYaw());
 
@@ -595,7 +595,7 @@ public class V26_1_1 extends NMSWrapper {
     @SuppressWarnings("unchecked")
     @Override
     public void spawnItemFrame(Collection<Player> players, ItemFrame entity) {
-        net.minecraft.world.entity.EntityType<net.minecraft.world.entity.decoration.ItemFrame> type = net.minecraft.world.entity.EntityType.ITEM_FRAME;
+        net.minecraft.world.entity.EntityType<net.minecraft.world.entity.decoration.ItemFrame> type = EntityTypes.ITEM_FRAME;
         Vec3 velocity = Vec3.ZERO;
         ClientboundAddEntityPacket packet1 = new ClientboundAddEntityPacket(entity.getEntityId(), entity.getUniqueId(), entity.getLocation().getX(), entity.getLocation().getY(), entity.getLocation().getZ(), entity.getLocation().getPitch(), entity.getLocation().getYaw(), type, getItemFrameData(entity), velocity, entity.getLocation().getYaw());
 

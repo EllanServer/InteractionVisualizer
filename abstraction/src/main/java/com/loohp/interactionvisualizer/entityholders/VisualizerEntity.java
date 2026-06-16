@@ -42,7 +42,7 @@ public abstract class VisualizerEntity implements IVisualizerEntity {
 
     @SuppressWarnings("deprecation")
     public VisualizerEntity(Location location) {
-        this.entityIdFuture = NMSWrapper.getInstance().getNextEntityId();
+        this.entityIdFuture = NMSWrapper.getInstance().getNextEntityId(location.getWorld());
         this.id = Integer.MIN_VALUE;
         this.uuid = UUID.randomUUID();
         this.location = location.clone();

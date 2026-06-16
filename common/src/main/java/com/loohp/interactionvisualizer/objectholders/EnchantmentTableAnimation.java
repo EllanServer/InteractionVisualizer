@@ -208,7 +208,7 @@ public class EnchantmentTableAnimation {
             ArmorStand stand = new ArmorStand(standloc);
             TranslatableComponent levelTrans = Component.translatable(TranslationUtils.getLevel(expCost));
             if (expCost != 1) {
-                levelTrans = levelTrans.args(Component.text(expCost));
+                levelTrans = levelTrans.arguments(Component.text(expCost));
             }
             levelTrans = levelTrans.color(NamedTextColor.GREEN);
             stand.setCustomName(levelTrans);

@@ -115,7 +115,7 @@ public abstract class NMSWrapper {
 
     public abstract WrappedIterable<?, Entity> getEntities(World world);
 
-    public abstract Future<Integer> getNextEntityId();
+    public abstract Future<Integer> getNextEntityId(World world);
 
     public abstract ChatColor getRarityColor(ItemStack itemStack);
 
