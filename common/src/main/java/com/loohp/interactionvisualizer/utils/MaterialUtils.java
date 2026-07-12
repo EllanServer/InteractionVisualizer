@@ -20,12 +20,26 @@
 
 package com.loohp.interactionvisualizer.utils;
 
+import com.loohp.interactionvisualizer.integration.CustomContentManager;
 import com.loohp.interactionvisualizer.managers.MaterialManager;
 import org.bukkit.Material;
+import org.bukkit.inventory.ItemStack;
 
 import java.util.Set;
 
 public class MaterialUtils {
+
+    public static MaterialMode getMaterialType(ItemStack itemStack) {
+        if (MaterialManager.hasCustomItemModes()) {
+            MaterialMode configured = CustomContentManager.customItemId(itemStack)
+                    .map(MaterialManager::getCustomItemMode)
+                    .orElse(null);
+            if (configured != null) {
+                return configured;
+            }
+        }
+        return getMaterialType(itemStack.getType());
+    }
 
     public static MaterialMode getMaterialType(Material material) {
         if (MaterialManager.getTools().contains(material)) {

@@ -23,6 +23,7 @@ package com.loohp.interactionvisualizer;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.config.Config;
 import com.loohp.interactionvisualizer.database.Database;
+import com.loohp.interactionvisualizer.integration.CustomContentManager;
 import com.loohp.interactionvisualizer.managers.AsyncExecutorManager;
 import com.loohp.interactionvisualizer.managers.LangManager;
 import com.loohp.interactionvisualizer.managers.LightManager;
@@ -169,6 +170,10 @@ public class InteractionVisualizer extends JavaPlugin {
         }
         loadConfig();
 
+        if (CustomContentManager.initialize(this).contains("craftengine")) {
+            hookMessage("CraftEngine");
+        }
+
         if (getConfiguration().getBoolean("Options.DownloadLanguageFiles")) {
             asyncExecutorManager.runTaskAsynchronously(LangManager::generate);
         }
@@ -227,6 +232,7 @@ public class InteractionVisualizer extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        CustomContentManager.shutdown();
         if (preferenceManager != null) {
             preferenceManager.close();
         }

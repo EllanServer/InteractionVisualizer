@@ -17,6 +17,7 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
+import com.loohp.interactionvisualizer.integration.CustomContentManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
 import com.loohp.interactionvisualizer.utils.ComponentFont;
@@ -54,10 +55,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.function.BiPredicate;
-import java.util.function.Predicate;
-import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
 
 /**
  * Event-maintained dropped-item labels rendered as Paper TextDisplays.
@@ -83,7 +80,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     private int ticksUntilUpdate;
     private int despawnTicks = 6000;
     private boolean stripColorBlacklist;
-    private BiPredicate<String, Material> blacklist = (name, material) -> false;
+    private DroppedItemBlacklist blacklist = DroppedItemBlacklist.compile(List.of(), DroppedItemDisplay::warn);
 
     public DroppedItemDisplay() {
         onReload(new InteractionVisualizerReloadEvent());
@@ -103,54 +100,14 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         despawnTicks = configuredDespawnTicks > 0 ? configuredDespawnTicks : 6000;
         stripColorBlacklist = InteractionVisualizer.plugin.getConfiguration()
                 .getBoolean("Entities.Item.Options.Blacklist.StripColorWhenMatching");
-        blacklist = compileBlacklist(InteractionVisualizer.plugin.getConfiguration()
-                .getList("Entities.Item.Options.Blacklist.List"));
+        blacklist = DroppedItemBlacklist.compile(
+                InteractionVisualizer.plugin.getConfiguration().getList("Entities.Item.Options.Blacklist.List"),
+                DroppedItemDisplay::warn);
     }
 
     private static String configString(String path) {
         String value = InteractionVisualizer.plugin.getConfiguration().getString(path);
         return ChatColorUtils.translateAlternateColorCodes('&', value == null ? "" : value);
-    }
-
-    private static BiPredicate<String, Material> compileBlacklist(List<?> entries) {
-        if (entries == null) {
-            return (name, material) -> false;
-        }
-        List<BiPredicate<String, Material>> predicates = new java.util.ArrayList<>();
-        for (Object value : entries) {
-            if (!(value instanceof List<?> entry) || entry.isEmpty()) {
-                warn("Ignoring malformed dropped-item blacklist entry: " + value);
-                continue;
-            }
-            Pattern pattern;
-            try {
-                pattern = Pattern.compile(String.valueOf(entry.get(0)));
-            } catch (PatternSyntaxException exception) {
-                warn("Ignoring invalid dropped-item blacklist regex: " + entry.get(0));
-                continue;
-            }
-            Predicate<String> name = candidate -> pattern.matcher(candidate).matches();
-            Predicate<Material> material = ignored -> true;
-            if (entry.size() > 1 && !String.valueOf(entry.get(1)).equals("*")) {
-                String materialName = String.valueOf(entry.get(1));
-                Material configured = Material.matchMaterial(materialName);
-                if (configured == null) {
-                    warn(materialName + " is not a valid material");
-                } else {
-                    material = configured::equals;
-                }
-            }
-            Predicate<Material> finalMaterial = material;
-            predicates.add((candidate, type) -> name.test(candidate) && finalMaterial.test(type));
-        }
-        return (candidate, type) -> {
-            for (BiPredicate<String, Material> predicate : predicates) {
-                if (predicate.test(candidate, type)) {
-                    return true;
-                }
-            }
-            return false;
-        };
     }
 
     private static void warn(String message) {
@@ -232,8 +189,11 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     private void update(Item item) {
         ItemStack stack = item.getItemStack();
         String matchingName = matchingName(stack);
+        NamespacedKey customItemId = blacklist.requiresCustomItemId()
+                ? CustomContentManager.customItemId(stack).orElse(null)
+                : null;
         int ticksLeft = despawnTicks - item.getTicksLived();
-        if (stack.isEmpty() || blacklist.test(matchingName, stack.getType())
+        if (stack.isEmpty() || blacklist.matches(matchingName, stack.getType(), customItemId)
                 || item.getPickupDelay() >= Short.MAX_VALUE || ticksLeft <= 0 || isCramping(item)) {
             removeLabel(item.getUniqueId());
             return;

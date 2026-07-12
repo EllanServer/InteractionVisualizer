@@ -1,5 +1,6 @@
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 import org.gradle.jvm.tasks.Jar
+import java.util.zip.ZipFile
 
 plugins {
     java
@@ -11,6 +12,7 @@ version = "2026.1.2.0"
 val pluginVersion = version.toString()
 val paper26_1Version = "26.1.2.build.74-stable"
 val paper26_2Version = "26.2.build.56-alpha"
+val craftEngineVersion = "26.7.2"
 
 val paper26_2CompileClasspath = configurations.create("paper26_2CompileClasspath") {
     isCanBeConsumed = false
@@ -28,16 +30,21 @@ repositories {
 dependencies {
     compileOnly("io.papermc.paper:paper-api:$paper26_1Version")
     compileOnly("me.clip:placeholderapi:2.11.7")
+    compileOnly("net.momirealms:craft-engine-core:$craftEngineVersion")
+    compileOnly("net.momirealms:craft-engine-bukkit:$craftEngineVersion")
     compileOnly(files("common/lib/LightAPI-fork-3.5.2.jar"))
 
     implementation("net.momirealms:sparrow-yaml:1.0.7")
 
     testImplementation(platform("org.junit:junit-bom:5.13.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation("io.papermc.paper:paper-api:$paper26_1Version")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
     paper26_2CompileClasspath("io.papermc.paper:paper-api:$paper26_2Version")
     paper26_2CompileClasspath("me.clip:placeholderapi:2.11.7")
+    paper26_2CompileClasspath("net.momirealms:craft-engine-core:$craftEngineVersion")
+    paper26_2CompileClasspath("net.momirealms:craft-engine-bukkit:$craftEngineVersion")
     paper26_2CompileClasspath(files("common/lib/LightAPI-fork-3.5.2.jar"))
 }
 
@@ -139,9 +146,47 @@ val verifyPaperOnlyArchitecture = tasks.register("verifyPaperOnlyArchitecture") 
     }
 }
 
+val verifyCustomContentIsolation = tasks.register("verifyCustomContentIsolation") {
+    description = "Keeps optional provider APIs behind their reflection-loaded bridge implementations."
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    val sources = sourceSets.main.get().allJava
+    inputs.files(sources)
+    doLast {
+        val allowedCraftEngineSource = file(
+            "common/src/main/java/com/loohp/interactionvisualizer/integration/craftengine/CraftEngineCustomContentBridge.java",
+        ).canonicalFile
+        val managerSource = file(
+            "common/src/main/java/com/loohp/interactionvisualizer/integration/CustomContentManager.java",
+        ).canonicalFile
+        val stableApiClass = "net.momirealms.craftengine.bukkit.api.CraftEngineItems"
+        val craftEngineToken = Regex("net\\.momirealms\\.craftengine(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)+")
+        val violations = sources.files.flatMap { source ->
+            craftEngineToken.findAll(source.readText()).mapNotNull { match ->
+                val allowed = when (source.canonicalFile) {
+                    allowedCraftEngineSource, managerSource -> match.value == stableApiClass
+                    else -> false
+                }
+                if (allowed) null else "${source.relativeTo(rootDir)}: ${match.value}"
+            }.toList()
+        }.toMutableList()
+
+        val allowedArtifacts = setOf("craft-engine-core", "craft-engine-bukkit")
+        configurations.flatMap { it.dependencies }
+            .filter { it.group == "net.momirealms" && it.name.startsWith("craft-engine-") }
+            .filter { it.name !in allowedArtifacts }
+            .forEach { dependency ->
+                violations.add("Unexpected CraftEngine artifact: ${dependency.group}:${dependency.name}")
+            }
+        check(violations.isEmpty()) {
+            "CraftEngine API escaped its optional bridge implementation:\n${violations.joinToString("\n")}"
+        }
+    }
+}
+
 tasks.check {
     dependsOn(compilePaper26_2)
     dependsOn(verifyPaperOnlyArchitecture)
+    dependsOn(verifyCustomContentIsolation)
 }
 
 tasks.named<ShadowJar>("shadowJar") {
@@ -152,6 +197,19 @@ tasks.named<ShadowJar>("shadowJar") {
 
     isPreserveFileTimestamps = false
     isReproducibleFileOrder = true
+
+    doLast {
+        ZipFile(archiveFile.get().asFile).use { jar ->
+            val bundledCraftEngine = jar.entries().asSequence()
+                .map { it.name }
+                .filter { it.startsWith("net/momirealms/craftengine/") }
+                .toList()
+            check(bundledCraftEngine.isEmpty()) {
+                "CraftEngine must remain compileOnly, but provider classes were bundled:\n" +
+                    bundledCraftEngine.joinToString("\n")
+            }
+        }
+    }
 }
 
 tasks.jar {

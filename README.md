@@ -52,6 +52,11 @@ against Paper 26.2.
 
 ## Optional integrations
 
+- [CraftEngine](https://github.com/Xiao-MoMi/craft-engine) 26.7.2: optional
+  custom-item ID recognition. CraftEngine items can be selected by the third
+  field of an item-label blacklist rule, and their display pose can be
+  overridden in `material.yml` under `CustomItems`. CraftEngine is not bundled
+  and the plugin behaves exactly as before when it is absent.
 - [LightAPI](https://www.spigotmc.org/resources/lightapi-fork.48247/)
 - [OpenInv](https://dev.bukkit.org/projects/openinv)
 - [PlaceholderAPI](https://www.spigotmc.org/resources/placeholderapi.6245/)

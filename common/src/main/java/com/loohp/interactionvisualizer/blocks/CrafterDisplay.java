@@ -184,21 +184,12 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
                 item = null;
             }
             if (item != null) {
-                boolean changed = true;
-                if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialUtils.MaterialMode.BLOCK) && !standMode(stand).equals(MaterialUtils.MaterialMode.BLOCK)) {
-                    toggleStandMode(stand, "Block");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialUtils.MaterialMode.TOOL) && !standMode(stand).equals(MaterialUtils.MaterialMode.TOOL)) {
-                    toggleStandMode(stand, "Tool");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialUtils.MaterialMode.ITEM) && !standMode(stand).equals(MaterialUtils.MaterialMode.ITEM)) {
-                    toggleStandMode(stand, "Item");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialUtils.MaterialMode.STANDING) && !standMode(stand).equals(MaterialUtils.MaterialMode.STANDING)) {
-                    toggleStandMode(stand, "Standing");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialUtils.MaterialMode.LOWBLOCK) && !standMode(stand).equals(MaterialUtils.MaterialMode.LOWBLOCK)) {
-                    toggleStandMode(stand, "LowBlock");
-                } else {
-                    changed = false;
+                MaterialUtils.MaterialMode materialMode = MaterialUtils.getMaterialType(item);
+                boolean changed = materialMode != standMode(stand);
+                if (changed) {
+                    toggleStandMode(stand, materialMode.toString());
                 }
-                if (!item.getType().equals(stand.getItemInMainHand().getType())) {
+                if (!item.equals(stand.getItemInMainHand())) {
                     changed = true;
                     stand.setItemInMainHand(item);
                 }

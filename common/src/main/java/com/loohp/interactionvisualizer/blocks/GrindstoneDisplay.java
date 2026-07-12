@@ -150,21 +150,12 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
                 item = null;
             }
             if (item != null) {
-                boolean changed = true;
-                if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.BLOCK) && !standMode(stand).equals(MaterialMode.BLOCK)) {
-                    toggleStandMode(stand, "Block");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.TOOL) && !standMode(stand).equals(MaterialMode.TOOL)) {
-                    toggleStandMode(stand, "Tool");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.ITEM) && !standMode(stand).equals(MaterialMode.ITEM)) {
-                    toggleStandMode(stand, "Item");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.STANDING) && !standMode(stand).equals(MaterialMode.STANDING)) {
-                    toggleStandMode(stand, "Standing");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.LOWBLOCK) && !standMode(stand).equals(MaterialMode.LOWBLOCK)) {
-                    toggleStandMode(stand, "LowBlock");
-                } else {
-                    changed = false;
+                MaterialMode materialMode = MaterialUtils.getMaterialType(item);
+                boolean changed = materialMode != standMode(stand);
+                if (changed) {
+                    toggleStandMode(stand, materialMode.toString());
                 }
-                if (!item.getType().equals(stand.getItemInMainHand().getType())) {
+                if (!item.equals(stand.getItemInMainHand())) {
                     changed = true;
                     stand.setItemInMainHand(item);
                 }

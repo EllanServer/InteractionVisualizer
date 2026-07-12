@@ -23,12 +23,16 @@ package com.loohp.interactionvisualizer.managers;
 import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.config.Config;
 import com.loohp.interactionvisualizer.config.SparrowConfiguration;
+import com.loohp.interactionvisualizer.utils.MaterialUtils.MaterialMode;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 
 public class MaterialManager {
@@ -43,6 +47,7 @@ public class MaterialManager {
     private static Set<Material> lowblocks = EnumSet.noneOf(Material.class);
     private static Set<Material> blockexceptions = EnumSet.noneOf(Material.class);
     private static Set<Material> nonSolid = EnumSet.noneOf(Material.class);
+    private static volatile Map<NamespacedKey, MaterialMode> customItemModes = Map.of();
 
     public static void setup() {
         if (!InteractionVisualizer.plugin.getDataFolder().exists()) {
@@ -114,6 +119,24 @@ public class MaterialManager {
                 getNonSolid().add(material);
             }
         }
+
+        Map<NamespacedKey, MaterialMode> configuredModes = new LinkedHashMap<>();
+        SparrowConfiguration.Section customItems = getMaterialConfig().getConfigurationSection("CustomItems");
+        if (customItems != null) {
+            for (Map.Entry<String, Object> entry : customItems.getValues(false).entrySet()) {
+                NamespacedKey id = entry.getKey().indexOf(':') > 0
+                        ? NamespacedKey.fromString(entry.getKey())
+                        : null;
+                MaterialMode mode = MaterialMode.getModeFromName(String.valueOf(entry.getValue()));
+                if (id == null || mode == null) {
+                    InteractionVisualizer.plugin.getLogger().warning(
+                            "Ignoring invalid custom item display mode: " + entry.getKey() + " = " + entry.getValue());
+                    continue;
+                }
+                configuredModes.put(id, mode);
+            }
+        }
+        customItemModes = Map.copyOf(configuredModes);
     }
 
     public static Set<Material> getTools() {
@@ -165,6 +188,14 @@ public class MaterialManager {
 
     public static Set<Material> getNonSolid() {
         return nonSolid;
+    }
+
+    public static boolean hasCustomItemModes() {
+        return !customItemModes.isEmpty();
+    }
+
+    public static MaterialMode getCustomItemMode(NamespacedKey id) {
+        return customItemModes.get(id);
     }
 
     public static void setNonSolid(Set<Material> nonSolid) {

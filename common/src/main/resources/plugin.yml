@@ -5,6 +5,7 @@ main: com.loohp.interactionvisualizer.InteractionVisualizer
 api-version: '26.1.2'
 description: Makes function blocks better
 softdepend:
+  - CraftEngine
   - LightAPI
   - OpenInv
   - SuperVanish
