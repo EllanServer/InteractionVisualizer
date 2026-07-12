@@ -20,40 +20,26 @@
 
 package com.loohp.interactionvisualizer.utils;
 
-import com.loohp.interactionvisualizer.nms.NMS;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.TextDecoration;
-import net.md_5.bungee.api.ChatColor;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextColor;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.ItemMeta;
 
 public class ItemNameUtils {
 
     private static final ItemStack AIR = new ItemStack(Material.AIR);
 
     public static Component getDisplayName(ItemStack itemstack) {
-        return getDisplayName(itemstack, ChatColor.WHITE);
+        return getDisplayName(itemstack, NamedTextColor.WHITE);
     }
 
-    public static  Component getDisplayName(ItemStack itemstack, ChatColor defaultRarityColor) {
+    public static Component getDisplayName(ItemStack itemstack, TextColor defaultRarityColor) {
         if (itemstack == null) {
             itemstack = AIR.clone();
         }
 
-        ItemMeta itemMeta = itemstack.getItemMeta();
-        Component component = Component.empty().append(NMS.getInstance().getItemHoverName(itemstack));
-
-        if (itemMeta != null && itemMeta.hasDisplayName()) {
-            component = component.decorate(TextDecoration.ITALIC);
-        }
-
-        ChatColor rarityChatColor = NMS.getInstance().getRarityColor(itemstack);
-        if (rarityChatColor.equals(ChatColor.WHITE)) {
-            rarityChatColor = defaultRarityColor;
-        }
-
-        return component.colorIfAbsent(ColorUtils.toTextColor(rarityChatColor));
+        return itemstack.effectiveName().colorIfAbsent(defaultRarityColor);
     }
 
 }

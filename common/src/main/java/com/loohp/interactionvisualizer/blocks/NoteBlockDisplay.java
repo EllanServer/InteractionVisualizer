@@ -24,17 +24,15 @@ import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.managers.MusicManager;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.ItemNameUtils;
-import com.loohp.interactionvisualizer.utils.MCVersion;
-import com.loohp.platformscheduler.ScheduledTask;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
-import net.md_5.bungee.api.ChatColor;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -73,15 +71,15 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
 
     @Override
     public ScheduledTask run() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, ConcurrentHashMap<String, Object>>> itr = displayingNotes.entrySet().iterator();
             while (itr.hasNext()) {
                 Entry<Block, ConcurrentHashMap<String, Object>> entry = itr.next();
                 long unix = System.currentTimeMillis();
                 long timeout = (long) entry.getValue().get("Timeout");
                 if (unix > timeout) {
-                    ArmorStand stand = (ArmorStand) entry.getValue().get("Stand");
-                    Scheduler.runTask(InteractionVisualizer.plugin, () -> PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand));
+                    DisplayEntity stand = (DisplayEntity) entry.getValue().get("Stand");
+                    Scheduler.runTask(InteractionVisualizer.plugin, () -> DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand));
                     itr.remove();
                 }
             }
@@ -116,7 +114,7 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
                 return;
             }
             ConcurrentHashMap<String, Object> map = displayingNotes.get(block);
-            ArmorStand stand = map == null ? new ArmorStand(textLocation.clone().add(0.0, -0.3, 0.0)) : (ArmorStand) map.get("Stand");
+            DisplayEntity stand = map == null ? new DisplayEntity(textLocation.clone().add(0.0, -0.3, 0.0)) : (DisplayEntity) map.get("Stand");
             stand.teleport(textLocation.clone().add(0.0, -0.3, 0.0));
             setStand(stand);
 
@@ -128,27 +126,27 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
             Block topBlock = block.getRelative(BlockFace.UP);
             Collection<ItemStack> topBlockDrops;
             Component component;
-            if (InteractionVisualizer.version.isNewerThan(MCVersion.V1_19) && isHead(topBlock) && !(topBlockDrops = topBlock.getDrops()).isEmpty()) {
+            if (isHead(topBlock) && !(topBlockDrops = topBlock.getDrops()).isEmpty()) {
                 ItemStack skull = topBlockDrops.iterator().next();
                 component = ItemNameUtils.getDisplayName(skull);
             } else {
                 NoteBlock state = (NoteBlock) block.getBlockData();
                 Tone tone = state.getNote().getTone();
                 String inst = MusicManager.getMusicConfig().getString("Instruments." + state.getInstrument().toString().toUpperCase());
-                String text = ChatColor.GOLD + inst + " " + getColor(tone) + tone.toString().toUpperCase();
-                text = state.getNote().isSharped() ? text + "#" : text;
-                text = state.getNote().getOctave() == 0 ? text : text + " ^";
-                component = LegacyComponentSerializer.legacySection().deserialize(text);
+                String toneText = tone.toString().toUpperCase();
+                toneText = state.getNote().isSharped() ? toneText + "#" : toneText;
+                toneText = state.getNote().getOctave() == 0 ? toneText : toneText + " ^";
+                component = Component.text(inst + " ", NamedTextColor.GOLD).append(Component.text(toneText, getColor(tone)));
             }
 
             stand.setCustomName(component);
 
-            PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), stand);
-            PacketManager.updateArmorStand(stand);
+            DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), stand);
+            DisplayManager.updateDisplay(stand);
         }, 1, block.getLocation());
     }
 
-    public void setStand(ArmorStand stand) {
+    public void setStand(DisplayEntity stand) {
         stand.setArms(true);
         stand.setBasePlate(false);
         stand.setMarker(true);
@@ -182,24 +180,24 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
     }
 
     @SuppressWarnings("DuplicateBranchesInSwitch")
-    public ChatColor getColor(Tone tone) {
+    public NamedTextColor getColor(Tone tone) {
         switch (tone) {
             case A:
-                return ChatColor.RED;
+                return NamedTextColor.RED;
             case B:
-                return ChatColor.GOLD;
+                return NamedTextColor.GOLD;
             case C:
-                return ChatColor.YELLOW;
+                return NamedTextColor.YELLOW;
             case D:
-                return ChatColor.GREEN;
+                return NamedTextColor.GREEN;
             case E:
-                return ChatColor.AQUA;
+                return NamedTextColor.AQUA;
             case F:
-                return ChatColor.BLUE;
+                return NamedTextColor.BLUE;
             case G:
-                return ChatColor.LIGHT_PURPLE;
+                return NamedTextColor.LIGHT_PURPLE;
             default:
-                return ChatColor.AQUA;
+                return NamedTextColor.AQUA;
         }
     }
 

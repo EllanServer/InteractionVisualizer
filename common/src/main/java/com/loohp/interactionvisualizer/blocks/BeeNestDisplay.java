@@ -26,15 +26,15 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
-import com.loohp.platformscheduler.ScheduledTask;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -93,7 +93,7 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask gc() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = beenestMap.entrySet().iterator();
             int count = 0;
             int maxper = (int) Math.ceil((double) beenestMap.size() / (double) gcPeriod);
@@ -109,26 +109,26 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
                     if (!isActive(block.getLocation())) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("0") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("0");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("0") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("0");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         beenestMap.remove(block);
                         return;
                     }
                     if (!block.getType().equals(Material.BEE_NEST)) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("0") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("0");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("0") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("0");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         beenestMap.remove(block);
                         return;
@@ -140,14 +140,14 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask run() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyBeenest();
             for (Block block : list) {
                 Scheduler.runTask(InteractionVisualizer.plugin, () -> {
                     if (beenestMap.get(block) == null && isActive(block.getLocation())) {
                         if (block.getType().equals(Material.BEE_NEST)) {
                             Map<String, Object> map = new HashMap<>();
-                            map.putAll(spawnArmorStands(block));
+                            map.putAll(spawnDisplayEntitys(block));
                             beenestMap.put(block, map);
                         }
                     }
@@ -212,13 +212,13 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         }
 
         Map<String, Object> map = beenestMap.get(block);
-        if (map.get("0") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("0");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("0") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("0");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        if (map.get("1") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("1");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("1") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("1");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
         beenestMap.remove(block);
     }
@@ -239,9 +239,9 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         org.bukkit.block.Beehive beehiveState = (org.bukkit.block.Beehive) block.getState();
         org.bukkit.block.data.type.Beehive beehiveData = (org.bukkit.block.data.type.Beehive) block.getBlockData();
 
-        InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
-            ArmorStand line0 = (ArmorStand) map.get("0");
-            ArmorStand line1 = (ArmorStand) map.get("1");
+        {
+            DisplayEntity line0 = (DisplayEntity) map.get("0");
+            DisplayEntity line1 = (DisplayEntity) map.get("1");
 
             String str0 = "";
             for (int i = 0; i < beehiveData.getHoneyLevel(); i++) {
@@ -255,14 +255,14 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
             if (!PlainTextComponentSerializer.plainText().serialize(line0.getCustomName()).equals(str0)) {
                 line0.setCustomName(str0);
                 line0.setCustomNameVisible(true);
-                PacketManager.updateArmorStandOnlyMeta(line0);
+                DisplayManager.updateDisplay(line0);
             }
             if (!PlainTextComponentSerializer.plainText().serialize(line1.getCustomName()).equals(str1)) {
                 line1.setCustomName(str1);
                 line1.setCustomNameVisible(true);
-                PacketManager.updateArmorStandOnlyMeta(line1);
+                DisplayManager.updateDisplay(line1);
             }
-        });
+        }
     }
 
     public Set<Block> nearbyBeenest() {
@@ -273,8 +273,8 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         return PlayerLocationManager.hasPlayerNearby(loc);
     }
 
-    public Map<String, ArmorStand> spawnArmorStands(Block block) {
-        Map<String, ArmorStand> map = new HashMap<>();
+    public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) {
+        Map<String, DisplayEntity> map = new HashMap<>();
         Location origin = block.getLocation();
 
         BlockData blockData = block.getState().getBlockData();
@@ -283,23 +283,23 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         Vector direction = target.toVector().subtract(origin.toVector()).multiply(0.7);
 
         Location loc0 = block.getLocation().clone().add(direction).add(0.5, 0.25, 0.5);
-        ArmorStand line0 = new ArmorStand(loc0.clone());
+        DisplayEntity line0 = new DisplayEntity(loc0.clone());
         setStand(line0);
 
         Location loc1 = block.getLocation().clone().add(direction).add(0.5, 0, 0.5);
-        ArmorStand line1 = new ArmorStand(loc1.clone());
+        DisplayEntity line1 = new DisplayEntity(loc1.clone());
         setStand(line1);
 
         map.put("0", line0);
         map.put("1", line1);
 
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line0);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line1);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line0);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line1);
 
         return map;
     }
 
-    public void setStand(ArmorStand stand) {
+    public void setStand(DisplayEntity stand) {
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);

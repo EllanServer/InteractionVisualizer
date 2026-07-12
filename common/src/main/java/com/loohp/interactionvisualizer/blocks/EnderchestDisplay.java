@@ -25,14 +25,12 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerDisplay;
 import com.loohp.interactionvisualizer.entityholders.Item;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.InventoryUtils;
-import com.loohp.interactionvisualizer.utils.MCVersion;
-import com.loohp.interactionvisualizer.utils.MaterialUtils;
 import com.loohp.interactionvisualizer.utils.OpenInvUtils;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import org.bukkit.FluidCollisionMode;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
@@ -93,29 +91,9 @@ public class EnderchestDisplay implements Listener, VisualizerDisplay {
         if (!InventoryUtils.compareContents(event.getPlayer().getEnderChest(), event.getView().getTopInventory())) {
             return;
         }
-        if (InteractionVisualizer.version.isNewerThan(MCVersion.V1_13_1)) {
-            if (event.getPlayer().getTargetBlockExact(7, FluidCollisionMode.NEVER) != null) {
-                if (!event.getPlayer().getTargetBlockExact(7, FluidCollisionMode.NEVER).getType().equals(Material.ENDER_CHEST)) {
-                    return;
-                }
-            } else {
-                return;
-            }
-        } else {
-            if (event.getPlayer().getTargetBlock(MaterialUtils.getNonSolidSet(), 7) != null) {
-                if (!event.getPlayer().getTargetBlock(MaterialUtils.getNonSolidSet(), 7).getType().equals(Material.ENDER_CHEST)) {
-                    return;
-                }
-            } else {
-                return;
-            }
-        }
-
-        Block block;
-        if (InteractionVisualizer.version.isNewerThan(MCVersion.V1_13_1)) {
-            block = event.getPlayer().getTargetBlockExact(7, FluidCollisionMode.NEVER);
-        } else {
-            block = event.getPlayer().getTargetBlock(MaterialUtils.getNonSolidSet(), 7);
+        Block block = event.getPlayer().getTargetBlockExact(7, FluidCollisionMode.NEVER);
+        if (block == null || block.getType() != Material.ENDER_CHEST) {
+            return;
         }
 
         playermap.put((Player) event.getPlayer(), block);
@@ -171,7 +149,7 @@ public class EnderchestDisplay implements Listener, VisualizerDisplay {
             }
             if (itemstack == null) {
                 int hotbarSlot = event.getHotbarButton();
-                if (hotbarSlot >= 0 && (event.getAction().equals(InventoryAction.HOTBAR_MOVE_AND_READD) || event.getAction().equals(InventoryAction.HOTBAR_SWAP))) {
+                if (hotbarSlot >= 0 && event.getAction().equals(InventoryAction.HOTBAR_SWAP)) {
                     itemstack = event.getWhoClicked().getInventory().getItem(hotbarSlot);
                     if (itemstack != null) {
                         if (itemstack.getType().equals(Material.AIR)) {
@@ -223,7 +201,7 @@ public class EnderchestDisplay implements Listener, VisualizerDisplay {
         }
 
         if (isMove) {
-            PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), player);
+            DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), player);
             if (itemstack != null) {
                 Item item = new Item(loc.clone().add(0.5, 1, 0.5));
                 Vector offset = new Vector(0.0, 0.15, 0.0);
@@ -234,11 +212,11 @@ public class EnderchestDisplay implements Listener, VisualizerDisplay {
                     vector = loc.clone().add(0.5, 1, 0.5).toVector().subtract(event.getWhoClicked().getEyeLocation().clone().add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector()).multiply(0.15).add(offset);
                     item.setVelocity(vector);
                 }
-                PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+                DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
                 item.setItemStack(itemstack);
                 item.setPickupDelay(32767);
                 item.setGravity(true);
-                PacketManager.updateItem(item);
+                DisplayManager.updateItem(item);
                 if (!link.containsKey(player)) {
                     link.put(player, new ArrayList<Item>());
                 }
@@ -253,10 +231,10 @@ public class EnderchestDisplay implements Listener, VisualizerDisplay {
                     }
                     item.setVelocity(new Vector(0.0, 0.0, 0.0));
                     item.setGravity(false);
-                    PacketManager.updateItem(item);
+                    DisplayManager.updateItem(item);
                 }, 8);
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                    PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                    DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                     list.remove(item);
                 }, 20);
             }
@@ -302,7 +280,7 @@ public class EnderchestDisplay implements Listener, VisualizerDisplay {
 
         for (int slot : event.getRawSlots()) {
             if (slot >= 0 && slot < topInventory.getSize()) {
-                PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), player);
+                DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), player);
 
                 ItemStack itemstack = event.getOldCursor();
                 if (itemstack != null) {
@@ -316,12 +294,12 @@ public class EnderchestDisplay implements Listener, VisualizerDisplay {
                     Vector offset = new Vector(0.0, 0.15, 0.0);
                     Vector vector = loc.clone().add(0.5, 1, 0.5).toVector().subtract(event.getWhoClicked().getEyeLocation().clone().add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector()).multiply(0.15).add(offset);
                     item.setVelocity(vector);
-                    PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+                    DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
                     item.setItemStack(itemstack);
                     item.setCustomName(System.currentTimeMillis() + "");
                     item.setPickupDelay(32767);
                     item.setGravity(true);
-                    PacketManager.updateItem(item);
+                    DisplayManager.updateItem(item);
                     if (!link.containsKey(player)) {
                         link.put(player, new ArrayList<Item>());
                     }
@@ -331,10 +309,10 @@ public class EnderchestDisplay implements Listener, VisualizerDisplay {
                         item.teleport(loc.clone().add(0.5, 1, 0.5));
                         item.setVelocity(new Vector(0.0, 0.0, 0.0));
                         item.setGravity(false);
-                        PacketManager.updateItem(item);
+                        DisplayManager.updateItem(item);
                     }, 8);
                     Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                        PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                        DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                         list.remove(item);
                     }, 20);
                 }
@@ -355,7 +333,7 @@ public class EnderchestDisplay implements Listener, VisualizerDisplay {
         List<Item> list = link.get(player);
         if (list != null) {
             for (Item item : list) {
-                PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
             }
             link.remove(player);
         }

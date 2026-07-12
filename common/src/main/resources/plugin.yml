@@ -2,8 +2,7 @@ name: InteractionVisualizer
 author: loohp
 version: ${project.version}
 main: com.loohp.interactionvisualizer.InteractionVisualizer
-api-version: 1.13
-folia-supported: true
+api-version: '26.1.2'
 description: Makes function blocks better
 softdepend:
   - LightAPI

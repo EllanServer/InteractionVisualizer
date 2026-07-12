@@ -26,9 +26,8 @@ import com.loohp.interactionvisualizer.database.Database;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.SynchronizedFilteredCollection;
 import com.loohp.interactionvisualizer.utils.ArrayUtils;
-import net.md_5.bungee.api.ChatColor;
-import org.awaitility.Awaitility;
-import org.awaitility.core.ConditionTimeoutException;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -48,7 +47,6 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
@@ -91,15 +89,11 @@ public class PreferenceManager implements Listener, AutoCloseable {
     }
 
     public void saveBitmaskIndex() {
-        Bukkit.getConsoleSender().sendMessage(ChatColor.AQUA + "[InteractionVisualizer] Saving player preferences bitmask index, do not halt the server.");
-        try {
-            Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS).pollDelay(0, TimeUnit.MILLISECONDS).until(() -> !Database.isLocked());
-        } catch (ConditionTimeoutException e) {
-            Bukkit.getConsoleSender().sendMessage(ChatColor.YELLOW + "Tried to save player preference but database is locked for more than 30 seconds, performing save anyway...");
+        Bukkit.getConsoleSender().sendMessage(Component.text(
+                "[InteractionVisualizer] Saving player preferences bitmask index, do not halt the server.", NamedTextColor.AQUA));
+        synchronized (entries) {
+            Database.runExclusive(() -> Database.setBitIndex(ArrayUtils.putToMap(entries, new HashMap<>())));
         }
-        Database.setLocked(true);
-        Database.setBitIndex(ArrayUtils.putToMap(entries, new HashMap<>()));
-        Database.setLocked(false);
     }
 
     public void registerEntry(EntryKey entryKey) {
@@ -116,26 +110,21 @@ public class PreferenceManager implements Listener, AutoCloseable {
     public void registerEntry(List<EntryKey> entryKeys) {
         if (!entryKeys.isEmpty()) {
             synchronized (entries) {
-                try {
-                    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS).pollDelay(0, TimeUnit.MILLISECONDS).until(() -> !Database.isLocked());
-                } catch (ConditionTimeoutException e) {
-                    Bukkit.getConsoleSender().sendMessage(ChatColor.YELLOW + "Tried to save player preference but database is locked for more than 30 seconds, performing save anyway...");
-                }
-                Database.setLocked(true);
-                List<EntryKey> updatedEntries = ArrayUtils.putToArrayList(Database.getBitIndex(), new ArrayList<>());
-                entries.clear();
-                entries.addAll(updatedEntries);
-                boolean changes = false;
-                for (EntryKey entry : entryKeys) {
-                    if (!entries.contains(entry)) {
-                        changes = true;
-                        entries.add(entry);
+                Database.runExclusive(() -> {
+                    List<EntryKey> updatedEntries = ArrayUtils.putToArrayList(Database.getBitIndex(), new ArrayList<>());
+                    entries.clear();
+                    entries.addAll(updatedEntries);
+                    boolean changes = false;
+                    for (EntryKey entry : entryKeys) {
+                        if (!entries.contains(entry)) {
+                            changes = true;
+                            entries.add(entry);
+                        }
                     }
-                }
-                if (changes) {
-                    Database.setBitIndex(ArrayUtils.putToMap(entries, new HashMap<>()));
-                }
-                Database.setLocked(false);
+                    if (changes) {
+                        Database.setBitIndex(ArrayUtils.putToMap(entries, new HashMap<>()));
+                    }
+                });
             }
         }
     }
@@ -205,9 +194,9 @@ public class PreferenceManager implements Listener, AutoCloseable {
 
     public void updatePlayer(Player player, boolean reset) {
         if (reset) {
-            PacketManager.reset(player);
+            DisplayManager.reset(player);
         } else {
-            PacketManager.sendPlayerPackets(player);
+            DisplayManager.sendPlayerPackets(player);
         }
     }
 

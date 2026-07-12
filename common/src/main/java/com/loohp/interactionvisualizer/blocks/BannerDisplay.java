@@ -26,23 +26,22 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
-import com.loohp.interactionvisualizer.nms.NMS;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
-import com.loohp.platformscheduler.ScheduledTask;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.block.Banner;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.Rotatable;
@@ -93,7 +92,7 @@ public class BannerDisplay extends VisualizerRunnableDisplay implements Listener
 
     @Override
     public ScheduledTask gc() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = bannerMap.entrySet().iterator();
             int count = 0;
             int maxper = (int) Math.ceil((double) bannerMap.size() / (double) gcPeriod);
@@ -109,18 +108,18 @@ public class BannerDisplay extends VisualizerRunnableDisplay implements Listener
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
                     if (!isActive(block.getLocation())) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         bannerMap.remove(block);
                         return;
                     }
                     if (!isBanner(block.getType())) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         bannerMap.remove(block);
                     }
@@ -131,7 +130,7 @@ public class BannerDisplay extends VisualizerRunnableDisplay implements Listener
 
     @Override
     public ScheduledTask run() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyBanner();
             for (Block block : list) {
                 Scheduler.runTask(InteractionVisualizer.plugin, () -> {
@@ -139,7 +138,7 @@ public class BannerDisplay extends VisualizerRunnableDisplay implements Listener
                         if (isBanner(block.getType())) {
                             Map<String, Object> map = new HashMap<>();
                             map.put("Item", "N/A");
-                            map.putAll(spawnArmorStands(block));
+                            map.putAll(spawnDisplayEntitys(block));
                             bannerMap.put(block, map);
                         }
                     }
@@ -166,22 +165,17 @@ public class BannerDisplay extends VisualizerRunnableDisplay implements Listener
                     if (!isBanner(block.getType())) {
                         return;
                     }
-                    String name = NMS.getInstance().getBannerCustomName(block);
-                    InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
-                        ArmorStand line1 = (ArmorStand) entry.getValue().get("1");
-                        if (name == null || name.equals("")) {
+                    Component name = ((Banner) block.getState(false)).customName();
+                    {
+                        DisplayEntity line1 = (DisplayEntity) entry.getValue().get("1");
+                        if (name == null || PlainTextComponentSerializer.plainText().serialize(name).isEmpty()) {
                             if (!PlainTextComponentSerializer.plainText().serialize(line1.getCustomName()).equals("") || line1.isCustomNameVisible()) {
                                 line1.setCustomName("");
                                 line1.setCustomNameVisible(false);
-                                PacketManager.updateArmorStandOnlyMeta(line1);
+                                DisplayManager.updateDisplay(line1);
                             }
                         } else {
-                            Component component;
-                            try {
-                                component = GsonComponentSerializer.gson().deserialize(name);
-                            } catch (Throwable e) {
-                                component = LegacyComponentSerializer.legacySection().deserialize(name);
-                            }
+                            Component component = name;
                             String matchingName = LegacyComponentSerializer.legacySection().serialize(component);
                             if (stripColorBlacklist) {
                                 matchingName = ChatColorUtils.stripColor(matchingName);
@@ -190,17 +184,17 @@ public class BannerDisplay extends VisualizerRunnableDisplay implements Listener
                                 if (!PlainTextComponentSerializer.plainText().serialize(line1.getCustomName()).equals("") || line1.isCustomNameVisible()) {
                                     line1.setCustomName("");
                                     line1.setCustomNameVisible(false);
-                                    PacketManager.updateArmorStandOnlyMeta(line1);
+                                    DisplayManager.updateDisplay(line1);
                                 }
                             } else {
                                 if (!line1.getCustomName().equals(component) || !line1.isCustomNameVisible()) {
                                     line1.setCustomName(component);
                                     line1.setCustomNameVisible(true);
-                                    PacketManager.updateArmorStandOnlyMeta(line1);
+                                    DisplayManager.updateDisplay(line1);
                                 }
                             }
                         }
-                    });
+                    }
                 }, delay, block.getLocation());
             }
         }, 0, checkingPeriod);
@@ -214,9 +208,9 @@ public class BannerDisplay extends VisualizerRunnableDisplay implements Listener
         }
 
         Map<String, Object> map = bannerMap.get(block);
-        if (map.get("1") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("1");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("1") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("1");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
         bannerMap.remove(block);
     }
@@ -239,27 +233,27 @@ public class BannerDisplay extends VisualizerRunnableDisplay implements Listener
     }
 
     @SuppressWarnings("deprecation")
-    public Map<String, ArmorStand> spawnArmorStands(Block block) {
-        Map<String, ArmorStand> map = new HashMap<>();
+    public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) {
+        Map<String, DisplayEntity> map = new HashMap<>();
 
         if (isWallBanner(block.getType())) {
-            ArmorStand line1 = new ArmorStand(block.getLocation().add(0.5, 0.0, 0.5));
+            DisplayEntity line1 = new DisplayEntity(block.getLocation().add(0.5, 0.0, 0.5));
             setStand(line1);
 
             map.put("1", line1);
 
-            PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line1);
+            DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line1);
         } else {
             Location origin = block.getLocation().add(0.5, 1.0, 0.5);
             Rotatable rotate = (Rotatable) block.getBlockData();
             Vector vector = getDirection(rotate.getRotation()).multiply(0.3125);
 
-            ArmorStand line1 = new ArmorStand(origin.clone().add(vector));
+            DisplayEntity line1 = new DisplayEntity(origin.clone().add(vector));
             setStand(line1);
 
             map.put("1", line1);
 
-            PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line1);
+            DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line1);
         }
 
         return map;
@@ -273,7 +267,7 @@ public class BannerDisplay extends VisualizerRunnableDisplay implements Listener
         return direction;
     }
 
-    public void setStand(ArmorStand stand) {
+    public void setStand(DisplayEntity stand) {
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);

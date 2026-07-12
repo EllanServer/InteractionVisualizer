@@ -31,7 +31,7 @@ public class Placeholders extends PlaceholderExpansion {
 
     @Override
     public String getAuthor() {
-        return String.join(", ", InteractionVisualizer.plugin.getDescription().getAuthors());
+        return String.join(", ", InteractionVisualizer.plugin.getPluginMeta().getAuthors());
     }
 
     @Override

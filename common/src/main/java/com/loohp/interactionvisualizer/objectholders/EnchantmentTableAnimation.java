@@ -24,20 +24,18 @@ import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.blocks.EnchantmentTableDisplay;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.SoundManager;
 import com.loohp.interactionvisualizer.utils.ComponentFont;
-import com.loohp.interactionvisualizer.utils.CustomStringUtils;
 import com.loohp.interactionvisualizer.utils.RomanNumberUtils;
 import com.loohp.interactionvisualizer.utils.TranslationUtils;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TranslatableComponent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
-import net.md_5.bungee.api.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
@@ -104,33 +102,35 @@ public class EnchantmentTableAnimation {
     }
 
     private void tick() {
-        InteractionVisualizer.asyncExecutorManager.runTaskLaterAsynchronously(() -> {
-            run();
-        }, 1);
+        Scheduler.runTaskLater(plugin, this::run, 1);
     }
 
     private void run() {
         Supplier<CompletableFuture<Integer>> task = taskQueue.poll();
-        if (task != null) {
-            int result = -1;
-            try {
-                CompletableFuture<Integer> future = task.get();
-                if (future != null) {
-                    result = future.get();
-                } else {
-                    run();
-                    return;
-                }
-            } catch (Throwable e) {
-            }
-            if (result != CLOSE_TABLE) {
+        if (task == null) {
+            tick();
+            return;
+        }
+
+        CompletableFuture<Integer> future;
+        try {
+            future = task.get();
+        } catch (Throwable ignored) {
+            tick();
+            return;
+        }
+        if (future == null) {
+            tick();
+            return;
+        }
+
+        future.whenComplete((result, throwable) -> {
+            if (throwable != null || result == null || result != CLOSE_TABLE) {
                 tick();
             } else {
-                tables.remove(block);
+                tables.remove(block, this);
             }
-        } else {
-            tick();
-        }
+        });
     }
 
     @SuppressWarnings("deprecation")
@@ -146,7 +146,7 @@ public class EnchantmentTableAnimation {
 
         if (!this.item.isPresent()) {
             this.item = Optional.of(new Item(location.clone().add(0.5, 1.3, 0.5)));
-            PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item.get());
+            DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item.get());
         }
 
         Item item = this.item.get();
@@ -155,7 +155,7 @@ public class EnchantmentTableAnimation {
         item.setGravity(false);
         item.setLocked(true);
         item.setVelocity(new Vector(0.0, 0.05, 0.0));
-        PacketManager.updateItem(item);
+        DisplayManager.updateItem(item);
         for (Player each : InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY)) {
             each.spawnParticle(Particle.PORTAL, location.clone().add(0.5, 2.6, 0.5), 200);
         }
@@ -163,34 +163,24 @@ public class EnchantmentTableAnimation {
         Scheduler.runTaskLater(plugin, () -> {
             item.teleport(location.clone().add(0.5, 2.3, 0.5));
             item.setVelocity(new Vector(0, 0, 0));
-            PacketManager.updateItem(item);
+            DisplayManager.updateItem(item);
         }, 20);
 
-        List<ArmorStand> stands = new LinkedList<>();
+        List<DisplayEntity> stands = new LinkedList<>();
 
         Scheduler.runTaskLater(plugin, () -> {
             Location standloc = item.getLocation().add(0.0, 0.5, 0.0);
             for (Entry<Enchantment, Integer> entry : enchantsToAdd.entrySet()) {
                 Enchantment ench = entry.getKey();
                 int level = entry.getValue();
-                String str = TranslationUtils.getEnchantment(ench);
-                boolean isTranslatable;
-                if (!EnchantmentTableDisplay.getTranslatableEnchantments().contains(str)) {
-                    Map<String, String> definedNames = EnchantmentTableDisplay.getCustomDefinedEnchantmentNames();
-                    str = definedNames.get(EnchantmentTableDisplay.getEnchantmentIdOrKey(ench));
-                    isTranslatable = false;
-                } else {
-                    isTranslatable = true;
-                }
-                Component enchantmentName;
-                if (isTranslatable) {
-                    enchantmentName = Component.translatable(str);
-                } else {
-                    enchantmentName = ComponentFont.parseFont(LegacyComponentSerializer.legacySection().deserialize((str == null || str.equals("")) ? CustomStringUtils.capitalize(ench.getName().toLowerCase().replace("_", " ")) : str));;
-                }
-                ArmorStand stand = new ArmorStand(standloc);
+                String customName = EnchantmentTableDisplay.getCustomDefinedEnchantmentNames()
+                        .get(EnchantmentTableDisplay.getEnchantmentIdOrKey(ench));
+                Component enchantmentName = customName == null || customName.isBlank()
+                        ? ench.description()
+                        : ComponentFont.parseFont(LegacyComponentSerializer.legacySection().deserialize(customName));
+                DisplayEntity stand = new DisplayEntity(standloc);
                 if (ench.getMaxLevel() != 1 || level != 1) {
-                    enchantmentName = enchantmentName.append(ComponentFont.parseFont(LegacyComponentSerializer.legacySection().deserialize(" " + ChatColor.AQUA + RomanNumberUtils.toRoman(entry.getValue()))));
+                    enchantmentName = enchantmentName.append(ComponentFont.parseFont(Component.text(" " + RomanNumberUtils.toRoman(entry.getValue()), NamedTextColor.AQUA)));
                 }
                 if (ench.isCursed()) {
                     enchantmentName = enchantmentName.color(NamedTextColor.RED);
@@ -200,12 +190,12 @@ public class EnchantmentTableAnimation {
                 stand.setCustomName(enchantmentName);
                 stand.setCustomNameVisible(true);
                 setStand(stand);
-                PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), stand);
+                DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), stand);
                 stands.add(stand);
                 standloc.add(0.0, 0.3, 0.0);
             }
 
-            ArmorStand stand = new ArmorStand(standloc);
+            DisplayEntity stand = new DisplayEntity(standloc);
             TranslatableComponent levelTrans = Component.translatable(TranslationUtils.getLevel(expCost));
             if (expCost != 1) {
                 levelTrans = levelTrans.arguments(Component.text(expCost));
@@ -214,25 +204,25 @@ public class EnchantmentTableAnimation {
             stand.setCustomName(levelTrans);
             stand.setCustomNameVisible(true);
             setStand(stand);
-            PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), stand);
+            DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), stand);
             stands.add(stand);
 
-            PacketManager.updateItem(item);
+            DisplayManager.updateItem(item);
         }, 50);
 
         Scheduler.runTaskLater(plugin, () -> {
             while (!stands.isEmpty()) {
-                ArmorStand stand = stands.remove(0);
-                PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                DisplayEntity stand = stands.remove(0);
+                DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
             }
             item.setGravity(true);
-            PacketManager.updateItem(item);
+            DisplayManager.updateItem(item);
         }, 90);
 
         Scheduler.runTaskLater(plugin, () -> {
             item.teleport(location.clone().add(0.5, 1.3, 0.5));
             item.setGravity(false);
-            PacketManager.updateItem(item);
+            DisplayManager.updateItem(item);
             item.setLocked(false);
             future.complete(PLAY_ENCHANTMENT);
 
@@ -261,11 +251,11 @@ public class EnchantmentTableAnimation {
         item.setVelocity(pickup);
         item.setGravity(true);
         item.setPickupDelay(32767);
-        PacketManager.updateItem(item);
+        DisplayManager.updateItem(item);
 
         Scheduler.runTaskLater(plugin, () -> {
             SoundManager.playItemPickup(item.getLocation(), InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY));
-            PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
             this.item = Optional.empty();
             future.complete(PLAY_PICKUP);
         }, 8);
@@ -273,48 +263,37 @@ public class EnchantmentTableAnimation {
     }
 
     private CompletableFuture<Integer> close() {
-        CompletableFuture<Integer> future = new CompletableFuture<>();
-        Scheduler.runTask(plugin, () -> {
-            if (this.item.isPresent()) {
-                PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item.get());
-            }
-            future.complete(CLOSE_TABLE);
-        });
-        return future;
+        if (this.item.isPresent()) {
+            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item.get());
+        }
+        return CompletableFuture.completedFuture(CLOSE_TABLE);
     }
 
     private CompletableFuture<Integer> setItemStack(ItemStack itemstack) {
-        CompletableFuture<Integer> future = new CompletableFuture<>();
-
-        Scheduler.runTask(plugin, () -> {
-            if (itemstack == null || itemstack.getType().equals(Material.AIR)) {
-                clearItemStack();
-                future.complete(SET_ITEM);
-                return;
-            }
-            if (this.item.isPresent()) {
-                this.item.get().setItemStack(itemstack);
-                PacketManager.updateItem(item.get());
-            } else {
-                this.item = Optional.of(new Item(location.clone().add(0.5, 1.3, 0.5)));
-                this.item.get().setItemStack(itemstack);
-                PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item.get());
-                PacketManager.updateItem(item.get());
-            }
-            future.complete(SET_ITEM);
-        });
-
-        return future;
+        if (itemstack == null || itemstack.getType().equals(Material.AIR)) {
+            clearItemStack();
+            return CompletableFuture.completedFuture(SET_ITEM);
+        }
+        if (this.item.isPresent()) {
+            this.item.get().setItemStack(itemstack);
+            DisplayManager.updateItem(item.get());
+        } else {
+            this.item = Optional.of(new Item(location.clone().add(0.5, 1.3, 0.5)));
+            this.item.get().setItemStack(itemstack);
+            DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item.get());
+            DisplayManager.updateItem(item.get());
+        }
+        return CompletableFuture.completedFuture(SET_ITEM);
     }
 
     private void clearItemStack() {
         if (this.item.isPresent()) {
-            PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item.get());
+            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item.get());
             this.item = Optional.empty();
         }
     }
 
-    private void setStand(ArmorStand stand) {
+    private void setStand(DisplayEntity stand) {
         stand.setMarker(true);
         stand.setSmall(true);
         stand.setVisible(true);

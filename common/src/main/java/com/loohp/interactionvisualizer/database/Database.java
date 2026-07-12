@@ -25,8 +25,9 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.ArrayUtils;
 import com.loohp.interactionvisualizer.utils.BitSetUtils;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -47,7 +48,6 @@ public class Database {
     public static final Pattern VALID_BITSET = Pattern.compile("^[0-9]*$");
     private static final String preferenceTable = "USER_PERFERENCES";
     private static final String indexMappingTable = "INDEX_MAPPING";
-    private static final String statusLockTable = "USE_LOCK";
     private static final Object syncdb = new Object();
     public static boolean isMYSQL = false;
     private static Connection connection;
@@ -97,17 +97,17 @@ public class Database {
                 return;
             }
 
-            Class.forName("com.mysql.jdbc.Driver");
+            Class.forName("com.mysql.cj.jdbc.Driver");
             setConnection(DriverManager.getConnection("jdbc:mysql://" + host + ":" + port + "/" + database, username, password));
 
             if (echo == true) {
-                Bukkit.getConsoleSender().sendMessage(ChatColor.GREEN + "[InteractionVisualizer] MYSQL CONNECTED");
+                log("[InteractionVisualizer] MySQL connected", NamedTextColor.GREEN);
             }
         } catch (SQLException e) {
-            Bukkit.getConsoleSender().sendMessage(ChatColor.RED + "[InteractionVisualizer] MYSQL Failed to connect! (SQLException)");
+            log("[InteractionVisualizer] MySQL failed to connect (SQLException)", NamedTextColor.RED);
             e.printStackTrace();
         } catch (ClassNotFoundException e) {
-            Bukkit.getConsoleSender().sendMessage(ChatColor.RED + "[InteractionVisualizer] MYSQL Failed to connect! (ClassNotFoundException)");
+            log("[InteractionVisualizer] MySQL failed to connect (driver not found)", NamedTextColor.RED);
             e.printStackTrace();
         }
     }
@@ -117,7 +117,7 @@ public class Database {
             Class.forName("org.sqlite.JDBC");
             connection = DriverManager.getConnection("jdbc:sqlite:plugins/InteractionVisualizer/database.db");
             if (echo) {
-                Bukkit.getConsoleSender().sendMessage(ChatColor.GREEN + "[InteractionVisualizer] Opened Sqlite database successfully");
+                log("[InteractionVisualizer] Opened SQLite database successfully", NamedTextColor.GREEN);
             }
 
             Statement stmt0 = connection.createStatement();
@@ -130,14 +130,10 @@ public class Database {
             stmt1.executeUpdate(sql1);
             stmt1.close();
 
-            Statement stmt2 = connection.createStatement();
-            String sql2 = "CREATE TABLE IF NOT EXISTS " + statusLockTable + " (STATUS_LOCK BOOLEAN PRIMARY KEY);";
-            stmt2.executeUpdate(sql2);
-            stmt2.close();
         } catch (Exception e) {
-            Bukkit.getConsoleSender().sendMessage(ChatColor.RED + "[InteractionVisualizer] Unable to connect to sqlite database!!!");
+            log("[InteractionVisualizer] Unable to connect to SQLite database", NamedTextColor.RED);
             e.printStackTrace();
-            InteractionVisualizer.plugin.getPluginLoader().disablePlugin(InteractionVisualizer.plugin);
+            Bukkit.getPluginManager().disablePlugin(InteractionVisualizer.plugin);
         }
     }
 
@@ -158,8 +154,6 @@ public class Database {
             PreparedStatement statement1 = getConnection().prepareStatement("CREATE TABLE IF NOT EXISTS " + indexMappingTable + " (ENTRY Text, BITMASK_INDEX INT)");
             statement1.execute();
 
-            PreparedStatement statement2 = getConnection().prepareStatement("CREATE TABLE IF NOT EXISTS " + statusLockTable + " (STATUS_LOCK BOOLEAN)");
-            statement2.execute();
         } catch (SQLException e) {
             e.printStackTrace();
         }
@@ -170,54 +164,14 @@ public class Database {
         }
     }
 
-    public static boolean isLocked() {
+    public static void runExclusive(Runnable operation) {
         synchronized (syncdb) {
-            boolean value = false;
-            open();
-            try {
-                PreparedStatement statement = getConnection().prepareStatement("SELECT * FROM " + statusLockTable);
-                ResultSet results = statement.executeQuery();
-                if (results.next()) {
-                    value = results.getBoolean("STATUS_LOCK");
-                } else {
-                    value = false;
-                }
-            } catch (SQLException e) {
-                e.printStackTrace();
-            }
-            try {
-                connection.close();
-            } catch (SQLException e) {
-                e.printStackTrace();
-            }
-            return value;
+            operation.run();
         }
     }
 
-    public static void setLocked(boolean value) {
-        synchronized (syncdb) {
-            open();
-            try {
-                PreparedStatement statement = getConnection().prepareStatement("SELECT * FROM " + statusLockTable);
-                ResultSet results = statement.executeQuery();
-                if (results.next()) {
-                    PreparedStatement statement1 = getConnection().prepareStatement("UPDATE " + statusLockTable + " SET STATUS_LOCK=?");
-                    statement1.setBoolean(1, value);
-                    statement1.executeUpdate();
-                } else {
-                    PreparedStatement insert = getConnection().prepareStatement("INSERT INTO " + statusLockTable + " (STATUS_LOCK) VALUES (?)");
-                    insert.setBoolean(1, value);
-                    insert.executeUpdate();
-                }
-            } catch (SQLException e) {
-                e.printStackTrace();
-            }
-            try {
-                connection.close();
-            } catch (SQLException e) {
-                e.printStackTrace();
-            }
-        }
+    private static void log(String message, NamedTextColor color) {
+        Bukkit.getConsoleSender().sendMessage(Component.text(message, color));
     }
 
     public static Map<Integer, EntryKey> getBitIndex() {

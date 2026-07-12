@@ -25,13 +25,13 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerDisplay;
 import com.loohp.interactionvisualizer.entityholders.Item;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.InventoryUtils;
 import com.loohp.interactionvisualizer.utils.LocationUtils;
 import com.loohp.interactionvisualizer.utils.OpenInvUtils;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -145,7 +145,7 @@ public class ShulkerBoxDisplay implements Listener, VisualizerDisplay {
             }
             if (itemstack == null) {
                 int hotbarSlot = event.getHotbarButton();
-                if ((event.getAction().equals(InventoryAction.HOTBAR_MOVE_AND_READD) || event.getAction().equals(InventoryAction.HOTBAR_SWAP)) && hotbarSlot >= 0) {
+                if (event.getAction().equals(InventoryAction.HOTBAR_SWAP) && hotbarSlot >= 0) {
                     itemstack = event.getWhoClicked().getInventory().getItem(hotbarSlot);
                     if (itemstack != null) {
                         if (itemstack.getType().equals(Material.AIR)) {
@@ -197,7 +197,7 @@ public class ShulkerBoxDisplay implements Listener, VisualizerDisplay {
         }
 
         if (isMove) {
-            PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), player);
+            DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), player);
             if (itemstack != null && !itemstack.getType().name().contains("SHULKER_BOX")) {
                 Item item = new Item(loc.clone().add(0.5, 0.5, 0.5).add(event.getWhoClicked().getLocation().getDirection().multiply(-0.8)));
                 Vector offset = new Vector(0.0, 0.15, 0.0);
@@ -208,11 +208,11 @@ public class ShulkerBoxDisplay implements Listener, VisualizerDisplay {
                     vector = loc.clone().add(0.5, 0.5, 0.5).toVector().subtract(event.getWhoClicked().getEyeLocation().clone().add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector()).multiply(0.13).add(offset);
                     item.setVelocity(vector);
                 }
-                PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+                DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
                 item.setItemStack(itemstack);
                 item.setPickupDelay(32767);
                 item.setGravity(true);
-                PacketManager.updateItem(item);
+                DisplayManager.updateItem(item);
                 if (!link.containsKey(player)) {
                     link.put(player, new ArrayList<Item>());
                 }
@@ -227,10 +227,10 @@ public class ShulkerBoxDisplay implements Listener, VisualizerDisplay {
                     }
                     item.setVelocity(new Vector(0.0, 0.0, 0.0));
                     item.setGravity(false);
-                    PacketManager.updateItem(item);
+                    DisplayManager.updateItem(item);
                 }, 8);
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                    PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                    DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                     list.remove(item);
                 }, 20);
             }
@@ -295,7 +295,7 @@ public class ShulkerBoxDisplay implements Listener, VisualizerDisplay {
 
         for (int slot : event.getRawSlots()) {
             if (slot >= 0 && slot < topInventory.getSize()) {
-                PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), player);
+                DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), player);
 
                 ItemStack itemstack = event.getOldCursor();
 
@@ -304,12 +304,12 @@ public class ShulkerBoxDisplay implements Listener, VisualizerDisplay {
                     Vector offset = new Vector(0.0, 0.15, 0.0);
                     Vector vector = loc.clone().add(0.5, 0.5, 0.5).toVector().subtract(event.getWhoClicked().getEyeLocation().clone().add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector()).multiply(0.13).add(offset);
                     item.setVelocity(vector);
-                    PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+                    DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
                     item.setItemStack(itemstack);
                     item.setCustomName(System.currentTimeMillis() + "");
                     item.setPickupDelay(32767);
                     item.setGravity(true);
-                    PacketManager.updateItem(item);
+                    DisplayManager.updateItem(item);
                     if (!link.containsKey(player)) {
                         link.put(player, new ArrayList<Item>());
                     }
@@ -319,10 +319,10 @@ public class ShulkerBoxDisplay implements Listener, VisualizerDisplay {
                         item.teleport(loc.clone().add(0.5, 0.5, 0.5));
                         item.setVelocity(new Vector(0.0, 0.0, 0.0));
                         item.setGravity(false);
-                        PacketManager.updateItem(item);
+                        DisplayManager.updateItem(item);
                     }, 8);
                     Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                        PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                        DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                         list.remove(item);
                     }, 20);
                 }
@@ -355,7 +355,7 @@ public class ShulkerBoxDisplay implements Listener, VisualizerDisplay {
         }
         List<Item> list = link.get((Player) event.getPlayer());
         for (Item item : list) {
-            PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
         }
 
         link.remove((Player) event.getPlayer());

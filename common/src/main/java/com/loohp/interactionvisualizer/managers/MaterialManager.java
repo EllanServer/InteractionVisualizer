@@ -22,7 +22,7 @@ package com.loohp.interactionvisualizer.managers;
 
 import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.config.Config;
-import com.loohp.yamlconfiguration.YamlConfiguration;
+import com.loohp.interactionvisualizer.config.SparrowConfiguration;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 
@@ -35,7 +35,7 @@ public class MaterialManager {
 
     public static final String MATERIAL_CONFIG_ID = "material";
 
-    public static YamlConfiguration config;
+    public static SparrowConfiguration config;
     public static File file;
 
     private static Set<Material> tools = EnumSet.noneOf(Material.class);
@@ -58,7 +58,7 @@ public class MaterialManager {
         reload();
     }
 
-    public static YamlConfiguration getMaterialConfig() {
+    public static SparrowConfiguration getMaterialConfig() {
         return Config.getConfig(MATERIAL_CONFIG_ID).getConfiguration();
     }
 

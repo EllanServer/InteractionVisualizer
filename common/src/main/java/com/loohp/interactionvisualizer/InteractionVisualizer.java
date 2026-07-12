@@ -20,7 +20,6 @@
 
 package com.loohp.interactionvisualizer;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.config.Config;
 import com.loohp.interactionvisualizer.database.Database;
@@ -29,26 +28,21 @@ import com.loohp.interactionvisualizer.managers.LangManager;
 import com.loohp.interactionvisualizer.managers.LightManager;
 import com.loohp.interactionvisualizer.managers.MaterialManager;
 import com.loohp.interactionvisualizer.managers.MusicManager;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PreferenceManager;
 import com.loohp.interactionvisualizer.managers.TaskManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.metrics.Charts;
 import com.loohp.interactionvisualizer.metrics.Metrics;
-import com.loohp.interactionvisualizer.nms.NMS;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.ILightManager;
 import com.loohp.interactionvisualizer.placeholderAPI.Placeholders;
 import com.loohp.interactionvisualizer.updater.Updater;
 import com.loohp.interactionvisualizer.updater.Updater.UpdaterResponse;
-import com.loohp.interactionvisualizer.utils.MCVersion;
-import com.loohp.platformscheduler.Scheduler;
-import com.loohp.yamlconfiguration.YamlConfiguration;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
+import com.loohp.interactionvisualizer.config.SparrowConfiguration;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
-import net.md_5.bungee.api.ChatColor;
-import net.md_5.bungee.chat.ComponentSerializer;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.command.CommandSender;
@@ -61,9 +55,9 @@ import java.io.IOException;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -73,11 +67,9 @@ public class InteractionVisualizer extends JavaPlugin {
 
     public static final int BSTATS_PLUGIN_ID = 7024;
     public static final String CONFIG_ID = "config";
+    public static final Set<String> SUPPORTED_MINECRAFT_VERSIONS = Set.of("26.1.2", "26.2");
 
     public static InteractionVisualizer plugin = null;
-
-    public static String exactMinecraftVersion;
-    public static MCVersion version;
 
     public static Boolean lightapi = false;
     public static Boolean openinv = false;
@@ -108,7 +100,6 @@ public class InteractionVisualizer extends JavaPlugin {
     public static Map<World, Integer> playerTrackingRange = new ConcurrentHashMap<>();
     public static boolean hideIfObstructed = false;
 
-    public static boolean allPacketsSync = false;
     public static boolean defaultDisabledAll = false;
 
     public static ILightManager lightManager;
@@ -116,23 +107,12 @@ public class InteractionVisualizer extends JavaPlugin {
     public static AsyncExecutorManager asyncExecutorManager;
 
     private static void hookMessage(String pluginName) {
-        Bukkit.getConsoleSender().sendMessage(ChatColor.LIGHT_PURPLE + "[InteractionVisualizer] InteractionVisualizer has hooked into " + pluginName + "!");
+        Bukkit.getConsoleSender().sendMessage(Component.text(
+                "[InteractionVisualizer] Hooked into " + pluginName + "!", NamedTextColor.LIGHT_PURPLE));
     }
 
     public static void sendMessage(CommandSender sender, Component component) {
-        if (version.isLegacyRGB()) {
-            try {
-                sender.spigot().sendMessage(ComponentSerializer.parse(GsonComponentSerializer.colorDownsamplingGson().serialize(component)));
-            } catch (Throwable e) {
-                if (sender instanceof Player) {
-                    ((Player) sender).spigot().sendMessage(ComponentSerializer.parse(GsonComponentSerializer.colorDownsamplingGson().serialize(component)));
-                } else {
-                    sender.sendMessage(LegacyComponentSerializer.legacySection().serialize(component));
-                }
-            }
-        } else {
-            sender.spigot().sendMessage(ComponentSerializer.parse(GsonComponentSerializer.gson().serialize(component)));
-        }
+        sender.sendMessage(component);
     }
 
     public static boolean isPluginEnabled(String name) {
@@ -144,17 +124,20 @@ public class InteractionVisualizer extends JavaPlugin {
     public void onEnable() {
         plugin = this;
 
-        Metrics metrics = new Metrics(this, BSTATS_PLUGIN_ID);
-
-        exactMinecraftVersion = Bukkit.getVersion().substring(Bukkit.getVersion().indexOf("(") + 5, Bukkit.getVersion().indexOf(")"));
-        version = MCVersion.resolve();
-
-        if (!version.isSupported()) {
-            getServer().getConsoleSender().sendMessage(org.bukkit.ChatColor.RED + "[InteractionVisualizer] This version of minecraft is unsupported! (" + version.toString() + ")");
+        String minecraftVersion = getServer().getMinecraftVersion();
+        if (!SUPPORTED_MINECRAFT_VERSIONS.contains(minecraftVersion)) {
+            getComponentLogger().error("InteractionVisualizer supports Paper 26.1.2 and 26.2 only; found {}", minecraftVersion);
+            getServer().getPluginManager().disablePlugin(this);
+            return;
         }
 
-        ThreadFactory factory = new ThreadFactoryBuilder().setNameFormat("InteractionVisualizer Async Processing Thread #%d").build();
-        ExecutorService threadPool = new ThreadPoolExecutor(8, 120, 5000, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), factory);
+        Metrics metrics = new Metrics(this, BSTATS_PLUGIN_ID);
+
+        int workers = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors() / 2));
+        ThreadFactory factory = Thread.ofPlatform().daemon(true).name("InteractionVisualizer-Worker-", 0).factory();
+        ExecutorService threadPool = new ThreadPoolExecutor(
+                workers, workers, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(2048), factory,
+                new ThreadPoolExecutor.CallerRunsPolicy());
         asyncExecutorManager = new AsyncExecutorManager(threadPool);
 
         if (isPluginEnabled("LightAPI")) {
@@ -167,9 +150,6 @@ public class InteractionVisualizer extends JavaPlugin {
             }
         }
         if (!lightapi) {
-            if (version.isOlderOrEqualTo(MCVersion.V1_16_4)) {
-                Bukkit.getConsoleSender().sendMessage(ChatColor.YELLOW + "[InteractionVisualizer] LightAPI (Fork) is recommended to be installed on servers with Minecraft version 1.16.5 or below!");
-            }
             lightManager = ILightManager.DUMMY_INSTANCE;
         }
         if (isPluginEnabled("OpenInv")) {
@@ -190,7 +170,7 @@ public class InteractionVisualizer extends JavaPlugin {
         loadConfig();
 
         if (getConfiguration().getBoolean("Options.DownloadLanguageFiles")) {
-            Scheduler.runTaskAsynchronously(this, () -> LangManager.generate());
+            asyncExecutorManager.runTaskAsynchronously(LangManager::generate);
         }
 
         MusicManager.setup();
@@ -198,8 +178,7 @@ public class InteractionVisualizer extends JavaPlugin {
         preferenceManager = new PreferenceManager(this);
         TaskManager.setup();
         TileEntityManager._init_();
-        PacketManager.run();
-        PacketManager.dynamicEntity();
+        DisplayManager.run();
 
         MaterialManager.setup();
 
@@ -215,18 +194,17 @@ public class InteractionVisualizer extends JavaPlugin {
 
         exemptBlocks.add("CRAFTING_TABLE");
         exemptBlocks.add("CRAFTER");
-        exemptBlocks.add("WORKBENCH");
         exemptBlocks.add("LOOM");
         exemptBlocks.add("SMITHING_TABLE");
         exemptBlocks.add("SPAWNER");
-        exemptBlocks.add("MOB_SPAWNER");
         exemptBlocks.add("BEACON");
         
-        getServer().getConsoleSender().sendMessage(ChatColor.GREEN + "[InteractionVisualizer] InteractionVisualizer has been enabled!");
+        getServer().getConsoleSender().sendMessage(Component.text(
+                "[InteractionVisualizer] Enabled for Paper " + minecraftVersion + "!", NamedTextColor.GREEN));
 
         Scheduler.runTask(this, () -> {
             for (Player player : Bukkit.getOnlinePlayers()) {
-                PacketManager.playerStatus.put(player, ConcurrentHashMap.newKeySet());
+                DisplayManager.playerStatus.put(player, ConcurrentHashMap.newKeySet());
             }
         });
 
@@ -234,12 +212,14 @@ public class InteractionVisualizer extends JavaPlugin {
             if (updaterEnabled) {
                 UpdaterResponse version = Updater.checkUpdate();
                 if (!version.getResult().equals("latest")) {
-                    Updater.sendUpdateMessage(Bukkit.getConsoleSender(), version.getResult(), version.getSpigotPluginId());
-                    for (Player player : Bukkit.getOnlinePlayers()) {
-                        if (player.hasPermission("interactionvisualizer.update")) {
-                            Updater.sendUpdateMessage(player, version.getResult(), version.getSpigotPluginId());
+                    Scheduler.runTask(this, () -> {
+                        Updater.sendUpdateMessage(Bukkit.getConsoleSender(), version.getResult(), version.getSpigotPluginId());
+                        for (Player player : Bukkit.getOnlinePlayers()) {
+                            if (player.hasPermission("interactionvisualizer.update")) {
+                                Updater.sendUpdateMessage(player, version.getResult(), version.getSpigotPluginId());
+                            }
                         }
-                    }
+                    });
                 }
             }
         }, 100);
@@ -247,25 +227,18 @@ public class InteractionVisualizer extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        preferenceManager.close();
-
-        if (!Bukkit.getOnlinePlayers().isEmpty()) {
-            getServer().getConsoleSender().sendMessage(ChatColor.YELLOW + "[InteractionVisualizer] Plugin reload detected, attempting to despawn all visual entities. If anything went wrong, please restart! (Reloads are always not recommended)");
-            int[] entityIdArray = PacketManager.active.keySet().stream().mapToInt(each -> each.getEntityId()).toArray();
-            Object[] packets = NMS.getInstance().createEntityDestroyPacket(entityIdArray);
-
-            for (Player player : Bukkit.getOnlinePlayers()) {
-                for (Object packet : packets) {
-                    NMS.getInstance().sendPacket(player, packet);
-                }
-            }
+        if (preferenceManager != null) {
+            preferenceManager.close();
         }
-
-        asyncExecutorManager.close();
-        getServer().getConsoleSender().sendMessage(ChatColor.RED + "[InteractionVisualizer] InteractionVisualizer has been disabled!");
+        DisplayManager.shutdown();
+        if (asyncExecutorManager != null) {
+            asyncExecutorManager.close();
+        }
+        getServer().getConsoleSender().sendMessage(Component.text(
+                "[InteractionVisualizer] Disabled; all display entities removed.", NamedTextColor.RED));
     }
 
-    public YamlConfiguration getConfiguration() {
+    public SparrowConfiguration getConfiguration() {
         return Config.getConfig(CONFIG_ID).getConfiguration();
     }
 
@@ -301,13 +274,10 @@ public class InteractionVisualizer extends JavaPlugin {
         updaterEnabled = getConfiguration().getBoolean("Options.Updater");
 
         playerTrackingRange.clear();
-        int defaultRange = getServer().spigot().getConfig().getInt("world-settings.default.entity-tracking-range.players", 64);
         for (World world : getServer().getWorlds()) {
-            int range = getServer().spigot().getConfig().getInt("world-settings." + world.getName() + ".entity-tracking-range.players", defaultRange);
-            playerTrackingRange.put(world, range);
+            playerTrackingRange.put(world, Math.max(32, world.getSendViewDistance() * 16));
         }
 
-        allPacketsSync = getConfiguration().getBoolean("Settings.SendAllPacketsInSync");
         defaultDisabledAll = getConfiguration().getBoolean("Settings.DefaultDisableAll");
 
         getServer().getPluginManager().callEvent(new InteractionVisualizerReloadEvent());

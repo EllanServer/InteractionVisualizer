@@ -25,16 +25,15 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerDisplay;
 import com.loohp.interactionvisualizer.entityholders.Item;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.InventoryUtils;
-import com.loohp.interactionvisualizer.utils.MCVersion;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import org.bukkit.Material;
+import org.bukkit.entity.AbstractVillager;
 import org.bukkit.entity.NPC;
 import org.bukkit.entity.Player;
-import org.bukkit.entity.Villager;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -109,14 +108,8 @@ public class VillagerDisplay implements Listener, VisualizerDisplay {
         ItemStack item2 = event.getCurrentItem().clone();
         Player player = (Player) event.getWhoClicked();
         MerchantInventory tradeinv = (MerchantInventory) event.getView().getTopInventory();
-        if (InteractionVisualizer.version.isNewerOrEqualTo(MCVersion.V1_14)) {
-            if (!(tradeinv.getHolder() instanceof org.bukkit.entity.AbstractVillager)) {
-                return;
-            }
-        } else {
-            if (!(tradeinv.getHolder() instanceof Villager)) {
-                return;
-            }
+        if (!(tradeinv.getHolder() instanceof AbstractVillager)) {
+            return;
         }
         NPC villager = (NPC) tradeinv.getHolder();
         Vector lift = new Vector(0.0, 0.20, 0.0);
@@ -126,10 +119,10 @@ public class VillagerDisplay implements Listener, VisualizerDisplay {
             in.setItemStack(item0);
             in.setGravity(true);
             in.setVelocity(vector);
-            PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), in);
-            PacketManager.updateItem(in);
+            DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), in);
+            DisplayManager.updateItem(in);
 
-            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), in), 14);
+            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), in), 14);
         }
 
         ItemStack item1final = item1;
@@ -140,10 +133,10 @@ public class VillagerDisplay implements Listener, VisualizerDisplay {
                 in.setItemStack(item1final);
                 in.setGravity(true);
                 in.setVelocity(vector);
-                PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), in);
-                PacketManager.updateItem(in);
+                DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), in);
+                DisplayManager.updateItem(in);
 
-                Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), in), 14);
+                Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), in), 14);
             }
         }, 8, villager);
 
@@ -153,10 +146,10 @@ public class VillagerDisplay implements Listener, VisualizerDisplay {
             out.setItemStack(item2);
             out.setGravity(true);
             out.setVelocity(vector);
-            PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), out);
-            PacketManager.updateItem(out);
+            DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), out);
+            DisplayManager.updateItem(out);
 
-            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), out), 12);
+            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), out), 12);
         }, 40, villager);
     }
 

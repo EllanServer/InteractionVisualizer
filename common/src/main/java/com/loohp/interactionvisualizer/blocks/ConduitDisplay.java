@@ -26,18 +26,19 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.DynamicVisualizerEntity.PathType;
-import com.loohp.interactionvisualizer.entityholders.SurroundingPlaneArmorStand;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.entityholders.BillboardDisplayEntity;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
-import com.loohp.platformscheduler.ScheduledTask;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
-import net.md_5.bungee.api.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -85,7 +86,7 @@ public class ConduitDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask gc() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = conduitMap.entrySet().iterator();
             int count = 0;
             int maxper = (int) Math.ceil((double) conduitMap.size() / (double) gcPeriod);
@@ -101,26 +102,26 @@ public class ConduitDisplay extends VisualizerRunnableDisplay implements Listene
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
                     if (!isActive(block.getLocation())) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("2") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("2");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("2") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("2");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         conduitMap.remove(block);
                         return;
                     }
                     if (!block.getType().equals(Material.CONDUIT)) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("2") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("2");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("2") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("2");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         conduitMap.remove(block);
                         return;
@@ -132,7 +133,7 @@ public class ConduitDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask run() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyConduit();
             for (Block block : list) {
                 Scheduler.runTask(InteractionVisualizer.plugin, () -> {
@@ -140,7 +141,7 @@ public class ConduitDisplay extends VisualizerRunnableDisplay implements Listene
                         if (block.getType().equals(Material.CONDUIT)) {
                             HashMap<String, Object> map = new HashMap<>();
                             map.put("Item", "N/A");
-                            map.putAll(spawnArmorStands(block));
+                            map.putAll(spawnDisplayEntitys(block));
                             conduitMap.put(block, map);
                         }
                     }
@@ -170,36 +171,38 @@ public class ConduitDisplay extends VisualizerRunnableDisplay implements Listene
 
                     int amount = getFrameAmount(block);
 
-                    InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
+                    {
                         String arrow = "\u27f9";
                         String square = "\u2b1b";
-                        ArmorStand line1 = (ArmorStand) entry.getValue().get("1");
-                        ArmorStand line2 = (ArmorStand) entry.getValue().get("2");
+                        DisplayEntity line1 = (DisplayEntity) entry.getValue().get("1");
+                        DisplayEntity line2 = (DisplayEntity) entry.getValue().get("2");
 
                         int range = getRange(amount);
-                        ChatColor color = range > 0 ? ChatColor.AQUA : ChatColor.YELLOW;
+                        NamedTextColor color = range > 0 ? NamedTextColor.AQUA : NamedTextColor.YELLOW;
 
-                        String one = color + square + amount + " " + arrow + " " + range + "m";
-                        if (!PlainTextComponentSerializer.plainText().serialize(line1.getCustomName()).equals(one) || !line1.isCustomNameVisible()) {
+                        Component one = Component.text(square + amount + " " + arrow + " " + range + "m", color);
+                        if (!line1.getCustomName().equals(one) || !line1.isCustomNameVisible()) {
                             line1.setCustomName(one);
                             line1.setCustomNameVisible(true);
-                            PacketManager.updateArmorStandOnlyMeta(line1);
+                            DisplayManager.updateDisplay(line1);
                         }
                         if (range < 96) {
                             if (!PlainTextComponentSerializer.plainText().serialize(line2.getCustomName()).equals("") || line2.isCustomNameVisible()) {
                                 line2.setCustomName("");
                                 line2.setCustomNameVisible(false);
-                                PacketManager.updateArmorStandOnlyMeta(line2);
+                                DisplayManager.updateDisplay(line2);
                             }
                         } else {
-                            String damage = ChatColor.AQUA + "4(" + ChatColor.RED + "\u2665\u2665" + ChatColor.AQUA + ") / 2s";
-                            if (!PlainTextComponentSerializer.plainText().serialize(line2.getCustomName()).equals(damage) || !line2.isCustomNameVisible()) {
+                            Component damage = Component.text("4(", NamedTextColor.AQUA)
+                                    .append(Component.text("\u2665\u2665", NamedTextColor.RED))
+                                    .append(Component.text(") / 2s", NamedTextColor.AQUA));
+                            if (!line2.getCustomName().equals(damage) || !line2.isCustomNameVisible()) {
                                 line2.setCustomName(damage);
                                 line2.setCustomNameVisible(true);
-                                PacketManager.updateArmorStandOnlyMeta(line2);
+                                DisplayManager.updateDisplay(line2);
                             }
                         }
-                    });
+                    }
                 }, delay, block.getLocation());
             }
         }, 0, checkingPeriod);
@@ -230,13 +233,13 @@ public class ConduitDisplay extends VisualizerRunnableDisplay implements Listene
         }
 
         Map<String, Object> map = conduitMap.get(block);
-        if (map.get("1") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("1");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("1") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("1");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        if (map.get("2") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("2");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("2") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("2");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
         conduitMap.remove(block);
     }
@@ -249,25 +252,25 @@ public class ConduitDisplay extends VisualizerRunnableDisplay implements Listene
         return PlayerLocationManager.hasPlayerNearby(loc);
     }
 
-    public Map<String, ArmorStand> spawnArmorStands(Block block) {
-        Map<String, ArmorStand> map = new HashMap<>();
+    public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) {
+        Map<String, DisplayEntity> map = new HashMap<>();
         Location origin = block.getLocation().add(0.5, 0.001, 0.5);
 
-        SurroundingPlaneArmorStand line1 = new SurroundingPlaneArmorStand(origin.clone().add(0.0, 0.28, 0.0), 0.4, pathType);
+        BillboardDisplayEntity line1 = new BillboardDisplayEntity(origin.clone().add(0.0, 0.28, 0.0), 0.4, pathType);
         setStand(line1);
-        SurroundingPlaneArmorStand line2 = new SurroundingPlaneArmorStand(origin.clone(), 0.4, pathType);
+        BillboardDisplayEntity line2 = new BillboardDisplayEntity(origin.clone(), 0.4, pathType);
         setStand(line2);
 
         map.put("1", line1);
         map.put("2", line2);
 
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line1);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line2);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line1);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line2);
 
         return map;
     }
 
-    public void setStand(ArmorStand stand) {
+    public void setStand(DisplayEntity stand) {
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);

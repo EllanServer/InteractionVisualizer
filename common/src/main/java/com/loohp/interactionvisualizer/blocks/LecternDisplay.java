@@ -26,15 +26,15 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
-import com.loohp.platformscheduler.ScheduledTask;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -87,7 +87,7 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask gc() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = lecternMap.entrySet().iterator();
             int count = 0;
             int maxper = (int) Math.ceil((double) lecternMap.size() / (double) gcPeriod);
@@ -103,26 +103,26 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
                     if (!isActive(block.getLocation())) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("2") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("2");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("2") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("2");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         lecternMap.remove(block);
                         return;
                     }
                     if (!block.getType().equals(Material.LECTERN)) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("2") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("2");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("2") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("2");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         lecternMap.remove(block);
                         return;
@@ -134,14 +134,14 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask run() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyLectern();
             for (Block block : list) {
                 Scheduler.runTask(InteractionVisualizer.plugin, () -> {
                     if (lecternMap.get(block) == null && isActive(block.getLocation())) {
                         if (block.getType().equals(Material.LECTERN)) {
                             HashMap<String, Object> map = new HashMap<>();
-                            map.putAll(spawnArmorStands(block));
+                            map.putAll(spawnDisplayEntitys(block));
                             lecternMap.put(block, map);
                         }
                     }
@@ -170,7 +170,7 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
                     }
                     org.bukkit.block.Lectern lectern = (org.bukkit.block.Lectern) block.getState();
 
-                    InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
+                    {
                         Inventory inv = lectern.getInventory();
                         ItemStack itemstack = inv.getItem(0);
                         if (itemstack != null) {
@@ -179,8 +179,8 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
                             }
                         }
 
-                        ArmorStand stand1 = (ArmorStand) entry.getValue().get("1");
-                        ArmorStand stand2 = (ArmorStand) entry.getValue().get("2");
+                        DisplayEntity stand1 = (DisplayEntity) entry.getValue().get("1");
+                        DisplayEntity stand2 = (DisplayEntity) entry.getValue().get("2");
                         if (itemstack != null && itemstack.getType().equals(Material.WRITTEN_BOOK) && itemstack.hasItemMeta() && itemstack.getItemMeta() != null && itemstack.getItemMeta() instanceof BookMeta) {
                             BookMeta meta = (BookMeta) itemstack.getItemMeta();
 
@@ -196,26 +196,26 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
                             if (!PlainTextComponentSerializer.plainText().serialize(stand1.getCustomName()).equals(line1) || !stand1.isCustomNameVisible()) {
                                 stand1.setCustomNameVisible(true);
                                 stand1.setCustomName(line1);
-                                PacketManager.updateArmorStandOnlyMeta(stand1);
+                                DisplayManager.updateDisplay(stand1);
                             }
                             if (!PlainTextComponentSerializer.plainText().serialize(stand2.getCustomName()).equals(line2) || !stand2.isCustomNameVisible()) {
                                 stand2.setCustomNameVisible(true);
                                 stand2.setCustomName(line2);
-                                PacketManager.updateArmorStandOnlyMeta(stand2);
+                                DisplayManager.updateDisplay(stand2);
                             }
                         } else {
                             if (!PlainTextComponentSerializer.plainText().serialize(stand1.getCustomName()).equals("") || stand1.isCustomNameVisible()) {
                                 stand1.setCustomNameVisible(false);
                                 stand1.setCustomName("");
-                                PacketManager.updateArmorStandOnlyMeta(stand1);
+                                DisplayManager.updateDisplay(stand1);
                             }
                             if (!PlainTextComponentSerializer.plainText().serialize(stand2.getCustomName()).equals("") || stand2.isCustomNameVisible()) {
                                 stand2.setCustomNameVisible(false);
                                 stand2.setCustomName("");
-                                PacketManager.updateArmorStandOnlyMeta(stand2);
+                                DisplayManager.updateDisplay(stand2);
                             }
                         }
-                    });
+                    }
                 }, delay, block.getLocation());
             }
         }, 0, checkingPeriod);
@@ -229,13 +229,13 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
         }
 
         Map<String, Object> map = lecternMap.get(block);
-        if (map.get("1") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("1");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("1") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("1");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        if (map.get("2") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("2");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("2") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("2");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
         lecternMap.remove(block);
     }
@@ -248,8 +248,8 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
         return PlayerLocationManager.hasPlayerNearby(loc);
     }
 
-    public Map<String, ArmorStand> spawnArmorStands(Block block) {
-        Map<String, ArmorStand> map = new HashMap<>();
+    public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) {
+        Map<String, DisplayEntity> map = new HashMap<>();
 
         Location origin = block.getLocation();
         BlockData blockData = block.getState().getBlockData();
@@ -258,21 +258,21 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
         Vector direction = target.toVector().subtract(origin.toVector()).multiply(0.2);
 
         Location loc = origin.clone().add(direction).add(0.5, 1.301, 0.5);
-        ArmorStand slot1 = new ArmorStand(loc.clone());
+        DisplayEntity slot1 = new DisplayEntity(loc.clone());
         setStand(slot1);
-        ArmorStand slot2 = new ArmorStand(loc.clone().add(0, -0.3, 0));
+        DisplayEntity slot2 = new DisplayEntity(loc.clone().add(0, -0.3, 0));
         setStand(slot2);
 
         map.put("1", slot1);
         map.put("2", slot2);
 
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot1);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot2);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot1);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot2);
 
         return map;
     }
 
-    public void setStand(ArmorStand stand) {
+    public void setStand(DisplayEntity stand) {
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);

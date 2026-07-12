@@ -20,25 +20,27 @@
 
 package com.loohp.interactionvisualizer.updater;
 
+import com.google.gson.JsonObject;
 import com.loohp.interactionvisualizer.InteractionVisualizer;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import com.loohp.interactionvisualizer.utils.HTTPRequestUtils;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
-import net.md_5.bungee.api.ChatColor;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
-import org.json.simple.JSONObject;
 
 public class Updater implements Listener {
 
     public static final String PLUGIN_NAME = "InteractionVisualizer";
+    private static final long CACHE_NANOS = java.util.concurrent.TimeUnit.MINUTES.toNanos(10);
+    private static volatile UpdaterResponse cachedResponse;
+    private static volatile long cachedAt;
 
     public static void sendUpdateMessage(CommandSender sender, String version, int spigotPluginId) {
         sendUpdateMessage(sender, version, spigotPluginId, false);
@@ -49,64 +51,95 @@ public class Updater implements Listener {
             if (sender instanceof Player) {
                 Player player = (Player) sender;
                 if (!devbuild) {
-                    player.sendMessage(ChatColor.YELLOW + "[InteractionVisualizer] A new version is available on SpigotMC: " + version);
-                    Component url = LegacyComponentSerializer.legacySection().deserialize(ChatColor.GOLD + "https://www.spigotmc.org/resources/" + spigotPluginId);
+                    player.sendMessage(Component.text(
+                            "[InteractionVisualizer] A new version is available on SpigotMC: " + version,
+                            NamedTextColor.YELLOW));
+                    Component url = Component.text(
+                            "https://www.spigotmc.org/resources/" + spigotPluginId, NamedTextColor.GOLD);
                     url = url.hoverEvent(HoverEvent.showText(Component.text("Click me!").color(NamedTextColor.AQUA)));
                     url = url.clickEvent(ClickEvent.openUrl("https://www.spigotmc.org/resources/" + spigotPluginId));
                     InteractionVisualizer.sendMessage(player, url);
                 } else {
-                    sender.sendMessage(ChatColor.GREEN + "[InteractionVisualizer] You are running the latest release!");
-                    Component url = LegacyComponentSerializer.legacySection().deserialize(ChatColor.YELLOW + "[InteractionVisualizer] However, a new Development Build is available if you want to try that!");
+                    sender.sendMessage(Component.text(
+                            "[InteractionVisualizer] You are running the latest release!", NamedTextColor.GREEN));
+                    Component url = Component.text(
+                            "[InteractionVisualizer] However, a new Development Build is available if you want to try that!",
+                            NamedTextColor.YELLOW);
                     url = url.hoverEvent(HoverEvent.showText(Component.text("Click me!").color(NamedTextColor.AQUA)));
                     url = url.clickEvent(ClickEvent.openUrl("https://ci.loohpjames.com/job/" + PLUGIN_NAME));
                     InteractionVisualizer.sendMessage(player, url);
                 }
             } else {
                 if (!devbuild) {
-                    sender.sendMessage(ChatColor.YELLOW + "[InteractionVisualizer] A new version is available on SpigotMC: " + version);
-                    sender.sendMessage(ChatColor.GOLD + "Download: https://www.spigotmc.org/resources/" + spigotPluginId);
+                    sender.sendMessage(Component.text(
+                            "[InteractionVisualizer] A new version is available on SpigotMC: " + version,
+                            NamedTextColor.YELLOW));
+                    sender.sendMessage(Component.text(
+                            "Download: https://www.spigotmc.org/resources/" + spigotPluginId, NamedTextColor.GOLD));
                 } else {
-                    sender.sendMessage(ChatColor.GREEN + "[InteractionVisualizer] You are running the latest release!");
-                    sender.sendMessage(ChatColor.YELLOW + "[InteractionVisualizer] However, a new Development Build is available if you want to try that!");
+                    sender.sendMessage(Component.text(
+                            "[InteractionVisualizer] You are running the latest release!", NamedTextColor.GREEN));
+                    sender.sendMessage(Component.text(
+                            "[InteractionVisualizer] However, a new Development Build is available if you want to try that!",
+                            NamedTextColor.YELLOW));
                 }
             }
         }
     }
 
-    public static UpdaterResponse checkUpdate() {
+    public static synchronized UpdaterResponse checkUpdate() {
+        long now = System.nanoTime();
+        if (cachedResponse != null && now - cachedAt < CACHE_NANOS) {
+            return cachedResponse;
+        }
         try {
-            String localPluginVersion = InteractionVisualizer.plugin.getDescription().getVersion();
-            JSONObject response = (JSONObject) HTTPRequestUtils.getJSONResponse("https://api.loohpjames.com/spigot/data").get(PLUGIN_NAME);
-            String spigotPluginVersion = (String) ((JSONObject) response.get("latestversion")).get("release");
-            String devBuildVersion = (String) ((JSONObject) response.get("latestversion")).get("devbuild");
-            int spigotPluginId = (int) (long) ((JSONObject) response.get("spigotmc")).get("pluginid");
+            String localPluginVersion = InteractionVisualizer.plugin.getPluginMeta().getVersion();
+            JsonObject root = HTTPRequestUtils.getJSONResponse("https://api.loohpjames.com/spigot/data");
+            if (root == null) {
+                throw new IllegalStateException("Update service returned no JSON");
+            }
+            JsonObject response = root.getAsJsonObject(PLUGIN_NAME);
+            JsonObject latestVersion = response.getAsJsonObject("latestversion");
+            String spigotPluginVersion = latestVersion.get("release").getAsString();
+            String devBuildVersion = latestVersion.get("devbuild").getAsString();
+            int spigotPluginId = response.getAsJsonObject("spigotmc").get("pluginid").getAsInt();
             int posOfThirdDot = localPluginVersion.indexOf(".", localPluginVersion.indexOf(".", localPluginVersion.indexOf(".") + 1) + 1);
             Version currentDevBuild = new Version(localPluginVersion);
             Version currentRelease = new Version(localPluginVersion.substring(0, posOfThirdDot >= 0 ? posOfThirdDot : localPluginVersion.length()));
             Version spigotmc = new Version(spigotPluginVersion);
             Version devBuild = new Version(devBuildVersion);
             if (currentRelease.compareTo(spigotmc) < 0) {
-                return new UpdaterResponse(spigotPluginVersion, spigotPluginId, currentDevBuild.compareTo(devBuild) >= 0);
+                return cache(new UpdaterResponse(spigotPluginVersion, spigotPluginId, currentDevBuild.compareTo(devBuild) >= 0));
             } else {
-                return new UpdaterResponse("latest", spigotPluginId, currentDevBuild.compareTo(devBuild) >= 0);
+                return cache(new UpdaterResponse("latest", spigotPluginId, currentDevBuild.compareTo(devBuild) >= 0));
             }
         } catch (Exception e) {
-            Bukkit.getConsoleSender().sendMessage(ChatColor.RED + "[InteractionVisualizer] Failed to check against \"api.loohpjames.com\" for the latest version.. It could be an internet issue or \"api.loohpjames.com\" is down. If you want disable the update checker, you can disable in config.yml, but we still highly-recommend you to keep your plugin up to date!");
+            InteractionVisualizer.plugin.getLogger().warning(
+                    "Failed to check api.loohpjames.com for updates; disable Options.Updater to skip this check.");
         }
-        return new UpdaterResponse("error", -1, false);
+        return cache(new UpdaterResponse("error", -1, false));
+    }
+
+    private static UpdaterResponse cache(UpdaterResponse response) {
+        cachedResponse = response;
+        cachedAt = System.nanoTime();
+        return response;
     }
 
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
+        Player player = event.getPlayer();
+        if (!InteractionVisualizer.updaterEnabled || !player.hasPermission("interactionvisualizer.update")) {
+            return;
+        }
         InteractionVisualizer.asyncExecutorManager.runTaskLaterAsynchronously(() -> {
-            if (InteractionVisualizer.updaterEnabled) {
-                Player player = event.getPlayer();
-                if (player.hasPermission("interactionvisualizer.update")) {
-                    UpdaterResponse version = Updater.checkUpdate();
-                    if (!version.getResult().equals("latest")) {
+            UpdaterResponse version = Updater.checkUpdate();
+            if (!version.getResult().equals("latest")) {
+                Scheduler.runTask(InteractionVisualizer.plugin, () -> {
+                    if (player.isOnline()) {
                         Updater.sendUpdateMessage(player, version.getResult(), version.getSpigotPluginId());
                     }
-                }
+                });
             }
         }, 100);
     }

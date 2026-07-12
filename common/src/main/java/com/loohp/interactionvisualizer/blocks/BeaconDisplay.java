@@ -26,28 +26,25 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.DynamicVisualizerEntity.PathType;
-import com.loohp.interactionvisualizer.entityholders.SurroundingPlaneArmorStand;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.entityholders.BillboardDisplayEntity;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
-import com.loohp.interactionvisualizer.utils.ColorUtils;
 import com.loohp.interactionvisualizer.utils.ComponentFont;
 import com.loohp.interactionvisualizer.utils.RomanNumberUtils;
 import com.loohp.interactionvisualizer.utils.TranslationUtils;
-import com.loohp.platformscheduler.ScheduledTask;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TranslatableComponent;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
-import net.md_5.bungee.api.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
-import org.bukkit.block.Beacon;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.event.EventHandler;
@@ -55,8 +52,6 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.util.EulerAngle;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.text.DecimalFormat;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -69,16 +64,6 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
 
     public static final EntryKey KEY = new EntryKey("beacon");
     public static final DecimalFormat DECIMAL_FORMAT = new DecimalFormat("0");
-
-    private static Method paperGetEffectRangeMethod;
-
-    static {
-        try {
-            paperGetEffectRangeMethod = Beacon.class.getMethod("getEffectRange");
-        } catch (NoSuchMethodException e) {
-            paperGetEffectRangeMethod = null;
-        }
-    }
 
     public Map<Block, Map<String, Object>> beaconMap = new ConcurrentHashMap<>();
     private int checkingPeriod = 20;
@@ -103,7 +88,7 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
 
     @Override
     public ScheduledTask gc() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = beaconMap.entrySet().iterator();
             int count = 0;
             int maxper = (int) Math.ceil((double) beaconMap.size() / (double) gcPeriod);
@@ -119,34 +104,34 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
                     if (!isActive(block.getLocation())) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("2") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("2");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("2") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("2");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("3") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("3");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("3") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("3");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         beaconMap.remove(block);
                         return;
                     }
                     if (!block.getType().equals(Material.BEACON)) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("2") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("2");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("2") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("2");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("3") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("3");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("3") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("3");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         beaconMap.remove(block);
                         return;
@@ -158,7 +143,7 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
 
     @Override
     public ScheduledTask run() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyBeacon();
             for (Block block : list) {
                 Scheduler.runTask(InteractionVisualizer.plugin, () -> {
@@ -166,7 +151,7 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
                         if (block.getType().equals(Material.BEACON)) {
                             Map<String, Object> map = new HashMap<>();
                             map.put("Item", "N/A");
-                            map.putAll(spawnArmorStands(block));
+                            map.putAll(spawnDisplayEntitys(block));
                             beaconMap.put(block, map);
                         }
                     }
@@ -194,45 +179,45 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
                         return;
                     }
                     org.bukkit.block.Beacon beacon = (org.bukkit.block.Beacon) block.getState();
-                    InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
+                    {
                         String arrow = "\u27f9";
                         String up = "\u25b2";
-                        ChatColor color = getBeaconColor(block);
-                        ArmorStand line1 = (ArmorStand) entry.getValue().get("1");
-                        ArmorStand line2 = (ArmorStand) entry.getValue().get("2");
-                        ArmorStand line3 = (ArmorStand) entry.getValue().get("3");
+                        NamedTextColor color = getBeaconColor(block);
+                        DisplayEntity line1 = (DisplayEntity) entry.getValue().get("1");
+                        DisplayEntity line2 = (DisplayEntity) entry.getValue().get("2");
+                        DisplayEntity line3 = (DisplayEntity) entry.getValue().get("3");
 
-                        String one = color + up + beacon.getTier() + " " + arrow + " " + DECIMAL_FORMAT.format(getRange(beacon)) + "m";
+                        Component one = Component.text(up + beacon.getTier() + " " + arrow + " " + DECIMAL_FORMAT.format(beacon.getEffectRange()) + "m", color);
                         if (beacon.getTier() == 0) {
                             if (!PlainTextComponentSerializer.plainText().serialize(line1.getCustomName()).equals("") || line1.isCustomNameVisible()) {
                                 line1.setCustomName("");
                                 line1.setCustomNameVisible(false);
-                                PacketManager.updateArmorStandOnlyMeta(line1);
+                                DisplayManager.updateDisplay(line1);
                             }
-                            if (!PlainTextComponentSerializer.plainText().serialize(line2.getCustomName()).equals(one) || !line2.isCustomNameVisible()) {
+                            if (!line2.getCustomName().equals(one) || !line2.isCustomNameVisible()) {
                                 line2.setCustomName(one);
                                 line2.setCustomNameVisible(true);
-                                PacketManager.updateArmorStandOnlyMeta(line2);
+                                DisplayManager.updateDisplay(line2);
                             }
                             if (!PlainTextComponentSerializer.plainText().serialize(line3.getCustomName()).equals("") || line3.isCustomNameVisible()) {
                                 line3.setCustomName("");
                                 line3.setCustomNameVisible(false);
-                                PacketManager.updateArmorStandOnlyMeta(line3);
+                                DisplayManager.updateDisplay(line3);
                             }
                         } else {
                             Component primaryEffectText = null;
                             Component secondaryEffectText = null;
                             if (beacon.getPrimaryEffect() != null) {
                                 TranslatableComponent effectTrans = Component.translatable(TranslationUtils.getEffect(beacon.getPrimaryEffect().getType()));
-                                effectTrans = effectTrans.color(ColorUtils.toTextColor(color));
-                                Component levelText = ComponentFont.parseFont(LegacyComponentSerializer.legacySection().deserialize(" " + color + RomanNumberUtils.toRoman(beacon.getPrimaryEffect().getAmplifier() + 1)));
+                                effectTrans = effectTrans.color(color);
+                                Component levelText = ComponentFont.parseFont(Component.text(" " + RomanNumberUtils.toRoman(beacon.getPrimaryEffect().getAmplifier() + 1), color));
                                 effectTrans = effectTrans.append(levelText);
                                 primaryEffectText = effectTrans;
                             }
                             if (beacon.getSecondaryEffect() != null) {
                                 TranslatableComponent effectTrans = Component.translatable(TranslationUtils.getEffect(beacon.getSecondaryEffect().getType()));
-                                effectTrans = effectTrans.color(ColorUtils.toTextColor(color));
-                                Component levelText = ComponentFont.parseFont(LegacyComponentSerializer.legacySection().deserialize(" " + color + RomanNumberUtils.toRoman(beacon.getSecondaryEffect().getAmplifier() + 1)));
+                                effectTrans = effectTrans.color(color);
+                                Component levelText = ComponentFont.parseFont(Component.text(" " + RomanNumberUtils.toRoman(beacon.getSecondaryEffect().getAmplifier() + 1), color));
                                 effectTrans = effectTrans.append(levelText);
                                 secondaryEffectText = effectTrans;
                             }
@@ -240,53 +225,53 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
                                 if (!PlainTextComponentSerializer.plainText().serialize(line1.getCustomName()).equals("") || line1.isCustomNameVisible()) {
                                     line1.setCustomName("");
                                     line1.setCustomNameVisible(false);
-                                    PacketManager.updateArmorStandOnlyMeta(line1);
+                                    DisplayManager.updateDisplay(line1);
                                 }
-                                if (!PlainTextComponentSerializer.plainText().serialize(line2.getCustomName()).equals(one) || !line2.isCustomNameVisible()) {
+                                if (!line2.getCustomName().equals(one) || !line2.isCustomNameVisible()) {
                                     line2.setCustomName(one);
                                     line2.setCustomNameVisible(true);
-                                    PacketManager.updateArmorStandOnlyMeta(line2);
+                                    DisplayManager.updateDisplay(line2);
                                 }
                                 if (primaryEffectText == null) {
                                     if (!PlainTextComponentSerializer.plainText().serialize(line3.getCustomName()).equals("") || line3.isCustomNameVisible()) {
                                         line3.setCustomName("");
                                         line3.setCustomNameVisible(false);
-                                        PacketManager.updateArmorStandOnlyMeta(line3);
+                                        DisplayManager.updateDisplay(line3);
                                     }
                                 } else {
                                     if (!line3.getCustomName().equals(primaryEffectText) || !line3.isCustomNameVisible()) {
                                         line3.setCustomName(primaryEffectText);
                                         line3.setCustomNameVisible(true);
-                                        PacketManager.updateArmorStandOnlyMeta(line3);
+                                        DisplayManager.updateDisplay(line3);
                                     }
                                 }
                             } else {
-                                if (!PlainTextComponentSerializer.plainText().serialize(line1.getCustomName()).equals(one) || !line1.isCustomNameVisible()) {
+                                if (!line1.getCustomName().equals(one) || !line1.isCustomNameVisible()) {
                                     line1.setCustomName(one);
                                     line1.setCustomNameVisible(true);
-                                    PacketManager.updateArmorStandOnlyMeta(line1);
+                                    DisplayManager.updateDisplay(line1);
                                 }
                                 if (primaryEffectText == null) {
                                     if (!PlainTextComponentSerializer.plainText().serialize(line2.getCustomName()).equals("") || line2.isCustomNameVisible()) {
                                         line2.setCustomName("");
                                         line2.setCustomNameVisible(false);
-                                        PacketManager.updateArmorStandOnlyMeta(line2);
+                                        DisplayManager.updateDisplay(line2);
                                     }
                                 } else {
                                     if (!line2.getCustomName().equals(primaryEffectText) || !line2.isCustomNameVisible()) {
                                         line2.setCustomName(primaryEffectText);
                                         line2.setCustomNameVisible(true);
-                                        PacketManager.updateArmorStandOnlyMeta(line2);
+                                        DisplayManager.updateDisplay(line2);
                                     }
                                 }
                                 if (!line3.getCustomName().equals(secondaryEffectText) || !line3.isCustomNameVisible()) {
                                     line3.setCustomName(secondaryEffectText);
                                     line3.setCustomNameVisible(true);
-                                    PacketManager.updateArmorStandOnlyMeta(line3);
+                                    DisplayManager.updateDisplay(line3);
                                 }
                             }
                         }
-                    });
+                    }
                 }, delay, block.getLocation());
             }
         }, 0, checkingPeriod);
@@ -300,17 +285,17 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
         }
 
         Map<String, Object> map = beaconMap.get(block);
-        if (map.get("1") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("1");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("1") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("1");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        if (map.get("2") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("2");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("2") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("2");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        if (map.get("3") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("3");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("3") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("3");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
         beaconMap.remove(block);
     }
@@ -323,29 +308,29 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
         return PlayerLocationManager.hasPlayerNearby(loc);
     }
 
-    public Map<String, ArmorStand> spawnArmorStands(Block block) {
-        Map<String, ArmorStand> map = new HashMap<>();
+    public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) {
+        Map<String, DisplayEntity> map = new HashMap<>();
         Location origin = block.getLocation().add(0.5, 0.25, 0.5);
 
-        SurroundingPlaneArmorStand line1 = new SurroundingPlaneArmorStand(origin.clone().add(0.0, 0.25, 0.0), 0.7, pathType);
+        BillboardDisplayEntity line1 = new BillboardDisplayEntity(origin.clone().add(0.0, 0.25, 0.0), 0.7, pathType);
         setStand(line1);
-        SurroundingPlaneArmorStand line2 = new SurroundingPlaneArmorStand(origin.clone(), 0.7, pathType);
+        BillboardDisplayEntity line2 = new BillboardDisplayEntity(origin.clone(), 0.7, pathType);
         setStand(line2);
-        SurroundingPlaneArmorStand line3 = new SurroundingPlaneArmorStand(origin.clone().add(0.0, -0.25, 0.0), 0.7, pathType);
+        BillboardDisplayEntity line3 = new BillboardDisplayEntity(origin.clone().add(0.0, -0.25, 0.0), 0.7, pathType);
         setStand(line3);
 
         map.put("1", line1);
         map.put("2", line2);
         map.put("3", line3);
 
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line1);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line2);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line3);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line1);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line2);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), line3);
 
         return map;
     }
 
-    public void setStand(ArmorStand stand) {
+    public void setStand(DisplayEntity stand) {
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);
@@ -357,51 +342,51 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
         stand.setRightArmPose(EulerAngle.ZERO);
     }
 
-    public ChatColor getBeaconColor(Block block) {
+    public NamedTextColor getBeaconColor(Block block) {
         Block glass = block.getRelative(BlockFace.UP);
         switch (glass.getType()) {
             case ORANGE_STAINED_GLASS:
             case ORANGE_STAINED_GLASS_PANE:
-                return ChatColor.GOLD;
+                return NamedTextColor.GOLD;
             case MAGENTA_STAINED_GLASS:
             case MAGENTA_STAINED_GLASS_PANE:
-                return ChatColor.LIGHT_PURPLE;
+                return NamedTextColor.LIGHT_PURPLE;
             case LIGHT_BLUE_STAINED_GLASS:
             case LIGHT_BLUE_STAINED_GLASS_PANE:
-                return ChatColor.AQUA;
+                return NamedTextColor.AQUA;
             case YELLOW_STAINED_GLASS:
             case YELLOW_STAINED_GLASS_PANE:
-                return ChatColor.YELLOW;
+                return NamedTextColor.YELLOW;
             case LIME_STAINED_GLASS:
             case LIME_STAINED_GLASS_PANE:
-                return ChatColor.GREEN;
+                return NamedTextColor.GREEN;
             case PINK_STAINED_GLASS:
             case PINK_STAINED_GLASS_PANE:
-                return ChatColor.LIGHT_PURPLE;
+                return NamedTextColor.LIGHT_PURPLE;
             case GRAY_STAINED_GLASS:
             case GRAY_STAINED_GLASS_PANE:
-                return ChatColor.DARK_GRAY;
+                return NamedTextColor.DARK_GRAY;
             case LIGHT_GRAY_STAINED_GLASS:
             case LIGHT_GRAY_STAINED_GLASS_PANE:
-                return ChatColor.GRAY;
+                return NamedTextColor.GRAY;
             case CYAN_STAINED_GLASS:
             case CYAN_STAINED_GLASS_PANE:
-                return ChatColor.DARK_AQUA;
+                return NamedTextColor.DARK_AQUA;
             case PURPLE_STAINED_GLASS:
             case PURPLE_STAINED_GLASS_PANE:
-                return ChatColor.DARK_PURPLE;
+                return NamedTextColor.DARK_PURPLE;
             case BLUE_STAINED_GLASS:
             case BLUE_STAINED_GLASS_PANE:
-                return ChatColor.BLUE;
+                return NamedTextColor.BLUE;
             case BROWN_STAINED_GLASS:
             case BROWN_STAINED_GLASS_PANE:
-                return ChatColor.GOLD;
+                return NamedTextColor.GOLD;
             case GREEN_STAINED_GLASS:
             case GREEN_STAINED_GLASS_PANE:
-                return ChatColor.DARK_GREEN;
+                return NamedTextColor.DARK_GREEN;
             case RED_STAINED_GLASS:
             case RED_STAINED_GLASS_PANE:
-                return ChatColor.RED;
+                return NamedTextColor.RED;
             case BLACK_STAINED_GLASS:
             case BLACK_STAINED_GLASS_PANE:
             case GLASS:
@@ -409,19 +394,8 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
             case WHITE_STAINED_GLASS:
             case WHITE_STAINED_GLASS_PANE:
             default:
-                return ChatColor.WHITE;
+                return NamedTextColor.WHITE;
         }
-    }
-
-    public double getRange(Beacon beacon) {
-        if (paperGetEffectRangeMethod != null) {
-            try {
-                return (double) paperGetEffectRangeMethod.invoke(beacon);
-            } catch (IllegalAccessException | InvocationTargetException e) {
-                e.printStackTrace();
-            }
-        }
-        return beacon.getTier() * 10 + 10;
     }
 
 }

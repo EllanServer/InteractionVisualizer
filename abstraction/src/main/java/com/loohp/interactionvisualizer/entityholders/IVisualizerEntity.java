@@ -23,7 +23,6 @@ package com.loohp.interactionvisualizer.entityholders;
 import org.bukkit.Location;
 import org.bukkit.World;
 
-import java.util.List;
 import java.util.UUID;
 
 public interface IVisualizerEntity {
@@ -55,7 +54,5 @@ public interface IVisualizerEntity {
     void setLocked(boolean bool);
 
     double getHeight();
-
-    List<?> getDataWatchers();
 
 }

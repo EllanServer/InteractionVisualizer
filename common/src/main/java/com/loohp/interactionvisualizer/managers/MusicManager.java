@@ -22,7 +22,7 @@ package com.loohp.interactionvisualizer.managers;
 
 import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.config.Config;
-import com.loohp.yamlconfiguration.YamlConfiguration;
+import com.loohp.interactionvisualizer.config.SparrowConfiguration;
 import org.bukkit.Bukkit;
 
 import java.io.File;
@@ -45,7 +45,7 @@ public class MusicManager {
         }
     }
 
-    public static YamlConfiguration getMusicConfig() {
+    public static SparrowConfiguration getMusicConfig() {
         return Config.getConfig(MUSIC_CONFIG_ID).getConfiguration();
     }
 

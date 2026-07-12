@@ -25,15 +25,15 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
-import com.loohp.platformscheduler.ScheduledTask;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -90,7 +90,7 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
 
     @Override
     public ScheduledTask gc() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = soulcampfireMap.entrySet().iterator();
             int count = 0;
             int maxper = (int) Math.ceil((double) soulcampfireMap.size() / (double) gcPeriod);
@@ -106,42 +106,42 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
                     if (!isActive(block.getLocation())) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("2") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("2");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("2") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("2");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("3") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("3");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("3") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("3");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("4") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("4");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("4") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("4");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         soulcampfireMap.remove(block);
                         return;
                     }
                     if (!block.getType().equals(Material.SOUL_CAMPFIRE)) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("2") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("2");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("2") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("2");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("3") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("3");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("3") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("3");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
-                        if (map.get("4") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("4");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("4") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("4");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         soulcampfireMap.remove(block);
                         return;
@@ -153,14 +153,14 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
 
     @Override
     public ScheduledTask run() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbySoulCampfire();
             for (Block block : list) {
                 Scheduler.runTask(InteractionVisualizer.plugin, () -> {
                     if (soulcampfireMap.get(block) == null && isActive(block.getLocation())) {
                         if (block.getType().equals(Material.SOUL_CAMPFIRE)) {
                             HashMap<String, Object> map = new HashMap<>();
-                            map.putAll(spawnArmorStands(block));
+                            map.putAll(spawnDisplayEntitys(block));
                             soulcampfireMap.put(block, map);
                         }
                     }
@@ -190,7 +190,7 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                     org.bukkit.block.Campfire soulcampfire = (org.bukkit.block.Campfire) block.getState();
                     boolean isLit = ((Campfire) block.getBlockData()).isLit();
 
-                    InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
+                    {
                         ItemStack itemstack1 = soulcampfire.getItem(0);
                         if (itemstack1 != null) {
                             if (itemstack1.getType().equals(Material.AIR)) {
@@ -216,10 +216,10 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                             }
                         }
 
-                        ArmorStand stand1 = (ArmorStand) entry.getValue().get("1");
-                        ArmorStand stand2 = (ArmorStand) entry.getValue().get("2");
-                        ArmorStand stand3 = (ArmorStand) entry.getValue().get("3");
-                        ArmorStand stand4 = (ArmorStand) entry.getValue().get("4");
+                        DisplayEntity stand1 = (DisplayEntity) entry.getValue().get("1");
+                        DisplayEntity stand2 = (DisplayEntity) entry.getValue().get("2");
+                        DisplayEntity stand3 = (DisplayEntity) entry.getValue().get("3");
+                        DisplayEntity stand4 = (DisplayEntity) entry.getValue().get("4");
 
                         if (isLit && itemstack1 != null) {
                             int time = soulcampfire.getCookTime(0);
@@ -245,13 +245,13 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                             if (!PlainTextComponentSerializer.plainText().serialize(stand1.getCustomName()).equals(symbol) || !stand1.isCustomNameVisible()) {
                                 stand1.setCustomNameVisible(true);
                                 stand1.setCustomName(symbol);
-                                PacketManager.updateArmorStandOnlyMeta(stand1);
+                                DisplayManager.updateDisplay(stand1);
                             }
                         } else {
                             if (!PlainTextComponentSerializer.plainText().serialize(stand1.getCustomName()).equals("") || stand1.isCustomNameVisible()) {
                                 stand1.setCustomNameVisible(false);
                                 stand1.setCustomName("");
-                                PacketManager.updateArmorStandOnlyMeta(stand1);
+                                DisplayManager.updateDisplay(stand1);
                             }
                         }
                         if (isLit && itemstack2 != null) {
@@ -278,13 +278,13 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                             if (!PlainTextComponentSerializer.plainText().serialize(stand2.getCustomName()).equals(symbol) || !stand2.isCustomNameVisible()) {
                                 stand2.setCustomNameVisible(true);
                                 stand2.setCustomName(symbol);
-                                PacketManager.updateArmorStandOnlyMeta(stand2);
+                                DisplayManager.updateDisplay(stand2);
                             }
                         } else {
                             if (!PlainTextComponentSerializer.plainText().serialize(stand2.getCustomName()).equals("") || stand2.isCustomNameVisible()) {
                                 stand2.setCustomNameVisible(false);
                                 stand2.setCustomName("");
-                                PacketManager.updateArmorStandOnlyMeta(stand2);
+                                DisplayManager.updateDisplay(stand2);
                             }
                         }
                         if (isLit && itemstack3 != null) {
@@ -311,13 +311,13 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                             if (!PlainTextComponentSerializer.plainText().serialize(stand3.getCustomName()).equals(symbol) || !stand3.isCustomNameVisible()) {
                                 stand3.setCustomNameVisible(true);
                                 stand3.setCustomName(symbol);
-                                PacketManager.updateArmorStandOnlyMeta(stand3);
+                                DisplayManager.updateDisplay(stand3);
                             }
                         } else {
                             if (!PlainTextComponentSerializer.plainText().serialize(stand3.getCustomName()).equals("") || stand3.isCustomNameVisible()) {
                                 stand3.setCustomNameVisible(false);
                                 stand3.setCustomName("");
-                                PacketManager.updateArmorStandOnlyMeta(stand3);
+                                DisplayManager.updateDisplay(stand3);
                             }
                         }
                         if (isLit && itemstack4 != null) {
@@ -344,16 +344,16 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                             if (!PlainTextComponentSerializer.plainText().serialize(stand4.getCustomName()).equals(symbol) || !stand4.isCustomNameVisible()) {
                                 stand4.setCustomNameVisible(true);
                                 stand4.setCustomName(symbol);
-                                PacketManager.updateArmorStandOnlyMeta(stand4);
+                                DisplayManager.updateDisplay(stand4);
                             }
                         } else {
                             if (!PlainTextComponentSerializer.plainText().serialize(stand4.getCustomName()).equals("") || stand4.isCustomNameVisible()) {
                                 stand4.setCustomNameVisible(false);
                                 stand4.setCustomName("");
-                                PacketManager.updateArmorStandOnlyMeta(stand4);
+                                DisplayManager.updateDisplay(stand4);
                             }
                         }
-                    });
+                    }
                 }, delay, block.getLocation());
             }
         }, 0, checkingPeriod);
@@ -367,21 +367,21 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
         }
 
         Map<String, Object> map = soulcampfireMap.get(block);
-        if (map.get("1") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("1");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("1") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("1");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        if (map.get("2") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("2");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("2") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("2");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        if (map.get("3") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("3");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("3") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("3");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        if (map.get("4") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("4");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("4") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("4");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
         soulcampfireMap.remove(block);
     }
@@ -394,8 +394,8 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
         return PlayerLocationManager.hasPlayerNearby(loc);
     }
 
-    public Map<String, ArmorStand> spawnArmorStands(Block block) {
-        Map<String, ArmorStand> map = new HashMap<>();
+    public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) {
+        Map<String, DisplayEntity> map = new HashMap<>();
 
         Location origin = block.getLocation();
         BlockData blockData = block.getState().getBlockData();
@@ -404,13 +404,13 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
         Vector direction = rotateVectorAroundY(target.toVector().subtract(origin.toVector()).multiply(0.44194173), 135);
 
         Location loc = origin.clone().add(0.5, 0.3, 0.5);
-        ArmorStand slot1 = new ArmorStand(loc.clone().add(direction));
+        DisplayEntity slot1 = new DisplayEntity(loc.clone().add(direction));
         setStand(slot1);
-        ArmorStand slot2 = new ArmorStand(loc.clone().add(rotateVectorAroundY(direction.clone(), 90)));
+        DisplayEntity slot2 = new DisplayEntity(loc.clone().add(rotateVectorAroundY(direction.clone(), 90)));
         setStand(slot2);
-        ArmorStand slot3 = new ArmorStand(loc.clone().add(rotateVectorAroundY(direction.clone(), 180)));
+        DisplayEntity slot3 = new DisplayEntity(loc.clone().add(rotateVectorAroundY(direction.clone(), 180)));
         setStand(slot3);
-        ArmorStand slot4 = new ArmorStand(loc.clone().add(rotateVectorAroundY(direction.clone(), -90)));
+        DisplayEntity slot4 = new DisplayEntity(loc.clone().add(rotateVectorAroundY(direction.clone(), -90)));
         setStand(slot4);
 
         map.put("1", slot1);
@@ -418,15 +418,15 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
         map.put("3", slot3);
         map.put("4", slot4);
 
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot1);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot2);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot3);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot4);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot1);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot2);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot3);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot4);
 
         return map;
     }
 
-    public void setStand(ArmorStand stand) {
+    public void setStand(DisplayEntity stand) {
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);

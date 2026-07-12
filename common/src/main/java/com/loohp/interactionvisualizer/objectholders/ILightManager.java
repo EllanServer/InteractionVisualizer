@@ -20,7 +20,7 @@
 
 package com.loohp.interactionvisualizer.objectholders;
 
-import com.loohp.platformscheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import org.bukkit.Location;
 
 public interface ILightManager {

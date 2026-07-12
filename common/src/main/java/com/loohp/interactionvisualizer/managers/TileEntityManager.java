@@ -23,16 +23,15 @@ package com.loohp.interactionvisualizer.managers;
 import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
-import com.loohp.interactionvisualizer.nms.NMS;
 import com.loohp.interactionvisualizer.objectholders.ChunkPosition;
-import com.loohp.interactionvisualizer.objectholders.NMSTileEntitySet;
 import com.loohp.interactionvisualizer.objectholders.TileEntity;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockState;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -72,14 +71,14 @@ public class TileEntityManager implements Listener {
         }
         TileEntityManager instance = new TileEntityManager();
         Bukkit.getPluginManager().registerEvents(instance, plugin);
-        Scheduler.runTaskTimerAsynchronously(plugin, () -> {
+        Scheduler.runTaskTimer(plugin, () -> {
             for (TileEntityType type : tileEntityTypes) {
                 Set<Block> blocks = active.get(type);
                 blocks.removeIf(block -> !PlayerLocationManager.hasPlayerNearby(block.getLocation()));
             }
         }, 0, InteractionVisualizerAPI.getGCPeriod());
         for (Player player : Bukkit.getOnlinePlayers()) {
-            instance.onJoin(new PlayerJoinEvent(player, ""));
+            addTileEntities(getAllChunks(player.getLocation()));
         }
     }
 
@@ -116,22 +115,24 @@ public class TileEntityManager implements Listener {
     }
 
     private synchronized static void addTileEntities(ChunkPosition chunk) {
-        NMSTileEntitySet<?, ?> list = NMS.getInstance().getTileEntities(chunk, false);
+        if (!chunk.isLoaded()) {
+            return;
+        }
+
+        Collection<BlockState> list = chunk.getChunk().getTileEntities(block -> TileEntity.isTileEntityType(block.getType()), false);
         Set<Block> blocks = byChunk.get(chunk);
         if (blocks == null) {
             blocks = new LinkedHashSet<>();
             byChunk.put(chunk, blocks);
         }
         Map<Block, TileEntityType> newBlocks = new LinkedHashMap<>();
-        if (list != null) {
-            for (TileEntity tile : list) {
-                if (tile != null) {
-                    Block block = tile.getBlock();
-                    TileEntityType type = tile.getType();
-                    active.get(type).add(block);
-                    newBlocks.put(block, type);
-                    blocks.add(block);
-                }
+        for (BlockState state : list) {
+            Block block = state.getBlock();
+            TileEntityType type = TileEntity.getTileEntityType(state.getType());
+            if (type != null) {
+                active.get(type).add(block);
+                newBlocks.put(block, type);
+                blocks.add(block);
             }
         }
         Iterator<Block> itr = blocks.iterator();

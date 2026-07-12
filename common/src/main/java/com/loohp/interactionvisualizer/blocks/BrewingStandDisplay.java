@@ -26,16 +26,16 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
-import com.loohp.platformscheduler.ScheduledTask;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
@@ -94,7 +94,7 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
 
     @Override
     public ScheduledTask gc() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = brewstand.entrySet().iterator();
             int count = 0;
             int maxper = (int) Math.ceil((double) brewstand.size() / (double) gcPeriod);
@@ -112,11 +112,11 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
                         Map<String, Object> map = entry.getValue();
                         if (map.get("Item") instanceof Item) {
                             Item item = (Item) map.get("Item");
-                            PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                         }
-                        if (map.get("Stand") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("Stand");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("Stand") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("Stand");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         brewstand.remove(block);
                         return;
@@ -125,11 +125,11 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
                         Map<String, Object> map = entry.getValue();
                         if (map.get("Item") instanceof Item) {
                             Item item = (Item) map.get("Item");
-                            PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                         }
-                        if (map.get("Stand") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("Stand");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("Stand") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("Stand");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         brewstand.remove(block);
                         return;
@@ -141,7 +141,7 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
 
     @Override
     public ScheduledTask run() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyBrewingStand();
             for (Block block : list) {
                 Scheduler.runTask(InteractionVisualizer.plugin, () -> {
@@ -149,7 +149,7 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
                         if (block.getType().equals(Material.BREWING_STAND)) {
                             Map<String, Object> map = new HashMap<>();
                             map.put("Item", "N/A");
-                            map.putAll(spawnArmorStands(block));
+                            map.putAll(spawnDisplayEntitys(block));
                             brewstand.put(block, map);
                         }
                     }
@@ -178,7 +178,7 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
                     }
                     org.bukkit.block.BrewingStand brewingstand = (org.bukkit.block.BrewingStand) block.getState();
 
-                    InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
+                    {
                         Inventory inv = brewingstand.getInventory();
                         ItemStack itemstack = inv.getItem(3);
                         if (itemstack != null) {
@@ -196,8 +196,8 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
                                 item.setPickupDelay(32767);
                                 item.setGravity(false);
                                 entry.getValue().put("Item", item);
-                                PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
-                                PacketManager.updateItem(item);
+                                DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+                                DisplayManager.updateItem(item);
                             } else {
                                 entry.getValue().put("Item", "N/A");
                             }
@@ -206,18 +206,18 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
                             if (itemstack != null) {
                                 if (!item.getItemStack().equals(itemstack)) {
                                     item.setItemStack(itemstack);
-                                    PacketManager.updateItem(item);
+                                    DisplayManager.updateItem(item);
                                 }
                                 item.setPickupDelay(32767);
                                 item.setGravity(false);
                             } else {
                                 entry.getValue().put("Item", "N/A");
-                                PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                             }
                         }
 
                         if (brewingstand.getFuelLevel() == 0) {
-                            ArmorStand stand = (ArmorStand) entry.getValue().get("Stand");
+                            DisplayEntity stand = (DisplayEntity) entry.getValue().get("Stand");
                             if (hasPotion(brewingstand)) {
                                 stand.setCustomNameVisible(true);
                                 String name = noFuelColor;
@@ -225,14 +225,14 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
                                     name += progressBarCharacter;
                                 }
                                 stand.setCustomName(name);
-                                PacketManager.updateArmorStand(stand);
+                                DisplayManager.updateDisplay(stand);
                             } else {
                                 stand.setCustomNameVisible(false);
                                 stand.setCustomName("");
-                                PacketManager.updateArmorStand(stand);
+                                DisplayManager.updateDisplay(stand);
                             }
                         } else {
-                            ArmorStand stand = (ArmorStand) entry.getValue().get("Stand");
+                            DisplayEntity stand = (DisplayEntity) entry.getValue().get("Stand");
                             if (hasPotion(brewingstand)) {
                                 int time = brewingstand.getBrewingTime();
                                 String symbol = "";
@@ -255,17 +255,17 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
                                 if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals(symbol) || !stand.isCustomNameVisible()) {
                                     stand.setCustomNameVisible(true);
                                     stand.setCustomName(symbol);
-                                    PacketManager.updateArmorStandOnlyMeta(stand);
+                                    DisplayManager.updateDisplay(stand);
                                 }
                             } else {
                                 if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals("") || stand.isCustomNameVisible()) {
                                     stand.setCustomNameVisible(false);
                                     stand.setCustomName("");
-                                    PacketManager.updateArmorStandOnlyMeta(stand);
+                                    DisplayManager.updateDisplay(stand);
                                 }
                             }
                         }
-                    });
+                    }
                 }, delay, block.getLocation());
             }
         }, 0, checkingPeriod);
@@ -297,7 +297,7 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
         }
 
         if (event.getRawSlot() >= 0 && event.getRawSlot() <= 4) {
-            PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
+            DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
         }
     }
 
@@ -328,7 +328,7 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
 
         for (int slot : event.getRawSlots()) {
             if (slot >= 0 && slot <= 4) {
-                PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
+                DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
                 break;
             }
         }
@@ -344,11 +344,11 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
         Map<String, Object> map = brewstand.get(block);
         if (map.get("Item") instanceof Item) {
             Item item = (Item) map.get("Item");
-            PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
         }
-        if (map.get("Stand") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("Stand");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("Stand") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("Stand");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
         brewstand.remove(block);
     }
@@ -379,20 +379,20 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
         return PlayerLocationManager.hasPlayerNearby(loc);
     }
 
-    public Map<String, ArmorStand> spawnArmorStands(Block block) { //.add(0.68, 0.700781, 0.35)
-        Map<String, ArmorStand> map = new HashMap<>();
+    public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) { //.add(0.68, 0.700781, 0.35)
+        Map<String, DisplayEntity> map = new HashMap<>();
         Location loc = block.getLocation().clone().add(0.5, 0.700781, 0.5);
-        ArmorStand slot1 = new ArmorStand(loc.clone());
+        DisplayEntity slot1 = new DisplayEntity(loc.clone());
         setStand(slot1);
 
         map.put("Stand", slot1);
 
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot1);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot1);
 
         return map;
     }
 
-    public void setStand(ArmorStand stand) {
+    public void setStand(DisplayEntity stand) {
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);

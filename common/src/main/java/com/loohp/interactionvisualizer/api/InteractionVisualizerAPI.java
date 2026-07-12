@@ -22,16 +22,16 @@ package com.loohp.interactionvisualizer.api;
 
 import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.config.Config;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PreferenceManager;
 import com.loohp.interactionvisualizer.managers.SoundManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.SynchronizedFilteredCollection;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -141,7 +141,10 @@ public class InteractionVisualizerAPI {
     public static Collection<Player> getPlayers(boolean excludeDisabledWorlds) {
         if (excludeDisabledWorlds) {
             Set<String> disabledWorlds = getDisabledWorlds();
-            return Bukkit.getWorlds().stream().filter(each -> disabledWorlds.contains(each.getName())).flatMap(each -> each.getPlayers().stream()).collect(Collectors.toSet());
+            return Bukkit.getWorlds().stream()
+                    .filter(world -> !disabledWorlds.contains(world.getName()))
+                    .flatMap(world -> world.getPlayers().stream())
+                    .collect(Collectors.toSet());
         } else {
             return new HashSet<>(Bukkit.getOnlinePlayers());
         }
@@ -398,67 +401,67 @@ public class InteractionVisualizerAPI {
         Vector pickup = to.clone().toVector().subtract(from.clone().toVector()).multiply(0.15).add(lift);
         item.setVelocity(pickup);
         item.setPickupDelay(32767);
-        PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, entry), item);
-        PacketManager.updateItem(item);
+        DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, entry), item);
+        DisplayManager.updateItem(item);
 
         Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
             if (pickupSound) {
                 SoundManager.playItemPickup(item.getLocation(), InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, entry));
             }
-            PacketManager.removeItem(getPlayers(), item);
+            DisplayManager.removeItem(getPlayers(), item);
         }, 8);
     }
 
     /**
-     * Create a fake armorstand at the given location.
+     * Create a logical display entity at the given location.
      * DOES NOT SPAWN THE ARMORSTAND.
      *
-     * @return The InteractionVisualizer ArmorStand object created.
+     * @return The InteractionVisualizer DisplayEntity object created.
      */
-    public static ArmorStand createArmorStandObject(Location location) {
-        return new ArmorStand(location.clone());
+    public static DisplayEntity createDisplayEntityObject(Location location) {
+        return new DisplayEntity(location.clone());
     }
 
     /**
-     * Create a fake armorstand for holding mini items at the given location.
+     * Create a logical item display at the given location.
      * DOES NOT SPAWN THE ARMORSTAND.
      *
-     * @return The InteractionVisualizer ArmorStand object created.
+     * @return The InteractionVisualizer DisplayEntity object created.
      */
-    public static ArmorStand createArmorStandItemHoldingObject(Location location) {
+    public static DisplayEntity createDisplayEntityItemHoldingObject(Location location) {
         Vector vector = rotateVectorAroundY(location.clone().getDirection().normalize().multiply(0.19), -100).add(location.clone().getDirection().normalize().multiply(-0.11));
-        ArmorStand stand = new ArmorStand(location.add(vector));
+        DisplayEntity stand = new DisplayEntity(location.add(vector));
         setStand(stand, location.getYaw());
         return stand;
     }
 
     /**
-     * Get the rotation mode for a mini item holding ArmorStand.
-     * ONLY WORKS WITH ARMORSTANDS CREATED USING createArmorStandItemHoldingObject(Location location)
+     * Get the rotation mode for a mini item holding DisplayEntity.
+     * ONLY WORKS WITH ARMORSTANDS CREATED USING createDisplayEntityItemHoldingObject(Location location)
      *
-     * @return The same InteractionVisualizer ArmorStand object.
+     * @return The same InteractionVisualizer DisplayEntity object.
      */
-    public static ArmorStandHoldingMode getArmorStandItemHoldingObjectMode(ArmorStand stand, ArmorStandHoldingMode mode) {
+    public static DisplayEntityHoldingMode getDisplayEntityItemHoldingObjectMode(DisplayEntity stand, DisplayEntityHoldingMode mode) {
         switch (getStandModeRaw(stand).toLowerCase()) {
             case "Item":
-                return ArmorStandHoldingMode.ITEM;
+                return DisplayEntityHoldingMode.ITEM;
             case "LowBlock":
-                return ArmorStandHoldingMode.LOWBLOCK;
+                return DisplayEntityHoldingMode.LOWBLOCK;
             case "Tool":
-                return ArmorStandHoldingMode.TOOL;
+                return DisplayEntityHoldingMode.TOOL;
             case "Standing":
-                return ArmorStandHoldingMode.STANDING;
+                return DisplayEntityHoldingMode.STANDING;
         }
         return null;
     }
 
     /**
-     * Sets the rotation mode for a mini item holding ArmorStand.
-     * ONLY WORKS WITH ARMORSTANDS CREATED USING createArmorStandItemHoldingObject(Location location)
+     * Sets the rotation mode for a mini item holding DisplayEntity.
+     * ONLY WORKS WITH ARMORSTANDS CREATED USING createDisplayEntityItemHoldingObject(Location location)
      *
-     * @return The same InteractionVisualizer ArmorStand object.
+     * @return The same InteractionVisualizer DisplayEntity object.
      */
-    public static ArmorStand rotateArmorStandItemHoldingObject(ArmorStand stand, ArmorStandHoldingMode mode) {
+    public static DisplayEntity rotateDisplayEntityItemHoldingObject(DisplayEntity stand, DisplayEntityHoldingMode mode) {
         toggleStandMode(stand, mode.toString());
         return stand;
     }
@@ -475,7 +478,7 @@ public class InteractionVisualizerAPI {
         return new Vector((cosine * currentX - sine * currentZ), vector.getY(), (sine * currentX + cosine * currentZ));
     }
 
-    private static void setStand(ArmorStand stand, float yaw) {
+    private static void setStand(DisplayEntity stand, float yaw) {
         stand.setArms(true);
         stand.setBasePlate(false);
         stand.setMarker(true);
@@ -490,7 +493,7 @@ public class InteractionVisualizerAPI {
     }
 
     @Deprecated
-    public static String getStandModeRaw(ArmorStand stand) {
+    public static String getStandModeRaw(DisplayEntity stand) {
         String plain = PlainTextComponentSerializer.plainText().serialize(stand.getCustomName());
         if (plain.startsWith("IV.Custom.")) {
             return plain.substring(plain.lastIndexOf(".") + 1);
@@ -498,15 +501,15 @@ public class InteractionVisualizerAPI {
         return null;
     }
 
-    public static ArmorStandHoldingMode getStandMode(ArmorStand stand) {
+    public static DisplayEntityHoldingMode getStandMode(DisplayEntity stand) {
         String plain = PlainTextComponentSerializer.plainText().serialize(stand.getCustomName());
         if (plain.startsWith("IV.Custom.")) {
-            return ArmorStandHoldingMode.fromName(plain.substring(plain.lastIndexOf(".") + 1));
+            return DisplayEntityHoldingMode.fromName(plain.substring(plain.lastIndexOf(".") + 1));
         }
         return null;
     }
 
-    private static void toggleStandMode(ArmorStand stand, String mode) {
+    private static void toggleStandMode(DisplayEntity stand, String mode) {
         String plain = PlainTextComponentSerializer.plainText().serialize(stand.getCustomName());
         if (!plain.equals("IV.Custom.Item")) {
             if (plain.equals("IV.Custom.Block")) {
@@ -575,32 +578,32 @@ public class InteractionVisualizerAPI {
     }
 
     /**
-     * Spawns the given InteractionVisualizer ArmorStand object to all players.
+     * Spawns the given InteractionVisualizer DisplayEntity object to all players.
      *
-     * @return The InteractionVisualizer ArmorStand object.
+     * @return The InteractionVisualizer DisplayEntity object.
      */
-    public static ArmorStand spawnFakeArmorStand(ArmorStand stand, EntryKey entry) {
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, entry), stand);
+    public static DisplayEntity spawnFakeDisplayEntity(DisplayEntity stand, EntryKey entry) {
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, entry), stand);
         return stand;
     }
 
     /**
-     * Updates the given InteractionVisualizer ArmorStand object to all players.
+     * Updates the given InteractionVisualizer DisplayEntity object to all players.
      *
-     * @return The InteractionVisualizer ArmorStand object.
+     * @return The InteractionVisualizer DisplayEntity object.
      */
-    public static ArmorStand updateFakeArmorStand(ArmorStand stand, EntryKey entry) {
-        PacketManager.updateArmorStand(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, entry), stand);
+    public static DisplayEntity updateFakeDisplayEntity(DisplayEntity stand, EntryKey entry) {
+        DisplayManager.updateDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, entry), stand);
         return stand;
     }
 
     /**
-     * Remove the given InteractionVisualizer ArmorStand object from all players.
+     * Remove the given InteractionVisualizer DisplayEntity object from all players.
      *
-     * @return The InteractionVisualizer ArmorStand object.
+     * @return The InteractionVisualizer DisplayEntity object.
      */
-    public static ArmorStand removeFakeArmorStand(ArmorStand stand, EntryKey entry) {
-        PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, entry), stand);
+    public static DisplayEntity removeFakeDisplayEntity(DisplayEntity stand, EntryKey entry) {
+        DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, entry), stand);
         return stand;
     }
 
@@ -620,7 +623,7 @@ public class InteractionVisualizerAPI {
      * @return The InteractionVisualizer Item object.
      */
     public static Item spawnFakeItem(Item item, EntryKey entry) {
-        PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, entry), item);
+        DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, entry), item);
         return item;
     }
 
@@ -630,7 +633,7 @@ public class InteractionVisualizerAPI {
      * @return The InteractionVisualizer Item object.
      */
     public static Item updateItem(Item item, EntryKey entry) {
-        PacketManager.updateItem(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, entry), item);
+        DisplayManager.updateItem(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, entry), item);
         return item;
     }
 
@@ -640,7 +643,7 @@ public class InteractionVisualizerAPI {
      * @return The InteractionVisualizer Item object.
      */
     public static Item removeItem(Item item, EntryKey entry) {
-        PacketManager.removeItem(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, entry), item);
+        DisplayManager.removeItem(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, entry), item);
         return item;
     }
 
@@ -671,14 +674,14 @@ public class InteractionVisualizerAPI {
         }
     }
 
-    public enum ArmorStandHoldingMode {
+    public enum DisplayEntityHoldingMode {
         ITEM("Item"),
         LOWBLOCK("LowBlock"),
         TOOL("Tool"),
         STANDING("Standing");
 
-        public static ArmorStandHoldingMode fromName(String name) {
-            for (ArmorStandHoldingMode mode : values()) {
+        public static DisplayEntityHoldingMode fromName(String name) {
+            for (DisplayEntityHoldingMode mode : values()) {
                 if (mode.toString().equalsIgnoreCase(name)) {
                     return mode;
                 }
@@ -688,7 +691,7 @@ public class InteractionVisualizerAPI {
 
         private final String mode;
 
-        ArmorStandHoldingMode(String mode) {
+        DisplayEntityHoldingMode(String mode) {
             this.mode = mode;
         }
 

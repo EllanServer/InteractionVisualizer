@@ -20,19 +20,12 @@
 
 package com.loohp.interactionvisualizer.utils;
 
-import com.loohp.interactionvisualizer.InteractionVisualizer;
-import com.loohp.interactionvisualizer.nms.NMS;
-import org.bukkit.enchantments.Enchantment;
 import org.bukkit.potion.PotionEffectType;
 
 public class TranslationUtils {
 
     public static String getEffect(PotionEffectType type) {
-        return NMS.getInstance().getEffectTranslationKey(type);
-    }
-
-    public static String getEnchantment(Enchantment enchantment) {
-        return NMS.getInstance().getEnchantmentTranslationKey(enchantment);
+        return type.translationKey();
     }
 
     public static String getLevel(int level) {
@@ -47,11 +40,7 @@ public class TranslationUtils {
         if (!type.contains("MUSIC_DISC_")) {
             return null;
         }
-        if (InteractionVisualizer.version.isNewerOrEqualTo(MCVersion.V1_21)) {
-            return "jukebox_song.minecraft." + type.toLowerCase().substring("music_disc_".length());
-        } else {
-            return "item.minecraft." + type.toLowerCase() + ".desc";
-        }
+        return "jukebox_song.minecraft." + type.toLowerCase().substring("music_disc_".length());
     }
 
 }
