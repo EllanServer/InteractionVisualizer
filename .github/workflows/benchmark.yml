@@ -2,6 +2,14 @@ name: A-B Performance Benchmark
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/benchmark.yml'
+      - 'benchmark/**'
+      - 'build.gradle.kts'
+      - 'common/src/main/java/com/loohp/interactionvisualizer/entities/DroppedItemDisplay.java'
+      - 'common/src/main/java/com/loohp/interactionvisualizer/entities/DroppedItemSpatialIndex.java'
+      - 'common/src/main/java/com/loohp/interactionvisualizer/entities/VisibilityTokenBucket.java'
 
 permissions:
   contents: read
