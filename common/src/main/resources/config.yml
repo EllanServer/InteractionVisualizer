@@ -284,6 +284,10 @@ Entities:
       #Maximum distance in blocks at which a dropped-item label is kept active
       #Labels outside every eligible player's range are not spawned server-side
       ViewDistance: 64
+      #Smooth label visibility bursts when entering areas with many dropped items
+      VisibilityRateLimit:
+        BucketSize: 128
+        RestorePerTick: 32
       #Paper does not expose its internal per-item despawn rate. This value
       #drives the public-API timer (6000 ticks = 5 minutes).
       DespawnTicks: 6000
