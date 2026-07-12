@@ -21,20 +21,28 @@
 package com.loohp.interactionvisualizer.listeners;
 
 import com.loohp.interactionvisualizer.InteractionVisualizer;
-import org.bukkit.Bukkit;
+import com.loohp.interactionvisualizer.managers.TaskManager;
 import org.bukkit.World;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.InventoryOpenEvent;
 import org.bukkit.event.world.WorldLoadEvent;
 import org.bukkit.event.world.WorldUnloadEvent;
 
 public class Events implements Listener {
 
+    @EventHandler(ignoreCancelled = true)
+    public void onInventoryOpen(InventoryOpenEvent event) {
+        if (event.getPlayer() instanceof Player player) {
+            TaskManager.processOpenInventory(player);
+        }
+    }
+
     @EventHandler
     public void onWorldLoad(WorldLoadEvent event) {
         World world = event.getWorld();
-        int defaultRange = Bukkit.spigot().getConfig().getInt("world-settings.default.entity-tracking-range.players", 64);
-        int range = Bukkit.spigot().getConfig().getInt("world-settings." + world.getName() + ".entity-tracking-range.players", defaultRange);
+        int range = Math.max(32, world.getSendViewDistance() * 16);
         InteractionVisualizer.playerTrackingRange.put(world, range);
     }
 

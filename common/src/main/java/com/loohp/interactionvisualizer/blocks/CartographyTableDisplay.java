@@ -25,11 +25,11 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerInteractDisplay;
 import com.loohp.interactionvisualizer.entityholders.ItemFrame;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
-import com.loohp.platformscheduler.ScheduledRunnable;
-import com.loohp.platformscheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.ScheduledRunnable;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import org.bukkit.FluidCollisionMode;
 import org.bukkit.GameMode;
 import org.bukkit.Material;
@@ -100,7 +100,7 @@ public class CartographyTableDisplay extends VisualizerInteractDisplay implement
 
                             if (map.get("Item") instanceof ItemFrame) {
                                 Entity entity = (Entity) map.get("Item");
-                                PacketManager.removeItemFrame(InteractionVisualizerAPI.getPlayers(), (ItemFrame) entity);
+                                DisplayManager.removeItemFrame(InteractionVisualizerAPI.getPlayers(), (ItemFrame) entity);
                             }
                             openedCTable.remove(block);
                         }
@@ -177,8 +177,8 @@ public class CartographyTableDisplay extends VisualizerInteractDisplay implement
                     item.setFacingDirection(BlockFace.UP);
                     item.setSilent(true);
                     map.put("Item", item);
-                    PacketManager.sendItemFrameSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), item);
-                    PacketManager.updateItemFrame(item);
+                    DisplayManager.sendItemFrameSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), item);
+                    DisplayManager.updateItemFrame(item);
                 } else {
                     map.put("Item", "N/A");
                 }
@@ -187,11 +187,11 @@ public class CartographyTableDisplay extends VisualizerInteractDisplay implement
                 if (itemstack != null) {
                     if (!item.getItem().equals(itemstack)) {
                         item.setItem(itemstack);
-                        PacketManager.updateItemFrame(item);
+                        DisplayManager.updateItemFrame(item);
                     }
                 } else {
                     map.put("Item", "N/A");
-                    PacketManager.removeItemFrame(InteractionVisualizerAPI.getPlayers(), item);
+                    DisplayManager.removeItemFrame(InteractionVisualizerAPI.getPlayers(), item);
                 }
             }
         }
@@ -207,7 +207,7 @@ public class CartographyTableDisplay extends VisualizerInteractDisplay implement
         }
 
         if (event.getRawSlot() >= 0 && event.getRawSlot() <= 1) {
-            PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
+            DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
         }
     }
 
@@ -222,7 +222,7 @@ public class CartographyTableDisplay extends VisualizerInteractDisplay implement
 
         for (int slot : event.getRawSlots()) {
             if (slot >= 0 && slot <= 1) {
-                PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
+                DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
                 break;
             }
         }
@@ -247,7 +247,7 @@ public class CartographyTableDisplay extends VisualizerInteractDisplay implement
 
         if (map.get("Item") instanceof ItemFrame) {
             ItemFrame entity = (ItemFrame) map.get("Item");
-            PacketManager.removeItemFrame(InteractionVisualizerAPI.getPlayers(), entity);
+            DisplayManager.removeItemFrame(InteractionVisualizerAPI.getPlayers(), entity);
         }
         openedCTable.remove(block);
         playermap.remove((Player) event.getPlayer());

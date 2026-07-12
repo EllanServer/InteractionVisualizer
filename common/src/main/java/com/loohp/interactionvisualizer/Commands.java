@@ -23,18 +23,17 @@ package com.loohp.interactionvisualizer;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.managers.MaterialManager;
 import com.loohp.interactionvisualizer.managers.MusicManager;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.updater.Updater;
 import com.loohp.interactionvisualizer.updater.Updater.UpdaterResponse;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
-import net.md_5.bungee.api.ChatColor;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -56,8 +55,8 @@ public class Commands implements CommandExecutor, TabCompleter {
         }
 
         if (args.length == 0) {
-            sender.sendMessage(ChatColor.AQUA + "[InteractionVisualizer] InteractionVisualizer written by LOOHP!");
-            sender.sendMessage(ChatColor.GOLD + "[InteractionVisualizer] Running InteractionVisualizer version: " + plugin.getDescription().getVersion());
+            sender.sendMessage(Component.text("[InteractionVisualizer] InteractionVisualizer written by LOOHP!", NamedTextColor.AQUA));
+            sender.sendMessage(Component.text("[InteractionVisualizer] Running InteractionVisualizer version: " + plugin.getPluginMeta().getVersion(), NamedTextColor.GOLD));
             return true;
         }
 
@@ -66,6 +65,7 @@ public class Commands implements CommandExecutor, TabCompleter {
                 plugin.loadConfig();
                 MusicManager.reloadConfig();
                 MaterialManager.reloadConfig();
+                DisplayManager.update();
                 sender.sendMessage(ChatColorUtils.translateAlternateColorCodes('&', plugin.getConfiguration().getString("Messages.Reload")));
             } else {
                 sender.sendMessage(ChatColorUtils.translateAlternateColorCodes('&', plugin.getConfiguration().getString("Messages.NoPermission")));
@@ -77,7 +77,7 @@ public class Commands implements CommandExecutor, TabCompleter {
             if (sender instanceof Player) {
                 Player player = (Player) sender;
                 if (player.hasPermission("interactionvisualizer.refresh")) {
-                    Scheduler.runTask(InteractionVisualizer.plugin, () -> PacketManager.reset(player));
+                    Scheduler.runTask(InteractionVisualizer.plugin, () -> DisplayManager.reset(player));
                 } else {
                     sender.sendMessage(ChatColorUtils.translateAlternateColorCodes('&', plugin.getConfiguration().getString("Messages.NoPermission")));
                 }
@@ -89,19 +89,21 @@ public class Commands implements CommandExecutor, TabCompleter {
 
         if (args[0].equalsIgnoreCase("update")) {
             if (sender.hasPermission("interactionvisualizer.update")) {
-                sender.sendMessage(ChatColor.AQUA + "[InteractionVisualizer] InteractionVisualizer written by LOOHP!");
-                sender.sendMessage(ChatColor.GOLD + "[InteractionVisualizer] You are running InteractionVisualizer version: " + plugin.getDescription().getVersion());
+                sender.sendMessage(Component.text("[InteractionVisualizer] InteractionVisualizer written by LOOHP!", NamedTextColor.AQUA));
+                sender.sendMessage(Component.text("[InteractionVisualizer] You are running InteractionVisualizer version: " + plugin.getPluginMeta().getVersion(), NamedTextColor.GOLD));
                 InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
                     UpdaterResponse version = Updater.checkUpdate();
-                    if (version.getResult().equals("latest")) {
-                        if (version.isDevBuildLatest()) {
-                            sender.sendMessage(ChatColor.GREEN + "[InteractionVisualizer] You are running the latest version!");
+                    Scheduler.runTask(plugin, () -> {
+                        if (version.getResult().equals("latest")) {
+                            if (version.isDevBuildLatest()) {
+                                sender.sendMessage(Component.text("[InteractionVisualizer] You are running the latest version!", NamedTextColor.GREEN));
+                            } else {
+                                Updater.sendUpdateMessage(sender, version.getResult(), version.getSpigotPluginId(), true);
+                            }
                         } else {
-                            Updater.sendUpdateMessage(sender, version.getResult(), version.getSpigotPluginId(), true);
+                            Updater.sendUpdateMessage(sender, version.getResult(), version.getSpigotPluginId());
                         }
-                    } else {
-                        Updater.sendUpdateMessage(sender, version.getResult(), version.getSpigotPluginId());
-                    }
+                    });
                 });
             } else {
                 sender.sendMessage(ChatColorUtils.translateAlternateColorCodes('&', plugin.getConfiguration().getString("Messages.NoPermission")));
@@ -117,7 +119,7 @@ public class Commands implements CommandExecutor, TabCompleter {
                         return true;
                     }
                     Player player = (Player) sender;
-                    InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
+                    InteractionVisualizer.asyncExecutorManager.runTaskSynchronously(() -> {
                         EntryKey[] entries;
                         String verboseEntry = null;
                         if (args[2].equalsIgnoreCase("all")) {
@@ -184,7 +186,7 @@ public class Commands implements CommandExecutor, TabCompleter {
                         sender.sendMessage(ChatColorUtils.translateAlternateColorCodes('&', plugin.getConfiguration().getString("Messages.Toggle.PlayerNotFound")));
                         return true;
                     }
-                    InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
+                    InteractionVisualizer.asyncExecutorManager.runTaskSynchronously(() -> {
                         EntryKey[] entries;
                         String verboseEntry = null;
                         if (args[2].equalsIgnoreCase("all")) {
@@ -253,7 +255,9 @@ public class Commands implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        sender.sendMessage(ChatColorUtils.translateAlternateColorCodes('&', Bukkit.spigot().getConfig().getString("messages.unknown-command")));
+        String unknownCommand = plugin.getConfiguration().getString("Messages.UnknownCommand");
+        sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
+                unknownCommand == null ? "&cUnknown command. Type \"/help\" for help." : unknownCommand));
         return true;
     }
 

@@ -24,20 +24,19 @@ import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerInteractDisplay;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.SoundManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.LightType;
 import com.loohp.interactionvisualizer.utils.InventoryUtils;
-import com.loohp.interactionvisualizer.utils.MCVersion;
 import com.loohp.interactionvisualizer.utils.MaterialUtils;
 import com.loohp.interactionvisualizer.utils.MaterialUtils.MaterialMode;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
-import com.loohp.platformscheduler.ScheduledRunnable;
-import com.loohp.platformscheduler.ScheduledTask;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.ScheduledRunnable;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
@@ -55,7 +54,6 @@ import org.bukkit.event.inventory.InventoryAction;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
-import org.bukkit.inventory.CraftingInventory;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryView;
 import org.bukkit.inventory.ItemStack;
@@ -105,16 +103,8 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
                             if (!GameMode.SPECTATOR.equals(player.getGameMode())) {
                                 if (player.getOpenInventory() != null) {
                                     if (player.getOpenInventory().getTopInventory() != null) {
-                                        if (!InteractionVisualizer.version.equals(MCVersion.V1_13) && !InteractionVisualizer.version.equals(MCVersion.V1_13_1)) {
-                                            if (player.getOpenInventory().getTopInventory().getLocation().getBlock().getType().toString().equalsIgnoreCase("CRAFTING_TABLE")) {
-                                                return;
-                                            }
-                                        } else {
-                                            if (player.getOpenInventory().getTopInventory() instanceof CraftingInventory) {
-                                                if (((CraftingInventory) player.getOpenInventory().getTopInventory()).getMatrix().length == 9) {
-                                                    return;
-                                                }
-                                            }
+                                        if (player.getOpenInventory().getTopInventory().getLocation().getBlock().getType() == Material.CRAFTING_TABLE) {
+                                            return;
                                         }
                                     }
                                 }
@@ -124,12 +114,12 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
                                 if (!(map.get(String.valueOf(i)) instanceof String)) {
                                     Object entity = map.get(String.valueOf(i));
                                     if (i == 5) {
-                                        InteractionVisualizer.lightManager.deleteLight(((ArmorStand) entity).getLocation());
+                                        InteractionVisualizer.lightManager.deleteLight(((DisplayEntity) entity).getLocation());
                                     }
                                     if (entity instanceof Item) {
-                                        PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), (Item) entity);
-                                    } else if (entity instanceof ArmorStand) {
-                                        PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), (ArmorStand) entity);
+                                        DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), (Item) entity);
+                                    } else if (entity instanceof DisplayEntity) {
+                                        DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), (DisplayEntity) entity);
                                     }
                                 }
                             }
@@ -156,28 +146,11 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
             if (player.getOpenInventory().getTopInventory().getLocation().getBlock() == null) {
                 return;
             }
-            if (!InteractionVisualizer.version.equals(MCVersion.V1_13) && !InteractionVisualizer.version.equals(MCVersion.V1_13_1)) {
-                if (!player.getOpenInventory().getTopInventory().getLocation().getBlock().getType().toString().equalsIgnoreCase("CRAFTING_TABLE")) {
-                    return;
-                }
-            } else {
-                if (!(player.getOpenInventory().getTopInventory() instanceof CraftingInventory)) {
-                    return;
-                }
-                if (((CraftingInventory) player.getOpenInventory().getTopInventory()).getMatrix().length != 9) {
-                    return;
-                }
-                if (!player.getTargetBlock(MaterialUtils.getNonSolidSet(), 7).getType().toString().equalsIgnoreCase("CRAFTING_TABLE")) {
-                    return;
-                }
+            if (player.getOpenInventory().getTopInventory().getLocation().getBlock().getType() != Material.CRAFTING_TABLE) {
+                return;
             }
-            Block block;
             InventoryView view = player.getOpenInventory();
-            if (InteractionVisualizer.version.isNewerThan(MCVersion.V1_13_1)) {
-                block = view.getTopInventory().getLocation().getBlock();
-            } else {
-                block = player.getTargetBlock(MaterialUtils.getNonSolidSet(), 7);
-            }
+            Block block = view.getTopInventory().getLocation().getBlock();
             playermap.put(player, block);
         }
 
@@ -189,7 +162,7 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
             Map<String, Object> map = new HashMap<>();
             map.put("Player", player);
             map.put("0", "N/A");
-            map.putAll(spawnArmorStands(player, block));
+            map.putAll(spawnDisplayEntitys(player, block));
             openedBenches.put(block, map);
         }
 
@@ -224,8 +197,8 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
                     item.setPickupDelay(32767);
                     item.setGravity(false);
                     map.put("0", item);
-                    PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
-                    PacketManager.updateItem(item);
+                    DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+                    DisplayManager.updateItem(item);
                 } else {
                     map.put("0", "N/A");
                 }
@@ -234,50 +207,41 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
                 if (itemstack != null) {
                     if (!item.getItemStack().equals(itemstack)) {
                         item.setItemStack(itemstack);
-                        PacketManager.updateItem(item);
+                        DisplayManager.updateItem(item);
                     }
                 } else {
                     map.put("0", "N/A");
-                    PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                    DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                 }
             }
         }
         for (int i = 0; i < 9; i++) {
-            ArmorStand stand = (ArmorStand) map.get(String.valueOf(i + 1));
+            DisplayEntity stand = (DisplayEntity) map.get(String.valueOf(i + 1));
             ItemStack item = items[i];
             if (item == null || item.getType().equals(Material.AIR)) {
                 item = null;
             }
             if (item != null) {
-                boolean changed = true;
-                if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.BLOCK) && !standMode(stand).equals(MaterialMode.BLOCK)) {
-                    toggleStandMode(stand, "Block");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.TOOL) && !standMode(stand).equals(MaterialMode.TOOL)) {
-                    toggleStandMode(stand, "Tool");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.ITEM) && !standMode(stand).equals(MaterialMode.ITEM)) {
-                    toggleStandMode(stand, "Item");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.STANDING) && !standMode(stand).equals(MaterialMode.STANDING)) {
-                    toggleStandMode(stand, "Standing");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.LOWBLOCK) && !standMode(stand).equals(MaterialMode.LOWBLOCK)) {
-                    toggleStandMode(stand, "LowBlock");
-                } else {
-                    changed = false;
+                MaterialMode materialMode = MaterialUtils.getMaterialType(item);
+                boolean changed = materialMode != standMode(stand);
+                if (changed) {
+                    toggleStandMode(stand, materialMode.toString());
                 }
-                if (!item.getType().equals(stand.getItemInMainHand().getType())) {
+                if (!item.equals(stand.getItemInMainHand())) {
                     changed = true;
                     stand.setItemInMainHand(item);
                 }
                 if (changed) {
-                    PacketManager.updateArmorStand(stand);
+                    DisplayManager.updateDisplay(stand);
                 }
             } else {
                 if (!stand.getItemInMainHand().getType().equals(Material.AIR)) {
                     stand.setItemInMainHand(new ItemStack(Material.AIR));
-                    PacketManager.updateArmorStand(stand);
+                    DisplayManager.updateDisplay(stand);
                 }
             }
         }
-        Location loc1 = ((ArmorStand) map.get("5")).getLocation();
+        Location loc1 = ((DisplayEntity) map.get("5")).getLocation();
         InteractionVisualizer.lightManager.deleteLight(loc1);
         int skylight = loc1.getBlock().getRelative(BlockFace.UP).getLightFromSky();
         int blocklight = loc1.getBlock().getRelative(BlockFace.UP).getLightFromBlocks() - 1;
@@ -319,7 +283,7 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
                 return;
             }
         }
-        if (event.getAction().equals(InventoryAction.HOTBAR_MOVE_AND_READD)) {
+        if (event.getAction().equals(InventoryAction.HOTBAR_SWAP)) {
             int hotbarSlot = event.getHotbarButton();
             if (hotbarSlot < 0 || (event.getWhoClicked().getInventory().getItem(hotbarSlot) != null && !event.getWhoClicked().getInventory().getItem(hotbarSlot).getType().equals(Material.AIR))) {
                 return;
@@ -349,15 +313,15 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
             map.put("0", new Item(block.getLocation().clone().add(0.5, 1.2, 0.5)));
         }
         Item item = (Item) map.get("0");
-        ArmorStand slot1 = (ArmorStand) map.get("1");
-        ArmorStand slot2 = (ArmorStand) map.get("2");
-        ArmorStand slot3 = (ArmorStand) map.get("3");
-        ArmorStand slot4 = (ArmorStand) map.get("4");
-        ArmorStand slot5 = (ArmorStand) map.get("5");
-        ArmorStand slot6 = (ArmorStand) map.get("6");
-        ArmorStand slot7 = (ArmorStand) map.get("7");
-        ArmorStand slot8 = (ArmorStand) map.get("8");
-        ArmorStand slot9 = (ArmorStand) map.get("9");
+        DisplayEntity slot1 = (DisplayEntity) map.get("1");
+        DisplayEntity slot2 = (DisplayEntity) map.get("2");
+        DisplayEntity slot3 = (DisplayEntity) map.get("3");
+        DisplayEntity slot4 = (DisplayEntity) map.get("4");
+        DisplayEntity slot5 = (DisplayEntity) map.get("5");
+        DisplayEntity slot6 = (DisplayEntity) map.get("6");
+        DisplayEntity slot7 = (DisplayEntity) map.get("7");
+        DisplayEntity slot8 = (DisplayEntity) map.get("8");
+        DisplayEntity slot9 = (DisplayEntity) map.get("9");
 
         Inventory before = Bukkit.createInventory(null, 9);
         for (int i = 1; i < 10; i++) {
@@ -400,15 +364,15 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
             slot8.teleport(slot8.getLocation().add(vector.clone().multiply(0.2)));
             slot9.teleport(slot9.getLocation().add(rotateVectorAroundY(vector.clone(), -45).multiply(0.2828)));
 
-            PacketManager.updateArmorStand(slot1);
-            PacketManager.updateArmorStand(slot2);
-            PacketManager.updateArmorStand(slot3);
-            PacketManager.updateArmorStand(slot4);
-            PacketManager.updateArmorStand(slot5);
-            PacketManager.updateArmorStand(slot6);
-            PacketManager.updateArmorStand(slot7);
-            PacketManager.updateArmorStand(slot8);
-            PacketManager.updateArmorStand(slot9);
+            DisplayManager.updateDisplay(slot1);
+            DisplayManager.updateDisplay(slot2);
+            DisplayManager.updateDisplay(slot3);
+            DisplayManager.updateDisplay(slot4);
+            DisplayManager.updateDisplay(slot5);
+            DisplayManager.updateDisplay(slot6);
+            DisplayManager.updateDisplay(slot7);
+            DisplayManager.updateDisplay(slot8);
+            DisplayManager.updateDisplay(slot9);
 
             Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
                 for (Player each : InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY)) {
@@ -423,20 +387,20 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
                 item.setVelocity(pickup);
                 item.setGravity(true);
                 item.setPickupDelay(32767);
-                PacketManager.updateItem(item);
+                DisplayManager.updateItem(item);
 
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
                     SoundManager.playItemPickup(item.getLocation(), InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY));
-                    PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), slot1);
-                    PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), slot2);
-                    PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), slot3);
-                    PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), slot4);
-                    PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), slot5);
-                    PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), slot6);
-                    PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), slot7);
-                    PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), slot8);
-                    PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), slot9);
-                    PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                    DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot1);
+                    DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot2);
+                    DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot3);
+                    DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot4);
+                    DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot5);
+                    DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot6);
+                    DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot7);
+                    DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot8);
+                    DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot9);
+                    DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                 }, 8);
             }, 10);
         }, 1);
@@ -452,7 +416,7 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
         }
 
         if (event.getRawSlot() >= 0 && event.getRawSlot() <= 9) {
-            PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
+            DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
         }
     }
 
@@ -467,7 +431,7 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
 
         for (int slot : event.getRawSlots()) {
             if (slot >= 0 && slot <= 9) {
-                PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
+                DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
                 break;
             }
         }
@@ -494,16 +458,16 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
             if (!(map.get(String.valueOf(i)) instanceof String)) {
                 Object entity = map.get(String.valueOf(i));
                 if (entity instanceof Item) {
-                    PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), (Item) entity);
-                } else if (entity instanceof ArmorStand) {
-                    if (!((ArmorStand) entity).isLocked()) {
-                        PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), (ArmorStand) entity);
+                    DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), (Item) entity);
+                } else if (entity instanceof DisplayEntity) {
+                    if (!((DisplayEntity) entity).isLocked()) {
+                        DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), (DisplayEntity) entity);
                     }
                     int finalI = i;
                     new ScheduledRunnable() {
                         public void run() {
                             if (finalI == 5) {
-                                InteractionVisualizer.lightManager.deleteLight(((ArmorStand) entity).getLocation());
+                                InteractionVisualizer.lightManager.deleteLight(((DisplayEntity) entity).getLocation());
                             }
                         }
                     }.runTaskLater(InteractionVisualizer.plugin, 20);
@@ -514,7 +478,7 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
         playermap.remove((Player) event.getPlayer());
     }
 
-    public MaterialMode standMode(ArmorStand stand) {
+    public MaterialMode standMode(DisplayEntity stand) {
         String plain = PlainTextComponentSerializer.plainText().serialize(stand.getCustomName());
         if (plain.startsWith("IV.CraftingTable.")) {
             return MaterialMode.getModeFromName(plain.substring(plain.lastIndexOf(".") + 1));
@@ -522,7 +486,7 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
         return null;
     }
 
-    public void toggleStandMode(ArmorStand stand, String mode) {
+    public void toggleStandMode(DisplayEntity stand, String mode) {
         String plainText = PlainTextComponentSerializer.plainText().serialize(stand.getCustomName());
         if (!plainText.equals("IV.CraftingTable.Item")) {
             if (plainText.equals("IV.CraftingTable.Block")) {
@@ -590,32 +554,32 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
         }
     }
 
-    public Map<String, ArmorStand> spawnArmorStands(Player player, Block block) { //.add(0.68, 0.600781, 0.35)
-        Map<String, ArmorStand> map = new HashMap<>();
+    public Map<String, DisplayEntity> spawnDisplayEntitys(Player player, Block block) { //.add(0.68, 0.600781, 0.35)
+        Map<String, DisplayEntity> map = new HashMap<>();
         Location loc = block.getLocation().clone().add(0.5, 0.600781, 0.5);
-        ArmorStand center = new ArmorStand(loc);
+        DisplayEntity center = new DisplayEntity(loc);
         float yaw = getCardinalDirection(player);
         center.setRotation(yaw, center.getLocation().getPitch());
         setStand(center);
         center.setCustomName("IV.CraftingTable.Center");
         Vector vector = rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.19), -100).add(center.getLocation().clone().getDirection().normalize().multiply(-0.11));
-        ArmorStand slot5 = new ArmorStand(loc.clone().add(vector));
+        DisplayEntity slot5 = new DisplayEntity(loc.clone().add(vector));
         setStand(slot5, yaw);
-        ArmorStand slot2 = new ArmorStand(slot5.getLocation().clone().add(center.getLocation().clone().getDirection().normalize().multiply(0.2)));
+        DisplayEntity slot2 = new DisplayEntity(slot5.getLocation().clone().add(center.getLocation().clone().getDirection().normalize().multiply(0.2)));
         setStand(slot2, yaw);
-        ArmorStand slot1 = new ArmorStand(slot2.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)));
+        DisplayEntity slot1 = new DisplayEntity(slot2.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)));
         setStand(slot1, yaw);
-        ArmorStand slot3 = new ArmorStand(slot2.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)));
+        DisplayEntity slot3 = new DisplayEntity(slot2.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)));
         setStand(slot3, yaw);
-        ArmorStand slot4 = new ArmorStand(slot5.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)));
+        DisplayEntity slot4 = new DisplayEntity(slot5.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)));
         setStand(slot4, yaw);
-        ArmorStand slot6 = new ArmorStand(slot5.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)));
+        DisplayEntity slot6 = new DisplayEntity(slot5.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)));
         setStand(slot6, yaw);
-        ArmorStand slot8 = new ArmorStand(slot5.getLocation().clone().add(center.getLocation().getDirection().clone().normalize().multiply(-0.2)));
+        DisplayEntity slot8 = new DisplayEntity(slot5.getLocation().clone().add(center.getLocation().getDirection().clone().normalize().multiply(-0.2)));
         setStand(slot8, yaw);
-        ArmorStand slot7 = new ArmorStand(slot8.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)));
+        DisplayEntity slot7 = new DisplayEntity(slot8.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)));
         setStand(slot7, yaw);
-        ArmorStand slot9 = new ArmorStand(slot8.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)));
+        DisplayEntity slot9 = new DisplayEntity(slot8.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)));
         setStand(slot9, yaw);
 
         map.put("1", slot1);
@@ -628,20 +592,20 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
         map.put("8", slot8);
         map.put("9", slot9);
 
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot1);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot2);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot3);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot4);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot5);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot6);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot7);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot8);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot9);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot1);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot2);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot3);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot4);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot5);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot6);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot7);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot8);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot9);
 
         return map;
     }
 
-    public void setStand(ArmorStand stand, float yaw) {
+    public void setStand(DisplayEntity stand, float yaw) {
         stand.setArms(true);
         stand.setBasePlate(false);
         stand.setMarker(true);
@@ -655,7 +619,7 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
         stand.setRotation(yaw, stand.getLocation().getPitch());
     }
 
-    public void setStand(ArmorStand stand) {
+    public void setStand(DisplayEntity stand) {
         stand.setArms(true);
         stand.setBasePlate(false);
         stand.setMarker(true);

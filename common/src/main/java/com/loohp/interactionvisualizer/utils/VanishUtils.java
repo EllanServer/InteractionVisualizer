@@ -20,12 +20,18 @@
 
 package com.loohp.interactionvisualizer.utils;
 
+import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 
 public class VanishUtils {
 
     public static boolean isVanished(Player player) {
-        return player.getMetadata("vanished").stream().anyMatch(each -> each.asBoolean());
+        for (Player viewer : Bukkit.getOnlinePlayers()) {
+            if (!viewer.isListed(player) || (!viewer.equals(player) && !viewer.canSee(player))) {
+                return true;
+            }
+        }
+        return false;
     }
 
 }

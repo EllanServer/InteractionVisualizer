@@ -21,7 +21,8 @@
 package com.loohp.interactionvisualizer.managers;
 
 import com.loohp.interactionvisualizer.InteractionVisualizer;
-import net.md_5.bungee.api.ChatColor;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 
 import java.io.BufferedOutputStream;
@@ -30,8 +31,9 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.net.MalformedURLException;
+import java.net.URI;
 import java.net.URL;
+import java.net.URLConnection;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.util.zip.ZipEntry;
@@ -49,12 +51,14 @@ public class LangManager {
             removeFolder(TempFolder);
 
             //https://github.com/LOOHP/InteractionVisualizerLanguages/archive/master.zip
-            Bukkit.getConsoleSender().sendMessage(ChatColor.AQUA + "[InteractionVisualizer] Downloading and extracting latest Language files...");
+            Bukkit.getConsoleSender().sendMessage(Component.text(
+                    "[InteractionVisualizer] Downloading and extracting latest Language files...", NamedTextColor.AQUA));
             TempFolder.mkdirs();
 
-            File zip = downloadFile(new File(TempFolder, "Lang.zip"), new URL("https://github.com/LOOHP/InteractionVisualizerLanguages/archive/master.zip"));
+            File zip = downloadFile(new File(TempFolder, "Lang.zip"), URI.create("https://github.com/LOOHP/InteractionVisualizerLanguages/archive/master.zip").toURL());
             if (zip == null) {
-                Bukkit.getConsoleSender().sendMessage(ChatColor.RED + "Failed to connect to github. Could be an internet issue.");
+                Bukkit.getConsoleSender().sendMessage(Component.text(
+                        "Failed to connect to GitHub. This could be a network issue.", NamedTextColor.RED));
                 try {
                     removeFolder(TempFolder);
                 } catch (Exception e) {
@@ -69,7 +73,8 @@ public class LangManager {
 
             removeFolder(TempFolder);
 
-            Bukkit.getConsoleSender().sendMessage(ChatColor.AQUA + "[InteractionVisualizer] Sucessfully downloaded the latest Language files!");
+            Bukkit.getConsoleSender().sendMessage(Component.text(
+                    "[InteractionVisualizer] Successfully downloaded the latest language files!", NamedTextColor.AQUA));
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -91,18 +96,15 @@ public class LangManager {
 
     public static File downloadFile(File output, URL download) {
         try {
-            ReadableByteChannel rbc = Channels.newChannel(download.openStream());
-
-            FileOutputStream fos = new FileOutputStream(output);
-
+            URLConnection connection = download.openConnection();
+            connection.setConnectTimeout(10_000);
+            connection.setReadTimeout(30_000);
+            try (ReadableByteChannel rbc = Channels.newChannel(connection.getInputStream());
+                 FileOutputStream fos = new FileOutputStream(output)) {
             fos.getChannel().transferFrom(rbc, 0, Long.MAX_VALUE);
-
-            fos.close();
-
+            }
             return output;
         } catch (FileNotFoundException e) {
-            e.printStackTrace();
-        } catch (MalformedURLException e) {
             e.printStackTrace();
         } catch (IOException e) {
             e.printStackTrace();

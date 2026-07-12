@@ -20,13 +20,6 @@
 
 package com.loohp.interactionvisualizer.utils;
 
-import com.loohp.interactionvisualizer.InteractionVisualizer;
-import net.md_5.bungee.api.ChatColor;
-
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -34,44 +27,18 @@ public class ChatColorUtils {
 
     public static final char COLOR_CHAR = '\u00a7';
 
-    private static final Set<Character> COLORS = new HashSet<>();
     private static final Pattern COLOR_FORMATTING = Pattern.compile("(?=(?<!\\\\)|(?<=\\\\\\\\))\\[[^\\]]*?color=#[0-9a-fA-F]{6}[^\\[]*?\\]");
     private static final Pattern COLOR_ESCAPE = Pattern.compile("\\\\\\[ *?color=#[0-9a-fA-F]{6} *?\\]");
 
-    private static final Pattern COLOR_CODE_FORMAT = Pattern.compile("\u00a7[0-9A-Fa-fk-orx]");
+    private static final Pattern COLOR_CODE_FORMAT = Pattern.compile("(?i)\u00a7[0-9a-fk-orx]");
     private static final Pattern COLOR_HEX_FORMAT_BUKKIT = Pattern.compile("^#([0-9a-fA-F])([0-9a-fA-F])([0-9a-fA-F])([0-9a-fA-F])([0-9a-fA-F])([0-9a-fA-F])$");
 
-    static {
-        COLORS.add('0');
-        COLORS.add('1');
-        COLORS.add('2');
-        COLORS.add('3');
-        COLORS.add('4');
-        COLORS.add('5');
-        COLORS.add('6');
-        COLORS.add('7');
-        COLORS.add('8');
-        COLORS.add('9');
-        COLORS.add('a');
-        COLORS.add('b');
-        COLORS.add('c');
-        COLORS.add('d');
-        COLORS.add('e');
-        COLORS.add('f');
-        COLORS.add('k');
-        COLORS.add('l');
-        COLORS.add('m');
-        COLORS.add('n');
-        COLORS.add('o');
-        COLORS.add('r');
-    }
-
     public static String stripColor(String string) {
-        return string.replaceAll(COLOR_CODE_FORMAT.pattern(), "");
+        return string == null ? null : COLOR_CODE_FORMAT.matcher(string).replaceAll("");
     }
 
     public static String filterIllegalColorCodes(String string) {
-        return InteractionVisualizer.version.isNewerOrEqualTo(MCVersion.V1_16) ? string.replaceAll("\u00a7[^0-9A-Fa-fk-orx]", "") : string.replaceAll("\u00a7[^0-9a-fk-or]", "");
+        return string == null ? null : string.replaceAll("(?i)\u00a7[^0-9a-fk-orx]", "");
     }
 
     public static String getLastColors(String input) {
@@ -79,14 +46,15 @@ public class ChatColorUtils {
 
         for (int i = input.length() - 1; i > 0; i--) {
             if (input.charAt(i - 1) == '\u00a7') {
+                char code = Character.toLowerCase(input.charAt(i));
                 String color = String.valueOf(input.charAt(i - 1)) + input.charAt(i);
-                if ((i - 13) >= 0 && input.charAt(i - 12) == 'x' && input.charAt(i - 13) == '\u00a7') {
+                if ((i - 13) >= 0 && isHexColorSequence(input, i - 13, COLOR_CHAR)) {
                     color = input.substring(i - 13, i + 1);
                     i -= 13;
                 }
                 if (isLegal(color)) {
                     result = color + result;
-                    if (color.charAt(1) == 'x' || isColor(ChatColor.getByChar(input.charAt(i))) || ChatColor.getByChar(input.charAt(i)).equals(ChatColor.RESET)) {
+                    if (color.length() == 14 || isColorCode(code) || code == 'r') {
                         break;
                     }
                 }
@@ -104,51 +72,51 @@ public class ChatColorUtils {
             return "";
         }
 
-        int i = 1;
-        String color = "";
-        while (i < input.length()) {
-            color = String.valueOf(input.charAt(i - 1)) + input.charAt(i);
-            if (input.charAt(i - 1) == '\u00a7' && input.charAt(i) == 'x' && input.length() > i + 13) {
-                color = input.substring(i - 1, i + 13);
-                i += 13;
+        int i = 0;
+        while (i < input.length() - 1) {
+            if (input.charAt(i) != COLOR_CHAR) {
+                if (found) {
+                    break;
+                }
+                i++;
+                continue;
             }
+
+            int length = isHexColorSequence(input, i, COLOR_CHAR) ? 14 : 2;
+            String color = input.substring(i, i + length);
             if (isLegal(color)) {
                 if (!found) {
                     found = true;
                     result = color;
-                } else if (color.charAt(1) == 'x' || isColor(ChatColor.getByChar(color.charAt(1)))) {
+                } else if (Character.toLowerCase(color.charAt(1)) == 'x' || isColorCode(color.charAt(1))) {
                     result = color;
                 } else {
                     result = result + color;
                 }
-                i++;
+                i += length;
             } else if (found) {
                 break;
+            } else {
+                i++;
             }
-            i++;
         }
 
         return result;
     }
 
-    public static boolean isColor(ChatColor color) {
-        List<ChatColor> format = new ArrayList<ChatColor>();
-        format.add(ChatColor.MAGIC);
-        format.add(ChatColor.BOLD);
-        format.add(ChatColor.ITALIC);
-        format.add(ChatColor.UNDERLINE);
-        format.add(ChatColor.STRIKETHROUGH);
-        return !format.contains(color) && !color.equals(ChatColor.RESET);
+    public static boolean isColorCode(char code) {
+        char normalized = Character.toLowerCase(code);
+        return normalized >= '0' && normalized <= '9' || normalized >= 'a' && normalized <= 'f';
     }
 
     public static boolean isLegal(String color) {
-        if (color.charAt(0) != '\u00a7') {
+        if (color == null || color.length() < 2 || color.charAt(0) != COLOR_CHAR) {
             return false;
         }
-        if (color.matches("\u00a7[0-9a-fk-or]")) {
+        if (color.length() == 2 && isLegacyCode(color.charAt(1))) {
             return true;
         }
-        return color.matches("\u00a7x\u00a7[0-9A-F]\u00a7[0-9A-F]\u00a7[0-9A-F]\u00a7[0-9A-F]\u00a7[0-9A-F]\u00a7[0-9A-F]");
+        return color.length() == 14 && isHexColorSequence(color, 0, COLOR_CHAR);
     }
 
     public static String addColorToEachWord(String text, String leadingColor) {
@@ -247,25 +215,51 @@ public class ChatColorUtils {
             return text;
         }
 
-        if (InteractionVisualizer.version.isNewerOrEqualTo(MCVersion.V1_16)) {
-            text = translatePluginColorFormatting(text);
-        }
-
-        for (int i = 0; i < text.length() - 1; i++) {
-            if (text.charAt(i) == code) {
-                if (text.charAt(i + 1) == 'x' && text.length() > (i + 14)) {
-                    String section = text.substring(i, i + 14);
-                    String translated = section.replace(code, '\u00a7');
-                    text = text.replace(section, translated);
-                } else if (COLORS.contains(text.charAt(i + 1))) {
-                    StringBuilder sb = new StringBuilder(text);
-                    sb.setCharAt(i, '\u00a7');
-                    text = sb.toString();
+        char[] characters = translatePluginColorFormatting(text).toCharArray();
+        for (int i = 0; i < characters.length - 1; i++) {
+            if (characters[i] != code) {
+                continue;
+            }
+            if (Character.toLowerCase(characters[i + 1]) == 'x' && isHexColorSequence(characters, i, code)) {
+                for (int marker = i; marker <= i + 12; marker += 2) {
+                    characters[marker] = COLOR_CHAR;
                 }
+                i += 13;
+            } else if (isLegacyCode(characters[i + 1])) {
+                characters[i] = COLOR_CHAR;
+                characters[i + 1] = Character.toLowerCase(characters[i + 1]);
             }
         }
+        return new String(characters);
+    }
 
-        return text;
+    private static boolean isLegacyCode(char code) {
+        char normalized = Character.toLowerCase(code);
+        return isColorCode(normalized) || normalized >= 'k' && normalized <= 'o' || normalized == 'r';
+    }
+
+    private static boolean isHexColorSequence(String text, int start, char marker) {
+        if (start < 0 || start + 14 > text.length() || text.charAt(start) != marker || Character.toLowerCase(text.charAt(start + 1)) != 'x') {
+            return false;
+        }
+        for (int i = start + 2; i < start + 14; i += 2) {
+            if (text.charAt(i) != marker || Character.digit(text.charAt(i + 1), 16) < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isHexColorSequence(char[] text, int start, char marker) {
+        if (start < 0 || start + 14 > text.length || text[start] != marker || Character.toLowerCase(text[start + 1]) != 'x') {
+            return false;
+        }
+        for (int i = start + 2; i < start + 14; i += 2) {
+            if (text[i] != marker || Character.digit(text[i + 1], 16) < 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
 }

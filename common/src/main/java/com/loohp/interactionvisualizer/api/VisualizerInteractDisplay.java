@@ -22,7 +22,7 @@ package com.loohp.interactionvisualizer.api;
 
 import com.loohp.interactionvisualizer.managers.TaskManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
-import com.loohp.platformscheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.InventoryType;
 

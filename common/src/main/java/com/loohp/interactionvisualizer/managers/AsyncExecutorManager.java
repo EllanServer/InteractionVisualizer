@@ -21,10 +21,11 @@
 package com.loohp.interactionvisualizer.managers;
 
 import com.loohp.interactionvisualizer.InteractionVisualizer;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import org.bukkit.Bukkit;
 
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class AsyncExecutorManager implements AutoCloseable {
@@ -41,7 +42,11 @@ public class AsyncExecutorManager implements AutoCloseable {
         if (!valid.get()) {
             return;
         }
-        executor.submit(runnable);
+        try {
+            executor.submit(runnable);
+        } catch (RejectedExecutionException ignored) {
+            // The plugin began shutting down between the validity check and submit.
+        }
     }
 
     public void runTaskLaterAsynchronously(Runnable runnable, long delay) {
@@ -51,13 +56,19 @@ public class AsyncExecutorManager implements AutoCloseable {
         Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> runTaskAsynchronously(runnable), delay);
     }
 
+    public void runTaskSynchronously(Runnable runnable) {
+        if (valid.get()) {
+            Scheduler.executeOrScheduleSync(InteractionVisualizer.plugin, runnable);
+        }
+    }
+
     public boolean isValid() {
         return valid.get();
     }
 
     @Override
     public void close() {
-        if (!valid.get()) {
+        if (!valid.compareAndSet(true, false)) {
             return;
         }
         executor.shutdown();

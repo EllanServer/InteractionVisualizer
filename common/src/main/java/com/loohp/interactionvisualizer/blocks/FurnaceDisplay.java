@@ -26,9 +26,9 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
 import com.loohp.interactionvisualizer.managers.SoundManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
@@ -36,12 +36,10 @@ import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
 import com.loohp.interactionvisualizer.utils.InventoryUtils;
-import com.loohp.interactionvisualizer.utils.MCVersion;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
-import com.loohp.platformscheduler.ScheduledTask;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
-import net.md_5.bungee.api.ChatColor;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -105,7 +103,7 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask gc() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = furnaceMap.entrySet().iterator();
             int count = 0;
             int maxper = (int) Math.ceil((double) furnaceMap.size() / (double) gcPeriod);
@@ -123,11 +121,11 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
                         Map<String, Object> map = entry.getValue();
                         if (map.get("Item") instanceof Item) {
                             Item item = (Item) map.get("Item");
-                            PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                         }
-                        if (map.get("Stand") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("Stand");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("Stand") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("Stand");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         furnaceMap.remove(block);
                         return;
@@ -136,11 +134,11 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
                         Map<String, Object> map = entry.getValue();
                         if (map.get("Item") instanceof Item) {
                             Item item = (Item) map.get("Item");
-                            PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                         }
-                        if (map.get("Stand") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("Stand");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("Stand") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("Stand");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         furnaceMap.remove(block);
                         return;
@@ -152,7 +150,7 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask run() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyFurnace();
             for (Block block : list) {
                 Scheduler.runTask(InteractionVisualizer.plugin, () -> {
@@ -160,7 +158,7 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
                         if (isFurnace(block.getType())) {
                             Map<String, Object> map = new HashMap<>();
                             map.put("Item", "N/A");
-                            map.putAll(spawnArmorStands(block));
+                            map.putAll(spawnDisplayEntitys(block));
                             furnaceMap.put(block, map);
                         }
                     }
@@ -190,7 +188,7 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
                     }
                     org.bukkit.block.Furnace furnace = (org.bukkit.block.Furnace) block.getState();
 
-                    InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
+                    {
                         Inventory inv = furnace.getInventory();
                         ItemStack itemstack = inv.getItem(0);
                         if (itemstack != null) {
@@ -217,8 +215,8 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
                                 item.setPickupDelay(32767);
                                 item.setGravity(false);
                                 entry.getValue().put("Item", item);
-                                PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
-                                PacketManager.updateItem(item);
+                                DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+                                DisplayManager.updateItem(item);
                             } else {
                                 entry.getValue().put("Item", "N/A");
                             }
@@ -227,21 +225,18 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
                             if (itemstack != null) {
                                 if (!item.getItemStack().equals(itemstack)) {
                                     item.setItemStack(itemstack);
-                                    PacketManager.updateItem(item);
+                                    DisplayManager.updateItem(item);
                                 }
                             } else {
                                 entry.getValue().put("Item", "N/A");
-                                PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                             }
                         }
 
-                        ArmorStand stand = (ArmorStand) entry.getValue().get("Stand");
+                        DisplayEntity stand = (DisplayEntity) entry.getValue().get("Stand");
                         if (hasItemToCook(furnace)) {
                             int time = furnace.getCookTime();
-                            int max = 10 * 20;
-                            if (InteractionVisualizer.version.isNewerThan(MCVersion.V1_13_1)) {
-                                max = furnace.getCookTimeTotal();
-                            }
+                            int max = furnace.getCookTimeTotal();
                             String symbol = "";
                             double percentagescaled = (double) time / (double) max * (double) progressBarLength;
                             double i = 1;
@@ -271,24 +266,24 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
                                 if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals(symbol) || !stand.isCustomNameVisible()) {
                                     stand.setCustomNameVisible(true);
                                     stand.setCustomName(symbol);
-                                    PacketManager.updateArmorStandOnlyMeta(stand);
+                                    DisplayManager.updateDisplay(stand);
                                 }
                             } else {
-                                symbol = noFuelColor + ChatColor.stripColor(symbol);
+                                symbol = noFuelColor + ChatColorUtils.stripColor(symbol);
                                 if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals(symbol) || !stand.isCustomNameVisible()) {
                                     stand.setCustomNameVisible(true);
                                     stand.setCustomName(symbol);
-                                    PacketManager.updateArmorStandOnlyMeta(stand);
+                                    DisplayManager.updateDisplay(stand);
                                 }
                             }
                         } else {
                             if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals("") || stand.isCustomNameVisible()) {
                                 stand.setCustomNameVisible(false);
                                 stand.setCustomName("");
-                                PacketManager.updateArmorStandOnlyMeta(stand);
+                                DisplayManager.updateDisplay(stand);
                             }
                         }
-                    });
+                    }
                 }, delay, block.getLocation());
             }
         }, 0, checkingPeriod);
@@ -333,7 +328,7 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
             }
         }
         int hotbarSlot = event.getHotbarButton();
-        if (hotbarSlot >= 0 && event.getAction().equals(InventoryAction.HOTBAR_MOVE_AND_READD)) {
+        if (hotbarSlot >= 0 && event.getAction().equals(InventoryAction.HOTBAR_SWAP)) {
             if (event.getWhoClicked().getInventory().getItem(hotbarSlot) != null && !event.getWhoClicked().getInventory().getItem(hotbarSlot).getType().equals(Material.AIR)) {
                 return;
             }
@@ -390,11 +385,11 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
             item.setVelocity(pickup);
             item.setGravity(true);
             item.setPickupDelay(32767);
-            PacketManager.updateItem(item);
+            DisplayManager.updateItem(item);
 
             Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
                 SoundManager.playItemPickup(item.getLocation(), InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY));
-                PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
             }, 8);
         }, 1);
     }
@@ -425,7 +420,7 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
         }
 
         if (event.getRawSlot() >= 0 && event.getRawSlot() <= 2) {
-            PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
+            DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
         }
     }
 
@@ -456,7 +451,7 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
 
         for (int slot : event.getRawSlots()) {
             if (slot >= 0 && slot <= 2) {
-                PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
+                DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
                 break;
             }
         }
@@ -471,11 +466,11 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
         Map<String, Object> map = furnaceMap.get(block);
         if (map.get("Item") instanceof Item) {
             Item item = (Item) map.get("Item");
-            PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
         }
-        if (map.get("Stand") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("Stand");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("Stand") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("Stand");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
         furnaceMap.remove(block);
     }
@@ -507,8 +502,8 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
         return PlayerLocationManager.hasPlayerNearby(loc);
     }
 
-    public Map<String, ArmorStand> spawnArmorStands(Block block) {
-        Map<String, ArmorStand> map = new HashMap<>();
+    public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) {
+        Map<String, DisplayEntity> map = new HashMap<>();
         Location origin = block.getLocation();
 
         BlockData blockData = block.getState().getBlockData();
@@ -517,17 +512,17 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
         Vector direction = target.toVector().subtract(origin.toVector()).multiply(0.7);
 
         Location loc = block.getLocation().clone().add(direction).add(0.5, 0.2, 0.5);
-        ArmorStand slot1 = new ArmorStand(loc.clone());
+        DisplayEntity slot1 = new DisplayEntity(loc.clone());
         setStand(slot1);
 
         map.put("Stand", slot1);
 
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot1);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot1);
 
         return map;
     }
 
-    public void setStand(ArmorStand stand) {
+    public void setStand(DisplayEntity stand) {
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);
@@ -539,15 +534,8 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
         stand.setRightArmPose(EulerAngle.ZERO);
     }
 
-    public boolean isFurnace(String material) {
-        if (material.equalsIgnoreCase("FURNACE")) {
-            return true;
-        }
-        return material.equalsIgnoreCase("BURNING_FURNACE");
-    }
-
     public boolean isFurnace(Material material) {
-        return isFurnace(material.toString());
+        return material == Material.FURNACE;
     }
 
 }

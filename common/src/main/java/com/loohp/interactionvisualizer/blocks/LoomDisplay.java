@@ -24,18 +24,18 @@ import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerInteractDisplay;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.SoundManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.LightType;
 import com.loohp.interactionvisualizer.utils.InventoryUtils;
 import com.loohp.interactionvisualizer.utils.LocationUtils;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
-import com.loohp.platformscheduler.ScheduledRunnable;
-import com.loohp.platformscheduler.ScheduledTask;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.ScheduledRunnable;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
@@ -107,10 +107,10 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
                                 }
                             }
 
-                            if (map.get("Banner") instanceof ArmorStand) {
-                                ArmorStand entity = (ArmorStand) map.get("Banner");
+                            if (map.get("Banner") instanceof DisplayEntity) {
+                                DisplayEntity entity = (DisplayEntity) map.get("Banner");
                                 InteractionVisualizer.lightManager.deleteLight(entity.getLocation());
-                                PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), entity);
+                                DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), entity);
                             }
                             openedLooms.remove(block);
                         }
@@ -146,7 +146,7 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
         if (!openedLooms.containsKey(block)) {
             Map<String, Object> map = new HashMap<>();
             map.put("Player", player);
-            map.putAll(spawnArmorStands(player, block));
+            map.putAll(spawnDisplayEntitys(player, block));
             openedLooms.put(block, map);
         }
         Map<String, Object> map = openedLooms.get(block);
@@ -177,20 +177,20 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
             item = output;
         }
 
-        ArmorStand stand = (ArmorStand) map.get("Banner");
+        DisplayEntity stand = (DisplayEntity) map.get("Banner");
         if (item != null) {
             if (!item.isSimilar(stand.getHelmet())) {
                 stand.setHelmet(item);
-                PacketManager.updateArmorStand(stand);
+                DisplayManager.updateDisplay(stand);
             }
         } else {
             if (!stand.getHelmet().getType().equals(Material.AIR)) {
                 stand.setHelmet(new ItemStack(Material.AIR));
-                PacketManager.updateArmorStand(stand);
+                DisplayManager.updateDisplay(stand);
             }
         }
 
-        Location loc1 = ((ArmorStand) map.get("Banner")).getLocation();
+        Location loc1 = ((DisplayEntity) map.get("Banner")).getLocation();
         InteractionVisualizer.lightManager.deleteLight(loc1);
         int skylight = loc1.getBlock().getRelative(BlockFace.UP).getLightFromSky();
         int blocklight = loc1.getBlock().getRelative(BlockFace.UP).getLightFromBlocks() - 1;
@@ -242,7 +242,7 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
             }
         }
         int hotbarSlot = event.getHotbarButton();
-        if (hotbarSlot >= 0 && event.getAction().equals(InventoryAction.HOTBAR_MOVE_AND_READD)) {
+        if (hotbarSlot >= 0 && event.getAction().equals(InventoryAction.HOTBAR_SWAP)) {
             if (event.getWhoClicked().getInventory().getItem(hotbarSlot) != null && !event.getWhoClicked().getInventory().getItem(hotbarSlot).getType().equals(Material.AIR)) {
                 return;
             }
@@ -304,12 +304,12 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
             Vector pickup = player.getEyeLocation().add(0.0, -0.5, 0.0).add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector().subtract(loc.clone().add(0.5, 1.2, 0.5).toVector()).multiply(0.15).add(lift);
             item.setVelocity(pickup);
             item.setPickupDelay(32767);
-            PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
-            PacketManager.updateItem(item);
+            DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+            DisplayManager.updateItem(item);
 
             Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
                 SoundManager.playItemPickup(item.getLocation(), InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY));
-                PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
             }, 8);
         }, 1);
     }
@@ -340,7 +340,7 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
         }
 
         if (event.getRawSlot() >= 0 && event.getRawSlot() <= 3) {
-            PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
+            DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
         }
     }
 
@@ -371,7 +371,7 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
 
         for (int slot : event.getRawSlots()) {
             if (slot >= 0 && slot <= 3) {
-                PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
+                DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
                 break;
             }
         }
@@ -415,40 +415,40 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
                 Vector pickup = player.getEyeLocation().add(0.0, -0.5, 0.0).add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector().subtract(block.getLocation().clone().add(0.5, 1.2, 0.5).toVector()).multiply(0.15).add(lift);
                 item.setVelocity(pickup);
                 item.setPickupDelay(32767);
-                PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
-                PacketManager.updateItem(item);
+                DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+                DisplayManager.updateItem(item);
                 new ScheduledRunnable() {
                     public void run() {
-                        PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                        DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                     }
                 }.runTaskLater(InteractionVisualizer.plugin, 8);
             }
         }
 
-        if (map.get("Banner") instanceof ArmorStand) {
-            ArmorStand entity = (ArmorStand) map.get("Banner");
+        if (map.get("Banner") instanceof DisplayEntity) {
+            DisplayEntity entity = (DisplayEntity) map.get("Banner");
             InteractionVisualizer.lightManager.deleteLight(entity.getLocation());
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), entity);
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), entity);
         }
         openedLooms.remove(block);
     }
 
-    public Map<String, ArmorStand> spawnArmorStands(Player player, Block block) {
-        Map<String, ArmorStand> map = new HashMap<>();
+    public Map<String, DisplayEntity> spawnDisplayEntitys(Player player, Block block) {
+        Map<String, DisplayEntity> map = new HashMap<>();
         Location loc = block.getLocation().clone().add(0.5, 0.03, 0.5);
         Location temploc = new Location(loc.getWorld(), loc.getX(), loc.getY(), loc.getZ()).setDirection(player.getLocation().getDirection().normalize().multiply(-1));
         float yaw = temploc.getYaw();
-        ArmorStand banner = new ArmorStand(loc.clone());
+        DisplayEntity banner = new DisplayEntity(loc.clone());
         setStand(banner, yaw);
 
         map.put("Banner", banner);
 
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), banner);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), banner);
 
         return map;
     }
 
-    public void setStand(ArmorStand stand, float yaw) {
+    public void setStand(DisplayEntity stand, float yaw) {
         stand.setArms(true);
         stand.setBasePlate(false);
         stand.setMarker(true);

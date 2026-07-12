@@ -1,3 +1,9 @@
+#Optional display-pose overrides for items recognized by a custom-content bridge
+#Valid modes: TOOL, STANDING, LOWBLOCK, ITEM, BLOCK
+CustomItems:
+  #'mypack:hammer': TOOL
+  #'mypack:altar': BLOCK
+
 #Items that should be display with the tool position
 Tools:
   - WOODEN_AXE

@@ -26,17 +26,17 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.DynamicVisualizerEntity.PathType;
-import com.loohp.interactionvisualizer.entityholders.SurroundingPlaneArmorStand;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.entityholders.BillboardDisplayEntity;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
-import com.loohp.platformscheduler.ScheduledTask;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
@@ -91,7 +91,7 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask gc() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = spawnerMap.entrySet().iterator();
             int count = 0;
             int maxper = (int) Math.ceil((double) spawnerMap.size() / (double) gcPeriod);
@@ -107,18 +107,18 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
                     if (!isActive(block.getLocation())) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         spawnerMap.remove(block);
                         return;
                     }
                     if (!isSpawner(block.getType())) {
                         Map<String, Object> map = entry.getValue();
-                        if (map.get("1") instanceof ArmorStand) {
-                            ArmorStand stand = (ArmorStand) map.get("1");
-                            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+                        if (map.get("1") instanceof DisplayEntity) {
+                            DisplayEntity stand = (DisplayEntity) map.get("1");
+                            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
                         }
                         spawnerMap.remove(block);
                         return;
@@ -130,14 +130,14 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask run() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbySpawner();
             for (Block block : list) {
                 Scheduler.runTask(InteractionVisualizer.plugin, () -> {
                     if (spawnerMap.get(block) == null && isActive(block.getLocation())) {
                         if (isSpawner(block.getType())) {
                             HashMap<String, Object> map = new HashMap<>();
-                            map.putAll(spawnArmorStands(block));
+                            map.putAll(spawnDisplayEntitys(block));
                             spawnerMap.put(block, map);
                         }
                     }
@@ -166,8 +166,8 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
                     }
                     org.bukkit.block.CreatureSpawner spawner = (org.bukkit.block.CreatureSpawner) block.getState();
 
-                    InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
-                        ArmorStand stand = (ArmorStand) entry.getValue().get("1");
+                    {
+                        DisplayEntity stand = (DisplayEntity) entry.getValue().get("1");
 
                         int activeRange = spawner.getRequiredPlayerRange();
 
@@ -197,16 +197,16 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
                             if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals(symbol) || !stand.isCustomNameVisible()) {
                                 stand.setCustomNameVisible(true);
                                 stand.setCustomName(symbol);
-                                PacketManager.updateArmorStandOnlyMeta(stand);
+                                DisplayManager.updateDisplay(stand);
                             }
                         } else {
                             if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals("") || stand.isCustomNameVisible()) {
                                 stand.setCustomNameVisible(false);
                                 stand.setCustomName("");
-                                PacketManager.updateArmorStandOnlyMeta(stand);
+                                DisplayManager.updateDisplay(stand);
                             }
                         }
-                    });
+                    }
                 }, delay, block.getLocation());
             }
         }, 0, checkingPeriod);
@@ -220,9 +220,9 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
         }
 
         Map<String, Object> map = spawnerMap.get(block);
-        if (map.get("1") instanceof ArmorStand) {
-            ArmorStand stand = (ArmorStand) map.get("1");
-            PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), stand);
+        if (map.get("1") instanceof DisplayEntity) {
+            DisplayEntity stand = (DisplayEntity) map.get("1");
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
         spawnerMap.remove(block);
     }
@@ -235,23 +235,23 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
         return PlayerLocationManager.hasPlayerNearby(loc);
     }
 
-    public Map<String, ArmorStand> spawnArmorStands(Block block) {
-        Map<String, ArmorStand> map = new HashMap<>();
+    public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) {
+        Map<String, DisplayEntity> map = new HashMap<>();
 
         Location origin = block.getLocation();
 
         Location loc = origin.clone().add(0.5, 0.2, 0.5);
-        SurroundingPlaneArmorStand slot1 = new SurroundingPlaneArmorStand(loc.clone(), 0.7, pathType);
+        BillboardDisplayEntity slot1 = new BillboardDisplayEntity(loc.clone(), 0.7, pathType);
         setStand(slot1);
 
         map.put("1", slot1);
 
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot1);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), slot1);
 
         return map;
     }
 
-    public void setStand(ArmorStand stand) {
+    public void setStand(DisplayEntity stand) {
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);
@@ -263,15 +263,8 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
         stand.setRightArmPose(EulerAngle.ZERO);
     }
 
-    public boolean isSpawner(String material) {
-        if (material.equalsIgnoreCase("SPAWNER")) {
-            return true;
-        }
-        return material.equalsIgnoreCase("MOB_SPAWNER");
-    }
-
     public boolean isSpawner(Material material) {
-        return isSpawner(material.toString());
+        return material == Material.SPAWNER;
     }
 
 }

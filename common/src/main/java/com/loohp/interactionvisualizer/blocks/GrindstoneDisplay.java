@@ -24,9 +24,9 @@ import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerInteractDisplay;
-import com.loohp.interactionvisualizer.entityholders.ArmorStand;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.SoundManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.InventoryUtils;
@@ -34,7 +34,7 @@ import com.loohp.interactionvisualizer.utils.LocationUtils;
 import com.loohp.interactionvisualizer.utils.MaterialUtils;
 import com.loohp.interactionvisualizer.utils.MaterialUtils.MaterialMode;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
@@ -100,7 +100,7 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
             Map<String, Object> map = new HashMap<>();
             map.put("Player", player);
             map.put("2", "N/A");
-            map.putAll(spawnArmorStands(player, block));
+            map.putAll(spawnDisplayEntitys(player, block));
             openedGrindstone.put(block, map);
         }
 
@@ -125,8 +125,8 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
                     item.setPickupDelay(32767);
                     item.setGravity(false);
                     map.put("2", item);
-                    PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
-                    PacketManager.updateItem(item);
+                    DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+                    DisplayManager.updateItem(item);
                 } else {
                     map.put("2", "N/A");
                 }
@@ -135,46 +135,37 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
                 if (itemstack != null) {
                     if (!item.getItemStack().equals(itemstack)) {
                         item.setItemStack(itemstack);
-                        PacketManager.updateItem(item);
+                        DisplayManager.updateItem(item);
                     }
                 } else {
                     map.put("2", "N/A");
-                    PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                    DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                 }
             }
         }
         for (int i = 0; i < 2; i++) {
-            ArmorStand stand = (ArmorStand) map.get(String.valueOf(i));
+            DisplayEntity stand = (DisplayEntity) map.get(String.valueOf(i));
             ItemStack item = items[i];
             if (item == null || item.getType().equals(Material.AIR)) {
                 item = null;
             }
             if (item != null) {
-                boolean changed = true;
-                if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.BLOCK) && !standMode(stand).equals(MaterialMode.BLOCK)) {
-                    toggleStandMode(stand, "Block");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.TOOL) && !standMode(stand).equals(MaterialMode.TOOL)) {
-                    toggleStandMode(stand, "Tool");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.ITEM) && !standMode(stand).equals(MaterialMode.ITEM)) {
-                    toggleStandMode(stand, "Item");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.STANDING) && !standMode(stand).equals(MaterialMode.STANDING)) {
-                    toggleStandMode(stand, "Standing");
-                } else if (MaterialUtils.getMaterialType(item.getType()).equals(MaterialMode.LOWBLOCK) && !standMode(stand).equals(MaterialMode.LOWBLOCK)) {
-                    toggleStandMode(stand, "LowBlock");
-                } else {
-                    changed = false;
+                MaterialMode materialMode = MaterialUtils.getMaterialType(item);
+                boolean changed = materialMode != standMode(stand);
+                if (changed) {
+                    toggleStandMode(stand, materialMode.toString());
                 }
-                if (!item.getType().equals(stand.getItemInMainHand().getType())) {
+                if (!item.equals(stand.getItemInMainHand())) {
                     changed = true;
                     stand.setItemInMainHand(item);
                 }
                 if (changed) {
-                    PacketManager.updateArmorStand(stand);
+                    DisplayManager.updateDisplay(stand);
                 }
             } else {
                 if (!stand.getItemInMainHand().getType().equals(Material.AIR)) {
                     stand.setItemInMainHand(new ItemStack(Material.AIR));
-                    PacketManager.updateArmorStand(stand);
+                    DisplayManager.updateDisplay(stand);
                 }
             }
         }
@@ -210,7 +201,7 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
             }
         }
         int hotbarSlot = event.getHotbarButton();
-        if (hotbarSlot >= 0 && event.getAction().equals(InventoryAction.HOTBAR_MOVE_AND_READD)) {
+        if (hotbarSlot >= 0 && event.getAction().equals(InventoryAction.HOTBAR_SWAP)) {
             if (event.getWhoClicked().getInventory().getItem(hotbarSlot) != null && !event.getWhoClicked().getInventory().getItem(hotbarSlot).getType().equals(Material.AIR)) {
                 return;
             }
@@ -248,8 +239,8 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
         Location loc = block.getLocation();
         Player player = (Player) event.getWhoClicked();
 
-        ArmorStand slot0 = (ArmorStand) map.get("0");
-        ArmorStand slot1 = (ArmorStand) map.get("1");
+        DisplayEntity slot0 = (DisplayEntity) map.get("0");
+        DisplayEntity slot1 = (DisplayEntity) map.get("1");
         if (map.get("2") instanceof String) {
             map.put("2", new Item(block.getLocation().clone().add(0.5, 1.2, 0.5)));
         }
@@ -279,8 +270,8 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
             slot0.teleport(slot0.getLocation().add(rotateVectorAroundY(vector.clone(), 90).multiply(0.1)));
             slot1.teleport(slot1.getLocation().add(rotateVectorAroundY(vector.clone(), -90).multiply(0.1)));
 
-            PacketManager.updateArmorStand(slot0);
-            PacketManager.updateArmorStand(slot1);
+            DisplayManager.updateDisplay(slot0);
+            DisplayManager.updateDisplay(slot1);
 
             Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
                 for (Player each : InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY)) {
@@ -295,13 +286,13 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
                 item.setVelocity(pickup);
                 item.setGravity(true);
                 item.setPickupDelay(32767);
-                PacketManager.updateItem(item);
+                DisplayManager.updateItem(item);
 
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
                     SoundManager.playItemPickup(item.getLocation(), InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY));
-                    PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), slot0);
-                    PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), slot1);
-                    PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                    DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot0);
+                    DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot1);
+                    DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                 }, 8);
             }, 10);
         }, 1);
@@ -333,7 +324,7 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
         }
 
         if (event.getRawSlot() >= 0 && event.getRawSlot() <= 2) {
-            PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
+            DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
         }
     }
 
@@ -364,7 +355,7 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
 
         for (int slot : event.getRawSlots()) {
             if (slot >= 0 && slot <= 2) {
-                PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
+                DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
                 break;
             }
         }
@@ -401,16 +392,16 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
             if (!(map.get(String.valueOf(i)) instanceof String)) {
                 Object entity = map.get(String.valueOf(i));
                 if (entity instanceof Item) {
-                    PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), (Item) entity);
-                } else if (entity instanceof ArmorStand) {
-                    PacketManager.removeArmorStand(InteractionVisualizerAPI.getPlayers(), (ArmorStand) entity);
+                    DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), (Item) entity);
+                } else if (entity instanceof DisplayEntity) {
+                    DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), (DisplayEntity) entity);
                 }
             }
         }
         openedGrindstone.remove(block);
     }
 
-    public MaterialMode standMode(ArmorStand stand) {
+    public MaterialMode standMode(DisplayEntity stand) {
         String plain = PlainTextComponentSerializer.plainText().serialize(stand.getCustomName());
         if (plain.startsWith("IV.Grindstone.")) {
             return MaterialMode.getModeFromName(plain.substring(plain.lastIndexOf(".") + 1));
@@ -418,7 +409,7 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
         return null;
     }
 
-    public void toggleStandMode(ArmorStand stand, String mode) {
+    public void toggleStandMode(DisplayEntity stand, String mode) {
         String plainText = PlainTextComponentSerializer.plainText().serialize(stand.getCustomName());
         if (!plainText.equals("IV.Grindstone.Item")) {
             if (plainText.equals("IV.Grindstone.Block")) {
@@ -486,32 +477,32 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
         }
     }
 
-    public Map<String, ArmorStand> spawnArmorStands(Player player, Block block) { //.add(0.68, 0.600781, 0.35)
-        Map<String, ArmorStand> map = new HashMap<>();
+    public Map<String, DisplayEntity> spawnDisplayEntitys(Player player, Block block) { //.add(0.68, 0.600781, 0.35)
+        Map<String, DisplayEntity> map = new HashMap<>();
         Location loc = block.getLocation().clone().add(0.5, 0.600781, 0.5);
-        ArmorStand center = new ArmorStand(loc);
+        DisplayEntity center = new DisplayEntity(loc);
         float yaw = getCardinalDirection(player);
         center.setRotation(yaw, center.getLocation().getPitch());
         setStand(center);
         center.setCustomName("IV.Grindstone.Center");
         Vector vector = rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.19), -100).add(center.getLocation().clone().getDirection().normalize().multiply(-0.11));
-        ArmorStand middle = new ArmorStand(loc.clone().add(vector));
+        DisplayEntity middle = new DisplayEntity(loc.clone().add(vector));
         setStand(middle, yaw);
-        ArmorStand slot0 = new ArmorStand(middle.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)));
+        DisplayEntity slot0 = new DisplayEntity(middle.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)));
         setStand(slot0, yaw + 20);
-        ArmorStand slot1 = new ArmorStand(middle.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)));
+        DisplayEntity slot1 = new DisplayEntity(middle.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)));
         setStand(slot1, yaw - 20);
 
         map.put("0", slot0);
         map.put("1", slot1);
 
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot0);
-        PacketManager.sendArmorStandSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot1);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot0);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot1);
 
         return map;
     }
 
-    public void setStand(ArmorStand stand, float yaw) {
+    public void setStand(DisplayEntity stand, float yaw) {
         stand.setArms(true);
         stand.setBasePlate(false);
         stand.setMarker(true);
@@ -525,7 +516,7 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
         stand.setRotation(yaw, stand.getLocation().getPitch());
     }
 
-    public void setStand(ArmorStand stand) {
+    public void setStand(DisplayEntity stand) {
         stand.setArms(true);
         stand.setBasePlate(false);
         stand.setMarker(true);

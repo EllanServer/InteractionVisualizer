@@ -11,6 +11,7 @@ Database:
 Messages:
   NoPermission: "&cYou do not have permission to use that command!"
   Reload: "&aInteractionVisualizer successfully reloaded!"
+  UnknownCommand: '&cUnknown command. Type "/help" for help.'
   Toggle:
     Usage: "&cUsage: /interactionvisualizer toggle <itemstand/itemdrop/hologram> <block/entry> <true/false>"
     Modes: "&cToggle Modes: itemstand, itemdrop, hologram"
@@ -181,75 +182,8 @@ Blocks:
   EnchantmentTable:
     Enabled: true
     Options:
-      TranslatableEnchantments:
-        - "enchantment.damage.all"
-        - "enchantment.damage.undead"
-        - "enchantment.damage.arthropods"
-        - "enchantment.knockback"
-        - "enchantment.fire"
-        - "enchantment.sweeping"
-        - "enchantment.protect.all"
-        - "enchantment.protect.fire"
-        - "enchantment.protect.fall"
-        - "enchantment.protect.explosion"
-        - "enchantment.protect.projectile"
-        - "enchantment.oxygen"
-        - "enchantment.waterWorker"
-        - "enchantment.waterWalker"
-        - "enchantment.frostWalker"
-        - "enchantment.digging"
-        - "enchantment.untouching"
-        - "enchantment.durability"
-        - "enchantment.lootBonus"
-        - "enchantment.lootBonusDigger"
-        - "enchantment.lootBonusFishing"
-        - "enchantment.fishingSpeed"
-        - "enchantment.arrowDamage"
-        - "enchantment.arrowFire"
-        - "enchantment.arrowKnockback"
-        - "enchantment.arrowInfinite"
-        - "enchantment.thorns"
-        - "enchantment.mending"
-        - "enchantment.binding_curse"
-        - "enchantment.vanishing_curse"
-        - "enchantment.minecraft.sharpness"
-        - "enchantment.minecraft.smite"
-        - "enchantment.minecraft.bane_of_arthropods"
-        - "enchantment.minecraft.knockback"
-        - "enchantment.minecraft.fire_aspect"
-        - "enchantment.minecraft.sweeping"
-        - "enchantment.minecraft.protection"
-        - "enchantment.minecraft.fire_protection"
-        - "enchantment.minecraft.feather_falling"
-        - "enchantment.minecraft.blast_protection"
-        - "enchantment.minecraft.projectile_protection"
-        - "enchantment.minecraft.respiration"
-        - "enchantment.minecraft.aqua_affinity"
-        - "enchantment.minecraft.depth_strider"
-        - "enchantment.minecraft.frost_walker"
-        - "enchantment.minecraft.soul_speed"
-        - "enchantment.minecraft.efficiency"
-        - "enchantment.minecraft.silk_touch"
-        - "enchantment.minecraft.unbreaking"
-        - "enchantment.minecraft.looting"
-        - "enchantment.minecraft.fortune"
-        - "enchantment.minecraft.luck_of_the_sea"
-        - "enchantment.minecraft.lure"
-        - "enchantment.minecraft.power"
-        - "enchantment.minecraft.flame"
-        - "enchantment.minecraft.punch"
-        - "enchantment.minecraft.infinity"
-        - "enchantment.minecraft.thorns"
-        - "enchantment.minecraft.mending"
-        - "enchantment.minecraft.binding_curse"
-        - "enchantment.minecraft.vanishing_curse"
-        - "enchantment.minecraft.loyalty"
-        - "enchantment.minecraft.impaling"
-        - "enchantment.minecraft.riptide"
-        - "enchantment.minecraft.channeling"
-        - "enchantment.minecraft.multishot"
-        - "enchantment.minecraft.quick_charge"
-        - "enchantment.minecraft.piercing"
+      # Paper supplies the localized Component for registered enchantments.
+      # Add overrides here only for custom enchantments that do not provide one.
       CustomDefinedEnchantmentNames:
         "myplugin:mycustomenchant": "My Cool Enchant"
   EnderChest:
@@ -327,12 +261,15 @@ Entities:
       Blacklist:
         #Strip color codes when matching names
         StripColorWhenMatching: true
-        #Regex name match and material match
+        #Regex name match, material match, and optional custom item ID match
         #The first entry in each item on the list is a regex matching the item's name
         #The second entry is the material name
+        #The optional third entry is an exact namespaced custom item ID resolved through
+        #an installed custom-content bridge, for example a CraftEngine item ID
         List:
           - ["^ALTAR Probe.*", "NETHER_STAR"]
           - ["^Blacklisted Item$", "*"]
+          #- [".*", "*", "mypack:ruby"]
       RegularFormat: "{Item} &bx{Amount} &6[{Timer}&6]"
       SingularFormat: "{Item} &6[{Timer}&6]"
       ToolsFormat: "{Item} &6[{Durability}&6]"
@@ -342,6 +279,9 @@ Entities:
       #This is in ticks (20 ticks = 1 second)
       #Setting this too low might impact performance
       UpdateRate: 20
+      #Paper does not expose its internal per-item despawn rate. This value
+      #drives the public-API timer (6000 ticks = 5 minutes).
+      DespawnTicks: 6000
       Color:
         High: "&a"
         Medium: "&e"
@@ -350,9 +290,9 @@ Entities:
     Enabled: true
 
 #Enable these modules for InteractionVisualizer displays
-#ItemStand represents all displays using armorstands and itemframes
+#ItemStand represents ItemDisplay-based workstation and item-frame visuals
 #ItemDrop represents all displays using dropped items
-#Hologram represents all holographic displays using armorstands
+#Hologram represents all TextDisplay-based labels
 #OverridingDisabled accepts a list of entry keys
 #Which force disables a module for a display type regardless of player preference
 #An example of an entry key is "interactionvisualizer:crafting_table"

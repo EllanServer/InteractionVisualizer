@@ -21,7 +21,6 @@
 package com.loohp.interactionvisualizer.config;
 
 import com.loohp.interactionvisualizer.utils.FileUtils;
-import com.loohp.yamlconfiguration.YamlConfiguration;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -94,32 +93,18 @@ public class Config {
         }
     }
 
-    private File file;
-    private YamlConfiguration defConfig;
-    private YamlConfiguration config;
+    private final File file;
+    private final SparrowConfiguration config;
 
     private Config(File file, InputStream def, boolean refreshComments) throws IOException {
         this.file = file;
 
-        defConfig = new YamlConfiguration(def);
-        config = new YamlConfiguration(file);
-
-        for (String path : defConfig.getValues(true).keySet()) {
-            if (config.contains(path)) {
-                if (refreshComments) {
-                    config.setAboveComment(path, defConfig.getAboveComment(path));
-                }
-            } else if (!defConfig.isConfigurationSection(path)) {
-                config.set(path, defConfig.get(path));
-                config.setAboveComment(path, defConfig.getAboveComment(path));
-            }
-        }
-
-        save();
+        config = new SparrowConfiguration(file, def, refreshComments);
     }
 
     private Config(File file) throws IOException {
-        config = new YamlConfiguration(file);
+        this.file = file;
+        config = new SparrowConfiguration(file);
         save();
     }
 
@@ -139,7 +124,7 @@ public class Config {
         config.reload();
     }
 
-    public YamlConfiguration getConfiguration() {
+    public SparrowConfiguration getConfiguration() {
         return config;
     }
 

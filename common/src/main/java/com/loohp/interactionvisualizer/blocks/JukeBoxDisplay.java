@@ -27,19 +27,17 @@ import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
 import com.loohp.interactionvisualizer.entityholders.Item;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
-import com.loohp.interactionvisualizer.utils.ColorUtils;
 import com.loohp.interactionvisualizer.utils.ComponentFont;
 import com.loohp.interactionvisualizer.utils.TranslationUtils;
-import com.loohp.platformscheduler.ScheduledTask;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
-import net.md_5.bungee.api.ChatColor;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -83,7 +81,7 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask gc() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = jukeboxMap.entrySet().iterator();
             int count = 0;
             int maxper = (int) Math.ceil((double) jukeboxMap.size() / (double) gcPeriod);
@@ -101,7 +99,7 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
                         Map<String, Object> map = entry.getValue();
                         if (map.get("Item") instanceof Item) {
                             Item item = (Item) map.get("Item");
-                            PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                         }
                         jukeboxMap.remove(block);
                         return;
@@ -110,7 +108,7 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
                         Map<String, Object> map = entry.getValue();
                         if (map.get("Item") instanceof Item) {
                             Item item = (Item) map.get("Item");
-                            PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                         }
                         jukeboxMap.remove(block);
                         return;
@@ -122,7 +120,7 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask run() {
-        return Scheduler.runTaskTimerAsynchronously(InteractionVisualizer.plugin, () -> {
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyJukeBox();
             for (Block block : list) {
                 Scheduler.runTask(InteractionVisualizer.plugin, () -> {
@@ -158,7 +156,7 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
                     }
                     org.bukkit.block.Jukebox jukebox = (org.bukkit.block.Jukebox) block.getState();
 
-                    InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
+                    {
                         ItemStack itemstack = jukebox.getRecord() == null ? null : (jukebox.getRecord().getType().equals(Material.AIR) ? null : jukebox.getRecord().clone());
 
                         if (entry.getValue().get("Item") instanceof String) {
@@ -168,11 +166,12 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
                                 String disc = jukebox.getPlaying().toString();
                                 Component text;
                                 if (showDiscName) {
-                                    if (itemstack.getItemMeta().hasDisplayName()) {
-                                        text = ComponentFont.parseFont(LegacyComponentSerializer.legacySection().deserialize(getColor(disc) + itemstack.getItemMeta().getDisplayName()));
+                                    Component displayName = itemstack.getItemMeta().displayName();
+                                    if (displayName != null) {
+                                        text = ComponentFont.parseFont(displayName.colorIfAbsent(getColor(disc)));
                                     } else {
                                         text = Component.translatable(TranslationUtils.getRecord(disc));
-                                        text = text.color(ColorUtils.toTextColor(getColor(disc)));
+                                        text = text.color(getColor(disc));
                                     }
                                     item.setCustomName(text);
                                     item.setCustomNameVisible(true);
@@ -185,8 +184,8 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
                                 item.setPickupDelay(32767);
                                 item.setGravity(false);
                                 entry.getValue().put("Item", item);
-                                PacketManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
-                                PacketManager.updateItem(item);
+                                DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+                                DisplayManager.updateItem(item);
                             } else {
                                 entry.getValue().put("Item", "N/A");
                             }
@@ -198,11 +197,12 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
                                     String disc = jukebox.getPlaying().toString();
                                     Component text;
                                     if (showDiscName) {
-                                        if (itemstack.getItemMeta().hasDisplayName()) {
-                                            text = ComponentFont.parseFont(LegacyComponentSerializer.legacySection().deserialize(getColor(disc) + itemstack.getItemMeta().getDisplayName()));
+                                        Component displayName = itemstack.getItemMeta().displayName();
+                                        if (displayName != null) {
+                                            text = ComponentFont.parseFont(displayName.colorIfAbsent(getColor(disc)));
                                         } else {
                                             text = Component.translatable(TranslationUtils.getRecord(disc));
-                                            text = text.color(ColorUtils.toTextColor(getColor(disc)));
+                                            text = text.color(getColor(disc));
                                         }
                                         item.setCustomName(text);
                                         item.setCustomNameVisible(true);
@@ -210,14 +210,14 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
                                         item.setCustomName("");
                                         item.setCustomNameVisible(false);
                                     }
-                                    PacketManager.updateItem(item);
+                                    DisplayManager.updateItem(item);
                                 }
                             } else {
                                 entry.getValue().put("Item", "N/A");
-                                PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                             }
                         }
-                    });
+                    }
                 }, delay, block.getLocation());
             }
         }, 0, checkingPeriod);
@@ -233,7 +233,7 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
         Map<String, Object> map = jukeboxMap.get(block);
         if (map.get("Item") instanceof Item) {
             Item item = (Item) map.get("Item");
-            PacketManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
         }
         jukeboxMap.remove(block);
     }
@@ -246,48 +246,48 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
         return PlayerLocationManager.hasPlayerNearby(loc);
     }
 
-    public ChatColor getColor(String material) {
+    public NamedTextColor getColor(String material) {
         switch (material) {
             case "MUSIC_DISC_11":
-                return ChatColor.WHITE;
+                return NamedTextColor.WHITE;
             case "MUSIC_DISC_13":
-                return ChatColor.GOLD;
+                return NamedTextColor.GOLD;
             case "MUSIC_DISC_BLOCKS":
-                return ChatColor.RED;
+                return NamedTextColor.RED;
             case "MUSIC_DISC_CAT":
-                return ChatColor.GREEN;
+                return NamedTextColor.GREEN;
             case "MUSIC_DISC_CHIRP":
-                return ChatColor.DARK_RED;
+                return NamedTextColor.DARK_RED;
             case "MUSIC_DISC_FAR":
-                return ChatColor.GREEN;
+                return NamedTextColor.GREEN;
             case "MUSIC_DISC_MALL":
-                return ChatColor.BLUE;
+                return NamedTextColor.BLUE;
             case "MUSIC_DISC_MELLOHI":
-                return ChatColor.LIGHT_PURPLE;
+                return NamedTextColor.LIGHT_PURPLE;
             case "MUSIC_DISC_STAL":
-                return ChatColor.WHITE;
+                return NamedTextColor.WHITE;
             case "MUSIC_DISC_STRAD":
-                return ChatColor.WHITE;
+                return NamedTextColor.WHITE;
             case "MUSIC_DISC_WAIT":
-                return ChatColor.AQUA;
+                return NamedTextColor.AQUA;
             case "MUSIC_DISC_WARD":
-                return ChatColor.DARK_AQUA;
+                return NamedTextColor.DARK_AQUA;
             case "MUSIC_DISC_PIGSTEP":
-                return ChatColor.GOLD;
+                return NamedTextColor.GOLD;
             case "MUSIC_DISC_OTHERSIDE":
-                return ChatColor.BLUE;
+                return NamedTextColor.BLUE;
             case "MUSIC_DISC_5":
-                return ChatColor.DARK_AQUA;
+                return NamedTextColor.DARK_AQUA;
             case "MUSIC_DISC_RELIC":
-                return ChatColor.AQUA;
+                return NamedTextColor.AQUA;
             case "MUSIC_DISC_CREATOR":
-                return ChatColor.GREEN;
+                return NamedTextColor.GREEN;
             case "MUSIC_DISC_CREATOR_MUSIC_BOX":
-                return ChatColor.GOLD;
+                return NamedTextColor.GOLD;
             case "MUSIC_DISC_PRECIPICE":
-                return ChatColor.GREEN;
+                return NamedTextColor.GREEN;
             default:
-                return ChatColor.WHITE;
+                return NamedTextColor.WHITE;
         }
     }
 

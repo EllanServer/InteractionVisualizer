@@ -21,13 +21,12 @@
 package com.loohp.interactionvisualizer.debug;
 
 import com.loohp.interactionvisualizer.InteractionVisualizer;
-import com.loohp.interactionvisualizer.nms.NMS;
-import com.loohp.interactionvisualizer.utils.MCVersion;
-import net.md_5.bungee.api.ChatColor;
-import net.md_5.bungee.api.chat.TextComponent;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
@@ -45,9 +44,7 @@ public class Debug implements Listener {
     private ItemStack bone;
 
     public Debug() {
-        if (InteractionVisualizer.version.isNewerOrEqualTo(MCVersion.V1_16_4)) {
-            Bukkit.removeRecipe(new NamespacedKey(InteractionVisualizer.plugin, "nana_bone"));
-        }
+        Bukkit.removeRecipe(new NamespacedKey(InteractionVisualizer.plugin, "nana_bone"));
 
         if (InteractionVisualizer.plugin.getConfiguration().contains("Special.b")) {
             if (!InteractionVisualizer.plugin.getConfiguration().getBoolean("Special.b")) {
@@ -57,25 +54,28 @@ public class Debug implements Listener {
 
         bone = new ItemStack(Material.BONE, 1);
         ItemMeta meta = bone.getItemMeta();
-        TextComponent text = new TextComponent("Nana's Bone");
-        text.setColor(ChatColor.YELLOW);
-        List<String> lore = new ArrayList<String>();
-        lore.add("\u00a77Lost \u00a76In-\u00a7dMaginary~~");
-        lore.add("");
-        lore.add("\u00a76https://www.instagram.com/narliar/");
-        lore.add("");
-        lore.add("\u00a77EasterEgg tribute to the IV author's \u00a7cAdorable");
-        meta.setLore(lore);
+        meta.displayName(Component.text("Nana's Bone", NamedTextColor.YELLOW));
+        List<Component> lore = new ArrayList<>();
+        lore.add(Component.text("Lost ", NamedTextColor.GRAY)
+                .append(Component.text("In-", NamedTextColor.GOLD))
+                .append(Component.text("Maginary~~", NamedTextColor.LIGHT_PURPLE)));
+        lore.add(Component.empty());
+        lore.add(Component.text("https://www.instagram.com/narliar/", NamedTextColor.GOLD));
+        lore.add(Component.empty());
+        lore.add(Component.text("EasterEgg tribute to the IV author's ", NamedTextColor.GRAY)
+                .append(Component.text("Adorable", NamedTextColor.RED)));
+        meta.lore(lore);
         meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
-        meta.setDisplayName(text.toLegacyText());
         bone.setItemMeta(meta);
-        bone.addUnsafeEnchantment(NMS.getInstance().getPowerEnchantment(), 1);
+        bone.addUnsafeEnchantment(Enchantment.POWER, 1);
     }
 
     @EventHandler
     public void onJoinPluginActive(PlayerJoinEvent event) {
         if (event.getPlayer().getName().equals("LOOHP") || event.getPlayer().getName().equals("AppLEshakE")) {
-            event.getPlayer().sendMessage(ChatColor.BLUE + "InteractionVisualizer " + InteractionVisualizer.plugin.getDescription().getVersion() + " is running!");
+            event.getPlayer().sendMessage(Component.text(
+                    "InteractionVisualizer " + InteractionVisualizer.plugin.getPluginMeta().getVersion() + " is running!",
+                    NamedTextColor.BLUE));
         }
     }
 

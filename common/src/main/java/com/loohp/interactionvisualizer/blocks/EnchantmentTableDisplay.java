@@ -24,13 +24,13 @@ import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.VisualizerInteractDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
-import com.loohp.interactionvisualizer.managers.PacketManager;
+import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.objectholders.EnchantmentTableAnimation;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.CustomMapUtils;
 import com.loohp.interactionvisualizer.utils.InventoryUtils;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import org.bukkit.GameMode;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -49,9 +49,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.EnchantmentStorageMeta;
 
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
@@ -59,19 +57,14 @@ public class EnchantmentTableDisplay extends VisualizerInteractDisplay implement
 
     public static final Pattern VALID_NUMBER = Pattern.compile("-?[0-9]+");
 
-    private static Set<String> translatableEnchantments = new HashSet<>();
     private static Map<String, String> customDefinedEnchantmentNames = new HashMap<>();
-
-    public static Set<String> getTranslatableEnchantments() {
-        return translatableEnchantments;
-    }
 
     public static Map<String, String> getCustomDefinedEnchantmentNames() {
         return customDefinedEnchantmentNames;
     }
 
     public static String getEnchantmentIdOrKey(Enchantment enchantment) {
-        return enchantment.getKey().toString();
+        return enchantment.key().asString();
     }
 
     public Map<Player, Block> playermap = new ConcurrentHashMap<>();
@@ -82,7 +75,6 @@ public class EnchantmentTableDisplay extends VisualizerInteractDisplay implement
 
     @EventHandler
     public void onReload(InteractionVisualizerReloadEvent event) {
-        translatableEnchantments = new HashSet<>(InteractionVisualizer.plugin.getConfiguration().getStringList("Blocks.EnchantmentTable.Options.TranslatableEnchantments"));
         customDefinedEnchantmentNames = new HashMap<>();
         if (InteractionVisualizer.plugin.getConfiguration().isConfigurationSection("Blocks.EnchantmentTable.Options.CustomDefinedEnchantmentNames")) {
             for (Map.Entry<String, Object> entry : InteractionVisualizer.plugin.getConfiguration().getConfigurationSection("Blocks.EnchantmentTable.Options.CustomDefinedEnchantmentNames").getValues(false).entrySet()) {
@@ -254,7 +246,7 @@ public class EnchantmentTableDisplay extends VisualizerInteractDisplay implement
         }
 
         if (event.getRawSlot() >= 0 && event.getRawSlot() <= 1) {
-            PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), player);
+            DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), player);
         }
     }
 
@@ -272,7 +264,7 @@ public class EnchantmentTableDisplay extends VisualizerInteractDisplay implement
 
         for (int slot : event.getRawSlots()) {
             if (slot >= 0 && slot <= 1) {
-                PacketManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), player);
+                DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), player);
                 break;
             }
         }

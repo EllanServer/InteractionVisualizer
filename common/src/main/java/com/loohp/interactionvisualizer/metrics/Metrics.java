@@ -22,12 +22,11 @@ package com.loohp.interactionvisualizer.metrics;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
-import com.loohp.platformscheduler.Scheduler;
+import com.loohp.interactionvisualizer.InteractionVisualizer;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.plugin.ServicePriority;
@@ -40,15 +39,11 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.net.URL;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Timer;
-import java.util.TimerTask;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.logging.Level;
@@ -105,7 +100,9 @@ public class Metrics {
         if (logSentData) {
             plugin.getLogger().info("Sending data to bStats: " + data);
         }
-        HttpsURLConnection connection = (HttpsURLConnection) new URL(URL).openConnection();
+        HttpsURLConnection connection = (HttpsURLConnection) URI.create(URL).toURL().openConnection();
+        connection.setConnectTimeout(10_000);
+        connection.setReadTimeout(15_000);
 
         // Compress the data to save bandwidth
         byte[] compressedData = compress(data.toString());
@@ -263,19 +260,7 @@ public class Metrics {
      * Starts the Scheduler which submits our data every 30 minutes.
      */
     private void startSubmitting() {
-        final Timer timer = new Timer(true); // We use a timer cause the Bukkit scheduler is affected by server lags
-        timer.scheduleAtFixedRate(new TimerTask() {
-            @Override
-            public void run() {
-                if (!plugin.isEnabled()) { // Plugin was disabled
-                    timer.cancel();
-                    return;
-                }
-                // Nevertheless we want our code to run in the Bukkit main thread, so we have to use the Bukkit scheduler
-                // Don't be afraid! The connection to the bStats server is still async, only the stats collection is sync ;)
-                Scheduler.runTask(plugin, () -> submitData());
-            }
-        }, 1000 * 60 * 5, 1000 * 60 * 30);
+        Scheduler.runTaskTimer(plugin, this::submitData, 20L * 60 * 5, 20L * 60 * 30);
         // Submit the data every 30 minutes, first time after 5 minutes to give other plugins enough time to start
         // WARNING: Changing the frequency has no effect but your plugin WILL be blocked/deleted!
         // WARNING: Just don't do it!
@@ -290,8 +275,8 @@ public class Metrics {
     public JsonObject getPluginData() {
         JsonObject data = new JsonObject();
 
-        String pluginName = plugin.getDescription().getName();
-        String pluginVersion = plugin.getDescription().getVersion();
+        String pluginName = plugin.getPluginMeta().getName();
+        String pluginVersion = plugin.getPluginMeta().getVersion();
 
         data.addProperty("pluginName", pluginName); // Append the name of the plugin
         data.addProperty("id", pluginId); // Append the id of the plugin
@@ -317,17 +302,7 @@ public class Metrics {
      */
     private JsonObject getServerData() {
         // Minecraft specific data
-        int playerAmount;
-        try {
-            // Around MC 1.8 the return type was changed to a collection from an array,
-            // This fixes java.lang.NoSuchMethodError: org.bukkit.Bukkit.getOnlinePlayers()Ljava/util/Collection;
-            Method onlinePlayersMethod = Class.forName("org.bukkit.Server").getMethod("getOnlinePlayers");
-            playerAmount = onlinePlayersMethod.getReturnType().equals(Collection.class)
-                    ? ((Collection<?>) onlinePlayersMethod.invoke(Bukkit.getServer())).size()
-                    : ((Player[]) onlinePlayersMethod.invoke(Bukkit.getServer())).length;
-        } catch (Exception e) {
-            playerAmount = Bukkit.getOnlinePlayers().size(); // Just use the new method if the Reflection failed
-        }
+        int playerAmount = Bukkit.getOnlinePlayers().size();
         int onlineMode = Bukkit.getOnlineMode() ? 1 : 0;
         String bukkitVersion = Bukkit.getVersion();
         String bukkitName = Bukkit.getName();
@@ -372,25 +347,8 @@ public class Metrics {
                 for (RegisteredServiceProvider<?> provider : Bukkit.getServicesManager().getRegistrations(service)) {
                     try {
                         Object plugin = provider.getService().getMethod("getPluginData").invoke(provider.getProvider());
-                        if (plugin instanceof JsonObject) {
-                            pluginData.add((JsonObject) plugin);
-                        } else { // old bstats version compatibility
-                            try {
-                                Class<?> jsonObjectJsonSimple = Class.forName("org.json.simple.JSONObject");
-                                if (plugin.getClass().isAssignableFrom(jsonObjectJsonSimple)) {
-                                    Method jsonStringGetter = jsonObjectJsonSimple.getDeclaredMethod("toJSONString");
-                                    jsonStringGetter.setAccessible(true);
-                                    String jsonString = (String) jsonStringGetter.invoke(plugin);
-                                    @SuppressWarnings("deprecation")
-                                    JsonObject object = new JsonParser().parse(jsonString).getAsJsonObject();
-                                    pluginData.add(object);
-                                }
-                            } catch (ClassNotFoundException e) {
-                                // minecraft version 1.14+
-                                if (logFailedRequests) {
-                                    this.plugin.getLogger().log(Level.SEVERE, "Encountered unexpected exception", e);
-                                }
-                            }
+                        if (plugin instanceof JsonObject object) {
+                            pluginData.add(object);
                         }
                     } catch (NullPointerException | NoSuchMethodException | IllegalAccessException | InvocationTargetException ignored) {
                     }
@@ -401,18 +359,15 @@ public class Metrics {
 
         data.add("plugins", pluginData);
 
-        // Create a new thread for the connection to the bStats server
-        new Thread(() -> {
+        InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
             try {
-                // Send the data
                 sendData(plugin, data);
             } catch (Exception e) {
-                // Something went wrong! :(
                 if (logFailedRequests) {
                     plugin.getLogger().log(Level.WARNING, "Could not submit plugin stats of " + plugin.getName(), e);
                 }
             }
-        }).start();
+        });
     }
 
     /**

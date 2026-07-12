@@ -1,64 +1,75 @@
-[![Build Status](https://ci.loohpjames.com/job/InteractionVisualizer/badge/icon)](https://ci.loohpjames.com/job/InteractionVisualizer/)
-# InteractionVisualizer
+# InteractionVisualizer — EllanServer Paper 26 fork
 
-https://www.spigotmc.org/resources/77050/<br>
-https://modrinth.com/plugin/interactionvisualizer<br>
-https://hangar.papermc.io/LOOHP/InteractionVisualizer
+This fork is a Paper-only, performance-focused rewrite of
+[LOOHP/InteractionVisualizer](https://github.com/LOOHP/InteractionVisualizer).
+It visualizes crafting and functional blocks with native display entities while
+preserving the familiar commands, preferences, and configuration layout.
 
-Visualize Function Blocks like Crafting Tables with Animations CLIENT-SIDE!
+## Supported server versions
 
-More information (screenshots, commands, permissions) about the plugin can be found on the Spigot page linked above.
+- Paper **26.1.2** (primary target)
+- Paper **26.2** (compile-verified compatibility target)
+- Java **25**
 
-## Built against Spigot
-Built against [Spigot's API](https://www.spigotmc.org/wiki/buildtools/) (required mc versions are listed on the spigot page above).
-Plugins built against Spigot usually also work with [Paper](https://papermc.io/).
+Other Minecraft versions, Spigot, and Folia are intentionally unsupported. The
+plugin checks the running Minecraft version during startup and disables itself
+outside the supported range.
 
-## Development Builds
+## Rewrite highlights
 
-- [Jenkins](https://ci.loohpjames.com/job/InteractionVisualizer/)
+- Native Paper `ItemDisplay` and `TextDisplay` entities replace Armor Stands and
+  raw metadata packets.
+- One Paper API implementation replaces the old per-version NMS modules.
+- Per-viewer visibility uses Paper's `showEntity` / `hideEntity` API.
+- Display updates are revision-coalesced; there is no 5 ms packet scan loop.
+- Player/chunk proximity queries use one allocation-light snapshot per world and
+  server tick.
+- Configuration is loaded with
+  [Sparrow YAML](https://github.com/Xiao-MoMi/sparrow-yaml) and flattened into an
+  immutable O(1)-lookup snapshot after every reload.
+- Gradle replaces the former Maven multi-module build and verifies the same
+  sources against both supported Paper API lines.
 
-## Maven
-```html
-<repository>
-  <id>loohp-repo</id>
-  <url>https://repo.loohpjames.com/repository</url>
-</repository>
+The other Sparrow modules were deliberately not added: metadata, reflection,
+NBT, heart, and Redis messaging either duplicate Paper 26 APIs, reintroduce
+version/NMS coupling, or do not serve this single-server rendering path.
+
+## Building
+
+```text
+./gradlew clean check shadowJar
 ```
-```html
-<dependency>
-  <groupId>com.loohp</groupId>
-  <artifactId>InteractionVisualizer</artifactId>
-  <version>VERSION</version>
-  <scope>provided</scope>
-</dependency>
+
+On Windows:
+
+```text
+gradlew.bat clean check shadowJar
 ```
-Replace `VERSION` with the version number.
 
-## Dependencies 
+The production plugin JAR is written to `build/libs/InteractionVisualizer-<version>.jar`.
+`check` includes unit tests, the Paper 26.1.2 compilation, and a second compile
+against Paper 26.2.
 
-- [ProtocolLib](https://www.spigotmc.org/resources/protocollib.1997/)
-- [LightsAPI Fork](https://www.spigotmc.org/resources/lightapi-fork.48247/)
+## Optional integrations
 
-## Soft Dependencies
-
-- [EssentialsX](https://www.spigotmc.org/resources/essentialsx.9089/)
+- [CraftEngine](https://github.com/Xiao-MoMi/craft-engine) 26.7.2: optional
+  custom-item ID recognition. CraftEngine items can be selected by the third
+  field of an item-label blacklist rule, and their display pose can be
+  overridden in `material.yml` under `CustomItems`. CraftEngine is not bundled
+  and the plugin behaves exactly as before when it is absent.
+- [LightAPI](https://www.spigotmc.org/resources/lightapi-fork.48247/)
 - [OpenInv](https://dev.bukkit.org/projects/openinv)
 - [PlaceholderAPI](https://www.spigotmc.org/resources/placeholderapi.6245/)
-- [SuperVanish](https://www.spigotmc.org/resources/supervanish-be-invisible.1331/)
-- [PremiumVanish](https://www.spigotmc.org/resources/premiumvanish-stay-hidden-bungee-support.14404/)
-- [CMI](https://www.spigotmc.org/resources/cmi-270-commands-insane-kits-portals-essentials-economy-mysql-sqlite-much-more.3742/) ([Public API](https://github.com/Zrips/CMI-API))
+- Essentials, SuperVanish, PremiumVanish, and CMI
 
-## Community Maintained Languages
-Link to repository: https://github.com/LOOHP/InteractionVisualizerLanguages
+Language resources remain available from
+[InteractionVisualizerLanguages](https://github.com/LOOHP/InteractionVisualizerLanguages).
 
-## Partnerships
+## License and upstream
 
-### Server Hosting
-**Use the link or click the banner** below to **get a 25% discount off** your first month when buying any of their gaming servers!<br>
-It also **supports my development**, take it as an alternative way to donate while getting your very own Minecraft server as well!
+This project remains licensed under GPL-3.0. Original project pages:
 
-*P.S. Using the link or clicking the banner rather than the code supports me more! (Costs you no extra!)*
-
-**https://www.bisecthosting.com/loohp**
-
-[![](https://www.bisecthosting.com/partners/custom-banners/96e11ee5-50e4-494f-854d-8c1708813abd.png)](https://www.bisecthosting.com/loohp)
+- [GitHub](https://github.com/LOOHP/InteractionVisualizer)
+- [Modrinth](https://modrinth.com/plugin/interactionvisualizer)
+- [Hangar](https://hangar.papermc.io/LOOHP/InteractionVisualizer)
+- [SpigotMC](https://www.spigotmc.org/resources/77050/)

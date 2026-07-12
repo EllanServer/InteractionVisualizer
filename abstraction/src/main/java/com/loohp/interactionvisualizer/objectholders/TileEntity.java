@@ -24,81 +24,44 @@ import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 
-import java.util.HashMap;
-import java.util.Map;
-
 public class TileEntity {
 
-    private static final Map<String, TileEntityType> TILE_ENTITY_TYPES = new HashMap<>();
-
-    static {
-        TILE_ENTITY_TYPES.put("BLAST_FURNACE", TileEntityType.BLAST_FURNACE);
-        TILE_ENTITY_TYPES.put("BREWING_STAND", TileEntityType.BREWING_STAND);
-        TILE_ENTITY_TYPES.put("FURNACE", TileEntityType.FURNACE);
-        TILE_ENTITY_TYPES.put("BURNING_FURNACE", TileEntityType.FURNACE);
-        TILE_ENTITY_TYPES.put("SMOKER", TileEntityType.SMOKER);
-        TILE_ENTITY_TYPES.put("BEACON", TileEntityType.BEACON);
-        TILE_ENTITY_TYPES.put("JUKEBOX", TileEntityType.JUKEBOX);
-        TILE_ENTITY_TYPES.put("BEE_NEST", TileEntityType.BEE_NEST);
-        TILE_ENTITY_TYPES.put("BEEHIVE", TileEntityType.BEEHIVE);
-        TILE_ENTITY_TYPES.put("LECTERN", TileEntityType.LECTERN);
-        TILE_ENTITY_TYPES.put("CAMPFIRE", TileEntityType.CAMPFIRE);
-        TILE_ENTITY_TYPES.put("SOUL_CAMPFIRE", TileEntityType.SOUL_CAMPFIRE);
-        TILE_ENTITY_TYPES.put("SPAWNER", TileEntityType.SPAWNER);
-        TILE_ENTITY_TYPES.put("TRIAL_SPAWNER", TileEntityType.TRIAL_SPAWNER);
-        TILE_ENTITY_TYPES.put("MOB_SPAWNER", TileEntityType.SPAWNER);
-        TILE_ENTITY_TYPES.put("CONDUIT", TileEntityType.CONDUIT);
-        TILE_ENTITY_TYPES.put("CRAFTER", TileEntityType.CRAFTER);
-
-        TILE_ENTITY_TYPES.put("STANDING_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("WHITE_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("ORANGE_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("MAGENTA_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("LIGHT_BLUE_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("YELLOW_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("LIME_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("PINK_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("GRAY_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("LIGHT_GRAY_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("CYAN_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("PURPLE_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("BLUE_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("BROWN_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("GREEN_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("RED_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("BLACK_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("FLOWER_BANNER_PATTERN", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("CREEPER_BANNER_PATTERN", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("SKULL_BANNER_PATTERN", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("MOJANG_BANNER_PATTERN", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("GLOBE_BANNER_PATTERN", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("PIGLIN_BANNER_PATTERN", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("WHITE_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("ORANGE_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("MAGENTA_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("LIGHT_BLUE_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("YELLOW_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("LIME_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("PINK_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("GRAY_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("LIGHT_GRAY_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("CYAN_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("PURPLE_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("BLUE_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("BROWN_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("GREEN_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("RED_WALL_BANNER", TileEntityType.BANNER);
-        TILE_ENTITY_TYPES.put("BLACK_WALL_BANNER", TileEntityType.BANNER);
-    }
-
     public static TileEntityType getTileEntityType(Material material) {
-        return TILE_ENTITY_TYPES.get(material.toString());
+        if (material == null) {
+            return null;
+        }
+        return switch (material) {
+            case BLAST_FURNACE -> TileEntityType.BLAST_FURNACE;
+            case BREWING_STAND -> TileEntityType.BREWING_STAND;
+            case FURNACE -> TileEntityType.FURNACE;
+            case SMOKER -> TileEntityType.SMOKER;
+            case BEACON -> TileEntityType.BEACON;
+            case JUKEBOX -> TileEntityType.JUKEBOX;
+            case BEE_NEST -> TileEntityType.BEE_NEST;
+            case BEEHIVE -> TileEntityType.BEEHIVE;
+            case LECTERN -> TileEntityType.LECTERN;
+            case CAMPFIRE -> TileEntityType.CAMPFIRE;
+            case SOUL_CAMPFIRE -> TileEntityType.SOUL_CAMPFIRE;
+            case SPAWNER -> TileEntityType.SPAWNER;
+            case TRIAL_SPAWNER -> TileEntityType.TRIAL_SPAWNER;
+            case CONDUIT -> TileEntityType.CONDUIT;
+            case CRAFTER -> TileEntityType.CRAFTER;
+            case WHITE_BANNER, ORANGE_BANNER, MAGENTA_BANNER, LIGHT_BLUE_BANNER,
+                    YELLOW_BANNER, LIME_BANNER, PINK_BANNER, GRAY_BANNER,
+                    LIGHT_GRAY_BANNER, CYAN_BANNER, PURPLE_BANNER, BLUE_BANNER,
+                    BROWN_BANNER, GREEN_BANNER, RED_BANNER, BLACK_BANNER,
+                    WHITE_WALL_BANNER, ORANGE_WALL_BANNER, MAGENTA_WALL_BANNER,
+                    LIGHT_BLUE_WALL_BANNER, YELLOW_WALL_BANNER, LIME_WALL_BANNER,
+                    PINK_WALL_BANNER, GRAY_WALL_BANNER, LIGHT_GRAY_WALL_BANNER,
+                    CYAN_WALL_BANNER, PURPLE_WALL_BANNER, BLUE_WALL_BANNER,
+                    BROWN_WALL_BANNER, GREEN_WALL_BANNER, RED_WALL_BANNER,
+                    BLACK_WALL_BANNER -> TileEntityType.BANNER;
+            default -> null;
+        };
     }
 
     public static boolean isTileEntityType(Material material) {
-        return TILE_ENTITY_TYPES.containsKey(material.toString());
+        return getTileEntityType(material) != null;
     }
 
     private final World world;
