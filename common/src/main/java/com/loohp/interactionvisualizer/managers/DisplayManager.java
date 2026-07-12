@@ -465,7 +465,11 @@ public final class DisplayManager implements Listener {
         Vector velocity = logical.getVelocity();
         boolean animated = requiresItemAnimation(logical.hasGravity(), velocity);
         if (animated) {
-            itemAnimations.put(logical, new ItemAnimationState(velocity, logical.hasGravity()));
+            ItemAnimationState previous = itemAnimations.get(logical);
+            Location position = previous == null ? actual.getLocation() : previous.position.clone();
+            itemAnimations.put(logical, new ItemAnimationState(velocity, logical.hasGravity(), position,
+                    useStaticAnchorForAnimation(InteractionVisualizer.staticVirtualItemAnchorsDuringAnimation,
+                            logical.isCustomNameVisible())));
             scheduleItemAnimationTick();
         } else {
             itemAnimations.remove(logical);
@@ -565,6 +569,10 @@ public final class DisplayManager implements Listener {
         return gravity || velocity.lengthSquared() > ITEM_ANIMATION_EPSILON;
     }
 
+    static boolean useStaticAnchorForAnimation(boolean configured, boolean customNameVisible) {
+        return configured && !customNameVisible;
+    }
+
     private static void scheduleItemAnimationTick() {
         if (itemAnimationTickScheduled || itemAnimations.isEmpty()
                 || plugin() == null || !plugin().isEnabled()) {
@@ -614,7 +622,7 @@ public final class DisplayManager implements Listener {
         }
 
         Vector movement = itemMovementForTick(animation.gravity, animation.velocity);
-        Location destination = actual.getLocation().add(movement);
+        Location destination = animation.position.clone().add(movement);
         destination.checkFinite();
         World world = destination.getWorld();
         if (destination.getY() < world.getMinHeight() - ITEM_VOID_MARGIN
@@ -624,10 +632,13 @@ public final class DisplayManager implements Listener {
         }
 
         animation.velocity = itemVelocityAfterMovement(movement);
-        PerformanceMetrics.bukkitEntityTeleport();
-        if (!actual.teleport(destination)) {
-            remove(null, logical, true);
-            return;
+        animation.position = destination.clone();
+        if (!animation.staticAnchor) {
+            PerformanceMetrics.bukkitEntityTeleport();
+            if (!actual.teleport(destination)) {
+                remove(null, logical, true);
+                return;
+            }
         }
         if (animation.gravity) {
             // Heart's fake item is no-gravity. Absolute correction preserves the
@@ -636,6 +647,13 @@ public final class DisplayManager implements Listener {
         }
         if (!animation.gravity && animation.velocity.lengthSquared() <= ITEM_ANIMATION_EPSILON) {
             itemAnimations.remove(logical, animation);
+            if (animation.staticAnchor) {
+                PerformanceMetrics.bukkitEntityTeleport();
+                if (!actual.teleport(destination)) {
+                    remove(null, logical, true);
+                    return;
+                }
+            }
             synchronizeVirtualItemMotion(logical, destination);
         }
     }
@@ -1159,10 +1177,14 @@ public final class DisplayManager implements Listener {
 
         private Vector velocity;
         private final boolean gravity;
+        private Location position;
+        private final boolean staticAnchor;
 
-        private ItemAnimationState(Vector velocity, boolean gravity) {
+        private ItemAnimationState(Vector velocity, boolean gravity, Location position, boolean staticAnchor) {
             this.velocity = velocity.clone();
             this.gravity = gravity;
+            this.position = position.clone();
+            this.staticAnchor = staticAnchor;
         }
     }
 

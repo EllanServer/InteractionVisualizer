@@ -103,6 +103,8 @@ public class InteractionVisualizer extends JavaPlugin {
     public static boolean hideIfObstructed = false;
 
     public static boolean defaultDisabledAll = false;
+    /** A/B switch: virtual item remains authoritative while an invisible tracker stays stationary. */
+    public static boolean staticVirtualItemAnchorsDuringAnimation = false;
 
     public static ILightManager lightManager;
     public static PreferenceManager preferenceManager;
@@ -287,6 +289,8 @@ public class InteractionVisualizer extends JavaPlugin {
         }
 
         defaultDisabledAll = getConfiguration().getBoolean("Settings.DefaultDisableAll");
+        staticVirtualItemAnchorsDuringAnimation = getConfiguration().getBoolean(
+                "Settings.Performance.VirtualItems.StaticAnchorDuringAnimation");
 
         getServer().getPluginManager().callEvent(new InteractionVisualizerReloadEvent());
     }

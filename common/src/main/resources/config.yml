@@ -328,6 +328,11 @@ Settings:
   #MIGHT BE RESOURCE INTENSIVE
   #MIGHT BE RESOURCE INTENSIVE
   HideIfViewObstructed: false
+  Performance:
+    VirtualItems:
+      #A/B switch: keeps invisible tracker anchors still during short item animations.
+      #The client-side virtual item remains corrected every tick; turn this on only after profiling your server.
+      StaticAnchorDuringAnimation: false
 
 Options:
   Updater: true

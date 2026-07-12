@@ -40,6 +40,14 @@ class DisplayManagerItemAnimationTest {
     }
 
     @Test
+    void staticAnchorExperimentNeverDetachesVisibleNames() {
+        assertFalse(DisplayManager.useStaticAnchorForAnimation(false, false));
+        assertFalse(DisplayManager.useStaticAnchorForAnimation(false, true));
+        assertTrue(DisplayManager.useStaticAnchorForAnimation(true, false));
+        assertFalse(DisplayManager.useStaticAnchorForAnimation(true, true));
+    }
+
+    @Test
     void copiesTheNmsAirMovementOrderAndPrecision() {
         Vector movement = DisplayManager.itemMovementForTick(true, new Vector(0.18, 0.15, 0.05));
         assertEquals(new Vector(0.18, 0.11, 0.05), movement);
