@@ -257,11 +257,13 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             return;
         }
 
-        DroppedItemSpatialIndex itemIndex = new DroppedItemSpatialIndex();
-        for (TrackedItem tracked : validItems) {
-            Location location = tracked.location();
-            itemIndex.addItem(tracked.item().getWorld().getUID(),
-                    location.getX(), location.getY(), location.getZ());
+        DroppedItemSpatialIndex itemIndex = cramp > 0 ? new DroppedItemSpatialIndex() : null;
+        if (itemIndex != null) {
+            for (TrackedItem tracked : validItems) {
+                Location location = tracked.location();
+                itemIndex.addItem(tracked.item().getWorld().getUID(),
+                        location.getX(), location.getY(), location.getZ());
+            }
         }
         for (TrackedItem tracked : validItems) {
             update(tracked, itemIndex, viewerIndex);
@@ -294,7 +296,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         int ticksLeft = despawnTicks - item.getTicksLived();
         if (stack.isEmpty() || blacklist.matches(matchingName, stack.getType(), customItemId)
                 || item.getPickupDelay() >= Short.MAX_VALUE || ticksLeft <= 0
-                || (cramp > 0 && itemIndex.exceedsItemLimit(item.getWorld().getUID(),
+                || (itemIndex != null && itemIndex.exceedsItemLimit(item.getWorld().getUID(),
                 itemLocation.getX(), itemLocation.getY(), itemLocation.getZ(), cramp))) {
             removeLabel(item.getUniqueId());
             return;
