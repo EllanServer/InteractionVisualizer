@@ -27,7 +27,6 @@ import com.loohp.interactionvisualizer.api.VisualizerInteractDisplay;
 import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
-import com.loohp.interactionvisualizer.managers.SoundManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.LightType;
 import com.loohp.interactionvisualizer.utils.InventoryUtils;
@@ -272,7 +271,6 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
         }
 
         ItemStack itemstack = event.getCurrentItem().clone();
-        Location loc = block.getLocation();
         Player player = (Player) event.getWhoClicked();
 
         Inventory before = Bukkit.createInventory(null, 9);
@@ -299,18 +297,9 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
             Item item = new Item(block.getLocation().clone().add(0.5, 1.5, 0.5));
             item.setItemStack(itemstack);
             item.setLocked(true);
-            item.setGravity(true);
-            Vector lift = new Vector(0.0, 0.15, 0.0);
-            Vector pickup = player.getEyeLocation().add(0.0, -0.5, 0.0).add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector().subtract(loc.clone().add(0.5, 1.2, 0.5).toVector()).multiply(0.15).add(lift);
-            item.setVelocity(pickup);
-            item.setPickupDelay(32767);
             DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
             DisplayManager.updateItem(item);
-
-            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                SoundManager.playItemPickup(item.getLocation(), InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY));
-                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
-            }, 8);
+            DisplayManager.collectItem(item, player);
         }, 1);
     }
 
@@ -410,18 +399,9 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
                 Item item = new Item(block.getLocation().clone().add(0.5, 1.5, 0.5));
                 item.setItemStack(event.getView().getItem(0));
                 item.setLocked(true);
-                item.setGravity(true);
-                Vector lift = new Vector(0.0, 0.15, 0.0);
-                Vector pickup = player.getEyeLocation().add(0.0, -0.5, 0.0).add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector().subtract(block.getLocation().clone().add(0.5, 1.2, 0.5).toVector()).multiply(0.15).add(lift);
-                item.setVelocity(pickup);
-                item.setPickupDelay(32767);
                 DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
                 DisplayManager.updateItem(item);
-                new ScheduledRunnable() {
-                    public void run() {
-                        DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
-                    }
-                }.runTaskLater(InteractionVisualizer.plugin, 8);
+                DisplayManager.collectItem(item, player);
             }
         }
 

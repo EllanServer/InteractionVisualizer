@@ -27,7 +27,6 @@ import com.loohp.interactionvisualizer.api.VisualizerInteractDisplay;
 import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
-import com.loohp.interactionvisualizer.managers.SoundManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.LightType;
 import com.loohp.interactionvisualizer.utils.InventoryUtils;
@@ -381,16 +380,11 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
             }, 6);
 
             Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                Vector lift = new Vector(0.0, 0.15, 0.0);
-                Vector pickup = player.getEyeLocation().add(0.0, -0.5, 0.0).add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector().subtract(loc.clone().add(0.5, 1.2, 0.5).toVector()).multiply(0.15).add(lift);
                 item.setItemStack(itemstack);
-                item.setVelocity(pickup);
-                item.setGravity(true);
-                item.setPickupDelay(32767);
                 DisplayManager.updateItem(item);
+                DisplayManager.collectItem(item, player);
 
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                    SoundManager.playItemPickup(item.getLocation(), InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY));
                     DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot1);
                     DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot2);
                     DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot3);
@@ -400,7 +394,6 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
                     DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot7);
                     DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot8);
                     DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), slot9);
-                    DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                 }, 8);
             }, 10);
         }, 1);

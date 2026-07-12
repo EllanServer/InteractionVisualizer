@@ -283,10 +283,12 @@ public class BeeHiveDisplay extends VisualizerRunnableDisplay implements Listene
         Vector direction = target.toVector().subtract(origin.toVector()).multiply(0.7);
 
         Location loc0 = block.getLocation().clone().add(direction).add(0.5, 0.25, 0.5);
+        loc0.setDirection(facing.getDirection());
         DisplayEntity line0 = new DisplayEntity(loc0.clone());
         setStand(line0);
 
         Location loc1 = block.getLocation().clone().add(direction).add(0.5, 0, 0.5);
+        loc1.setDirection(facing.getDirection());
         DisplayEntity line1 = new DisplayEntity(loc1.clone());
         setStand(line1);
 

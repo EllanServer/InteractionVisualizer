@@ -24,6 +24,7 @@ import com.loohp.interactionvisualizer.utils.ComponentFont;
 import com.loohp.interactionvisualizer.utils.ItemNameUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledRunnable;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TextReplacementConfig;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -31,6 +32,7 @@ import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Color;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
@@ -40,7 +42,9 @@ import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityRemoveEvent;
 import org.bukkit.event.entity.ItemSpawnEvent;
 import org.bukkit.event.world.EntitiesLoadEvent;
 import org.bukkit.event.world.EntitiesUnloadEvent;
@@ -48,6 +52,9 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.Damageable;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.util.Transformation;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -76,6 +83,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     private String mediumColor = "";
     private String lowColor = "";
     private int cramp = 6;
+    private double labelYOffset = 0.8D;
     private int updateRate = 20;
     private int ticksUntilUpdate;
     private int despawnTicks = 6000;
@@ -95,6 +103,9 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         mediumColor = configString("Entities.Item.Options.Color.Medium");
         lowColor = configString("Entities.Item.Options.Color.Low");
         cramp = InteractionVisualizer.plugin.getConfiguration().getInt("Entities.Item.Options.Cramping");
+        double configuredLabelYOffset = InteractionVisualizer.plugin.getConfiguration()
+                .getDouble("Entities.Item.Options.LabelYOffset");
+        labelYOffset = Double.isFinite(configuredLabelYOffset) ? configuredLabelYOffset : 0.8D;
         updateRate = Math.max(1, InteractionVisualizer.plugin.getConfiguration().getInt("Entities.Item.Options.UpdateRate"));
         int configuredDespawnTicks = InteractionVisualizer.plugin.getConfiguration().getInt("Entities.Item.Options.DespawnTicks");
         despawnTicks = configuredDespawnTicks > 0 ? configuredDespawnTicks : 6000;
@@ -170,6 +181,20 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         }
     }
 
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onEntityRemove(EntityRemoveEvent event) {
+        if (event.getEntity() instanceof Item item) {
+            UUID itemId = item.getUniqueId();
+            trackedItems.remove(itemId);
+            TextDisplay label = labels.remove(itemId);
+            if (label != null) {
+                // EntityRemoveEvent is monitoring-only. Defer entity mutation
+                // until Paper has finished removing the item's passengers.
+                Scheduler.runTask(InteractionVisualizer.plugin, () -> removeLabel(label));
+            }
+        }
+    }
+
     private void track(Item item) {
         trackedItems.put(item.getUniqueId(), item);
     }
@@ -211,21 +236,36 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         if (!text.equals(label.text())) {
             label.text(text);
         }
-        int transitionTicks = Math.min(59, updateRate);
-        if (label.getInterpolationDuration() != transitionTicks) {
-            label.setInterpolationDuration(transitionTicks);
+        boolean mounted = item.equals(label.getVehicle()) || item.addPassenger(label);
+        if (mounted) {
+            // A mounted display follows the item on every client render frame.
+            // Text refreshes stay low-frequency without sampling item positions.
+            setLabelVerticalTranslation(label, mountedLabelTranslation(labelYOffset, item.getHeight()));
+            if (label.getInterpolationDuration() != 0) {
+                label.setInterpolationDuration(0);
+            }
+            if (label.getTeleportDuration() != 0) {
+                label.setTeleportDuration(0);
+            }
+        } else {
+            // Preserve a safe fallback if another plugin cancels the mount or
+            // changes either entity during the update.
+            setLabelVerticalTranslation(label, 0.0F);
+            int transitionTicks = Math.min(59, updateRate);
+            if (label.getTeleportDuration() != transitionTicks) {
+                label.setTeleportDuration(transitionTicks);
+            }
+            label.teleport(labelLocation(item));
         }
-        if (label.getTeleportDuration() != transitionTicks) {
-            label.setTeleportDuration(transitionTicks);
-        }
-        label.teleport(item.getLocation().add(0.0, item.getHeight() * 1.7, 0.0));
         if (created) {
+            // Mount and configure the final render height before revealing the
+            // label so the first tracking bundle cannot flash at item height.
             showToEligibleViewers(label);
         }
     }
 
     private TextDisplay spawnLabel(Item item) {
-        return item.getWorld().spawn(item.getLocation().add(0.0, item.getHeight() * 1.7, 0.0),
+        return item.getWorld().spawn(labelLocation(item),
                 TextDisplay.class, display -> {
                     display.setPersistent(false);
                     display.setVisibleByDefault(false);
@@ -235,8 +275,8 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                     display.setNoPhysics(true);
                     display.setBillboard(Display.Billboard.CENTER);
                     display.setViewRange(1.0F);
-                    display.setInterpolationDuration(Math.min(59, updateRate));
-                    display.setTeleportDuration(Math.min(59, updateRate));
+                    display.setInterpolationDuration(0);
+                    display.setTeleportDuration(0);
                     display.setShadowed(true);
                     display.setSeeThrough(false);
                     display.setDefaultBackground(false);
@@ -245,6 +285,27 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                     display.setLineWidth(240);
                     display.getPersistentDataContainer().set(ownerKey(), PersistentDataType.STRING, "dropped_item_label");
                 });
+    }
+
+    private Location labelLocation(Item item) {
+        return item.getLocation().add(0.0, labelYOffset, 0.0);
+    }
+
+    static float mountedLabelTranslation(double yOffset, double itemHeight) {
+        return (float) (yOffset - itemHeight);
+    }
+
+    private static void setLabelVerticalTranslation(TextDisplay label, float targetY) {
+        Transformation current = label.getTransformation();
+        Vector3f translation = current.getTranslation();
+        if (Math.abs(translation.y - targetY) <= 1.0E-4F) {
+            return;
+        }
+        label.setTransformation(new Transformation(
+                new Vector3f(translation.x, targetY, translation.z),
+                new Quaternionf(current.getLeftRotation()),
+                new Vector3f(current.getScale()),
+                new Quaternionf(current.getRightRotation())));
     }
 
     private void reconcileEligibleViewers() {
@@ -344,7 +405,10 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     }
 
     private void removeLabel(UUID itemId) {
-        TextDisplay label = labels.remove(itemId);
+        removeLabel(labels.remove(itemId));
+    }
+
+    private void removeLabel(TextDisplay label) {
         if (label != null && label.isValid()) {
             for (UUID uuid : eligibleViewers) {
                 Player player = Bukkit.getPlayer(uuid);

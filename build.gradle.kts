@@ -13,6 +13,7 @@ val pluginVersion = version.toString()
 val paper26_1Version = "26.1.2.build.74-stable"
 val paper26_2Version = "26.2.build.56-alpha"
 val craftEngineVersion = "26.7.2"
+val sparrowHeartVersion = "0.72"
 
 val paper26_2CompileClasspath = configurations.create("paper26_2CompileClasspath") {
     isCanBeConsumed = false
@@ -35,6 +36,7 @@ dependencies {
     compileOnly(files("common/lib/LightAPI-fork-3.5.2.jar"))
 
     implementation("net.momirealms:sparrow-yaml:1.0.7")
+    implementation("net.momirealms:sparrow-heart:$sparrowHeartVersion")
 
     testImplementation(platform("org.junit:junit-bom:5.13.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -113,7 +115,7 @@ val compilePaper26_2 = tasks.register<JavaCompile>("compilePaper26_2") {
 }
 
 val verifyPaperOnlyArchitecture = tasks.register("verifyPaperOnlyArchitecture") {
-    description = "Rejects reintroduction of NMS, Armor Stands, or legacy compatibility layers."
+    description = "Confines NMS reflection to the client pickup bridge and rejects legacy layers."
     group = LifecycleBasePlugin.VERIFICATION_GROUP
     val sources = sourceSets.main.get().allJava
     inputs.files(sources)
@@ -136,9 +138,16 @@ val verifyPaperOnlyArchitecture = tasks.register("verifyPaperOnlyArchitecture") 
             "getPluginLoader()",
             ".spigot()",
         )
+        val pickupBridge = file(
+            "common/src/main/java/com/loohp/interactionvisualizer/integration/packet/ClientPickupAnimationBridge.java",
+        ).canonicalFile
+        val bridgeTokens = setOf("net.minecraft", "org.bukkit.craftbukkit")
         val violations = sources.files.flatMap { source ->
             val text = source.readText()
-            forbidden.filter(text::contains).map { token -> "${source.relativeTo(rootDir)}: $token" }
+            forbidden.filter(text::contains).mapNotNull { token ->
+                val allowed = source.canonicalFile == pickupBridge && token in bridgeTokens
+                if (allowed) null else "${source.relativeTo(rootDir)}: $token"
+            }
         }
         check(violations.isEmpty()) {
             "Paper-only architecture violations:\n${violations.joinToString("\n")}"
@@ -194,6 +203,7 @@ tasks.named<ShadowJar>("shadowJar") {
     mergeServiceFiles()
 
     relocate("net.momirealms.sparrow.yaml", "com.loohp.interactionvisualizer.libs.sparrow.yaml")
+    relocate("net.momirealms.sparrow.heart", "com.loohp.interactionvisualizer.libs.sparrow.heart")
 
     isPreserveFileTimestamps = false
     isReproducibleFileOrder = true
@@ -207,6 +217,26 @@ tasks.named<ShadowJar>("shadowJar") {
             check(bundledCraftEngine.isEmpty()) {
                 "CraftEngine must remain compileOnly, but provider classes were bundled:\n" +
                     bundledCraftEngine.joinToString("\n")
+            }
+            check(jar.getEntry("com/loohp/interactionvisualizer/libs/sparrow/heart/SparrowHeart.class") != null) {
+                "The shaded Sparrow Heart runtime is missing"
+            }
+            listOf("r26_1", "r26_2").forEach { adapter ->
+                check(jar.getEntry(
+                    "com/loohp/interactionvisualizer/libs/sparrow/heart/impl/$adapter/Heart.class",
+                ) != null) {
+                    "The shaded Sparrow Heart $adapter adapter is missing"
+                }
+            }
+            val unrelocatedHeart = jar.entries().asSequence()
+                .map { it.name }
+                .filter { it.startsWith("net/momirealms/sparrow/heart/") }
+                .toList()
+            check(unrelocatedHeart.isEmpty()) {
+                "Unrelocated Sparrow Heart classes were bundled:\n" + unrelocatedHeart.joinToString("\n")
+            }
+            check(jar.getEntry("META-INF/licenses/sparrow-heart.txt") != null) {
+                "The Sparrow Heart MIT license notice is missing"
             }
         }
     }

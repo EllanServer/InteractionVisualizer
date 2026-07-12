@@ -27,7 +27,6 @@ import com.loohp.interactionvisualizer.blocks.EnchantmentTableDisplay;
 import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
-import com.loohp.interactionvisualizer.managers.SoundManager;
 import com.loohp.interactionvisualizer.utils.ComponentFont;
 import com.loohp.interactionvisualizer.utils.RomanNumberUtils;
 import com.loohp.interactionvisualizer.utils.TranslationUtils;
@@ -41,6 +40,7 @@ import org.bukkit.Material;
 import org.bukkit.Particle;
 import org.bukkit.block.Block;
 import org.bukkit.enchantments.Enchantment;
+import org.bukkit.entity.Display;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
@@ -68,6 +68,8 @@ public class EnchantmentTableAnimation {
     public static final int PLAY_PICKUP = 2;
     public static final int CLOSE_TABLE = 3;
 
+    private static final int PICKUP_COMPLETION_DELAY_TICKS = 8;
+
     private static final Map<Block, EnchantmentTableAnimation> tables = new ConcurrentHashMap<>();
 
     public static EnchantmentTableAnimation getTableAnimation(Block block, Player player) {
@@ -89,6 +91,8 @@ public class EnchantmentTableAnimation {
     private final Queue<Supplier<CompletableFuture<Integer>>> taskQueue;
     private final AtomicBoolean enchanting;
     private Optional<Item> item;
+    // Inventory transfer can finish while the scheduled enchant visual is still playing.
+    private volatile PendingPickup pendingPickup;
 
     private EnchantmentTableAnimation(Block block, Player enchanter) {
         this.plugin = InteractionVisualizer.plugin;
@@ -224,11 +228,39 @@ public class EnchantmentTableAnimation {
             item.setGravity(false);
             DisplayManager.updateItem(item);
             item.setLocked(false);
-            future.complete(PLAY_ENCHANTMENT);
 
-            this.enchanting.set(false);
+            if (!playPendingPickup(future)) {
+                this.enchanting.set(false);
+                future.complete(PLAY_ENCHANTMENT);
+            }
         }, 98);
         return future;
+    }
+
+    private boolean playPendingPickup(CompletableFuture<Integer> enchantFuture) {
+        PendingPickup pending = pendingPickup;
+        pendingPickup = null;
+        if (pending == null) {
+            return false;
+        }
+
+        try {
+            if (!pending.condition().test(this)) {
+                return false;
+            }
+            playPickUpAnimation(pending.itemStack()).whenComplete((ignored, throwable) -> {
+                this.enchanting.set(false);
+                if (throwable == null) {
+                    enchantFuture.complete(PLAY_ENCHANTMENT);
+                } else {
+                    enchantFuture.completeExceptionally(throwable);
+                }
+            });
+        } catch (Throwable throwable) {
+            this.enchanting.set(false);
+            enchantFuture.completeExceptionally(throwable);
+        }
+        return true;
     }
 
     private CompletableFuture<Integer> playPickUpAnimation(ItemStack itemstack) {
@@ -239,26 +271,20 @@ public class EnchantmentTableAnimation {
             return future;
         }
         Item item = this.item.get();
-        item.setLocked(true);
         item.setItemStack(itemstack);
+        item.setLocked(true);
         if (itemstack == null || itemstack.getType().equals(Material.AIR)) {
             future.complete(PLAY_PICKUP);
             return future;
         }
 
-        Vector lift = new Vector(0.0, 0.15, 0.0);
-        Vector pickup = enchanter.getEyeLocation().add(0.0, -0.5, 0.0).add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector().subtract(location.clone().add(0.5, 1.2, 0.5).toVector()).multiply(0.15).add(lift);
-        item.setVelocity(pickup);
-        item.setGravity(true);
-        item.setPickupDelay(32767);
         DisplayManager.updateItem(item);
+        DisplayManager.collectItem(item, enchanter);
 
         Scheduler.runTaskLater(plugin, () -> {
-            SoundManager.playItemPickup(item.getLocation(), InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY));
-            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
             this.item = Optional.empty();
             future.complete(PLAY_PICKUP);
-        }, 8);
+        }, PICKUP_COMPLETION_DELAY_TICKS);
         return future;
     }
 
@@ -294,6 +320,7 @@ public class EnchantmentTableAnimation {
     }
 
     private void setStand(DisplayEntity stand) {
+        stand.setBillboard(Display.Billboard.CENTER);
         stand.setMarker(true);
         stand.setSmall(true);
         stand.setVisible(true);
@@ -339,9 +366,14 @@ public class EnchantmentTableAnimation {
     }
 
     public void queuePickupAnimation(ItemStack itemstack, Predicate<EnchantmentTableAnimation> condition) {
+        ItemStack copy = itemstack == null ? null : itemstack.clone();
+        if (enchanting.get() && copy != null && !copy.isEmpty()) {
+            pendingPickup = new PendingPickup(copy, condition);
+            return;
+        }
         taskQueue.add(() -> {
             if (condition.test(this)) {
-                return playPickUpAnimation(itemstack == null ? null : itemstack.clone());
+                return playPickUpAnimation(copy);
             } else {
                 return null;
             }
@@ -356,6 +388,9 @@ public class EnchantmentTableAnimation {
                 return null;
             }
         });
+    }
+
+    private record PendingPickup(ItemStack itemStack, Predicate<EnchantmentTableAnimation> condition) {
     }
 
 }

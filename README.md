@@ -17,10 +17,23 @@ outside the supported range.
 
 ## Rewrite highlights
 
-- Native Paper `ItemDisplay` and `TextDisplay` entities replace Armor Stands and
-  raw metadata packets.
-- One Paper API implementation replaces the old per-version NMS modules.
-- Per-viewer visibility uses Paper's `showEntity` / `hideEntity` API.
+- Native Paper `ItemDisplay` and `TextDisplay` entities replace Armor Stands.
+- Dropped-item visuals use shaded
+  [Sparrow Heart](https://github.com/Xiao-MoMi/sparrow-heart) client-side vanilla
+  `ITEM` entities. Empty Paper display anchors retain tracker and chunk lifecycle
+  without enabling server item collision physics.
+- One Paper API implementation replaces the old in-project per-version NMS modules.
+  InteractionVisualizer uses Heart 0.72 only for the client-side item packet path
+  on the supported 26.1/26.2 runtimes.
+- Per-viewer anchor visibility uses Paper's `showEntity` / `hideEntity` API;
+  tracker enter/leave events create and destroy the matching virtual `ITEM`.
+- Static items bob and spin entirely client-side with no animation task; only
+  active gravity motion needs per-viewer correction because Heart marks its
+  fake items as no-gravity.
+- Block-to-player pickup uses Minecraft's native take-item packet through one
+  isolated reflection bridge. The client supplies the vanilla sound and
+  three-tick live-target absorption; arbitrary location-to-location throws keep
+  the existing custom motion path. No Sparrow fork or ProtocolLib is required.
 - Display updates are revision-coalesced; there is no 5 ms packet scan loop.
 - Player/chunk proximity queries use one allocation-light snapshot per world and
   server tick.
@@ -30,9 +43,8 @@ outside the supported range.
 - Gradle replaces the former Maven multi-module build and verifies the same
   sources against both supported Paper API lines.
 
-The other Sparrow modules were deliberately not added: metadata, reflection,
-NBT, heart, and Redis messaging either duplicate Paper 26 APIs, reintroduce
-version/NMS coupling, or do not serve this single-server rendering path.
+Other Sparrow modules were deliberately not added: metadata, reflection, NBT,
+and Redis messaging do not serve this single-server rendering path.
 
 ## Building
 

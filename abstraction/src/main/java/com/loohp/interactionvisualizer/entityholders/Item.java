@@ -20,7 +20,10 @@ import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.Vector;
 
-/** Logical state for a real, non-persistent Paper item entity. */
+/**
+ * Logical state for a client-side vanilla item visual.
+ * Velocity and gravity are animation inputs; no server item physics is enabled.
+ */
 public class Item extends VisualizerEntity {
 
     private ItemStack item;
@@ -117,6 +120,7 @@ public class Item extends VisualizerEntity {
 
     public void setVelocity(Vector velocity) {
         Vector normalized = velocity == null ? new Vector() : velocity.clone();
+        normalized.checkFinite();
         if (!this.velocity.equals(normalized)) {
             this.velocity = normalized;
             markDirty();

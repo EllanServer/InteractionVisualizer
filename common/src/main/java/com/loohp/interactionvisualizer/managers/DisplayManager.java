@@ -17,26 +17,33 @@ import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.entityholders.ItemFrame;
 import com.loohp.interactionvisualizer.entityholders.VisualizerEntity;
+import com.loohp.interactionvisualizer.integration.packet.ClientPickupAnimationBridge;
 import com.loohp.interactionvisualizer.utils.DisplayTransformFactory;
+import io.papermc.paper.event.player.PlayerTrackEntityEvent;
+import io.papermc.paper.event.player.PlayerUntrackEntityEvent;
 import net.kyori.adventure.text.Component;
+import net.momirealms.sparrow.heart.SparrowHeart;
 import org.bukkit.Bukkit;
 import org.bukkit.Color;
 import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.entity.Display;
+import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
-import org.bukkit.event.entity.ItemMergeEvent;
 import org.bukkit.event.entity.EntityRemoveEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.util.Vector;
 
 import java.util.Collection;
 import java.util.HashSet;
@@ -44,15 +51,22 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 /**
  * Main-thread Paper entity renderer.
  *
- * <p>Paper's native tracker and Display interpolation replace the former raw
- * packet layer, 5 ms entity scans, player/entity cartesian scans, and
- * per-viewer hologram teleport loop.</p>
+ * <p>Paper's native tracker owns range and chunk lifecycle. Logical items use
+ * empty display anchors plus Sparrow's client-side {@code ITEM} packets, so
+ * the client keeps vanilla bob/spin rendering without server item physics.</p>
  */
 public final class DisplayManager implements Listener {
+
+    private static final double ITEM_ANIMATION_EPSILON = 1.0E-12;
+    private static final double ITEM_GRAVITY_PER_TICK = 0.04;
+    private static final double ITEM_HORIZONTAL_DRAG_PER_TICK = 0.98F;
+    private static final double ITEM_VERTICAL_DRAG_PER_TICK = 0.98;
+    private static final double ITEM_VOID_MARGIN = 64.0;
 
     public static final Map<VisualizerEntity, Collection<Player>> active = new ConcurrentHashMap<>();
     public static final Map<Player, Set<VisualizerEntity>> playerStatus = new ConcurrentHashMap<>();
@@ -64,6 +78,10 @@ public final class DisplayManager implements Listener {
     private static final Map<VisualizerEntity, UUID> actualUuidByLogical = new ConcurrentHashMap<>();
     private static final Map<ChunkKey, Set<VisualizerEntity>> logicalsByChunk = new ConcurrentHashMap<>();
     private static final Map<VisualizerEntity, ChunkKey> chunkByLogical = new ConcurrentHashMap<>();
+    private static final Map<Item, ItemAnimationState> itemAnimations = new ConcurrentHashMap<>();
+    private static final Map<Item, Map<UUID, Integer>> virtualItemIds = new ConcurrentHashMap<>();
+    private static final Map<Item, ItemStack> renderedItemStacks = new ConcurrentHashMap<>();
+    private static boolean itemAnimationTickScheduled;
 
     public DisplayManager() {
     }
@@ -78,6 +96,14 @@ public final class DisplayManager implements Listener {
 
     /** Clean up displays left by an interrupted reload; no recurring scan is started. */
     public static void run() {
+        // Fail during enable instead of waiting for the first player tracker event
+        // if the shaded packet adapter does not match this Paper runtime.
+        SparrowHeart.getInstance();
+        if (!ClientPickupAnimationBridge.initialize()) {
+            plugin().getLogger().log(Level.WARNING,
+                    "Vanilla client pickup animations are unavailable; affected items will be removed immediately",
+                    ClientPickupAnimationBridge.initializationFailure());
+        }
         runSync(() -> removeOwnedEntities(false));
     }
 
@@ -121,6 +147,10 @@ public final class DisplayManager implements Listener {
             actualUuidByLogical.clear();
             logicalsByChunk.clear();
             chunkByLogical.clear();
+            itemAnimations.clear();
+            virtualItemIds.clear();
+            renderedItemStacks.clear();
+            itemAnimationTickScheduled = false;
             playerStatus.clear();
             removeOwnedEntities(true);
         };
@@ -201,6 +231,17 @@ public final class DisplayManager implements Listener {
         remove(players, entity, true);
     }
 
+    /**
+     * Hands a virtual item to Minecraft's native three-tick client pickup animation.
+     * The client follows the collector and removes the complete displayed stack.
+     */
+    public static void collectItem(Item entity, Player collector) {
+        if (entity == null || collector == null) {
+            return;
+        }
+        runSync(() -> collectVirtualItem(entity, collector));
+    }
+
     public static void sendItemFrameSpawn(Collection<Player> players, ItemFrame entity) {
         active.putIfAbsent(entity, players);
         schedule(entity, true);
@@ -239,6 +280,9 @@ public final class DisplayManager implements Listener {
         runSync(() -> {
             for (Map.Entry<VisualizerEntity, Set<UUID>> entry : shownViewers.entrySet()) {
                 if (entry.getValue().remove(player.getUniqueId())) {
+                    if (entry.getKey() instanceof Item item) {
+                        removeVirtualItem(item, player.getUniqueId(), player);
+                    }
                     entry.getKey().getBukkitEntity().ifPresent(actual -> player.hideEntity(plugin(), actual));
                 }
             }
@@ -368,32 +412,57 @@ public final class DisplayManager implements Listener {
 
     private static void syncItem(Item logical) {
         org.bukkit.entity.Entity current = logical.getBukkitEntity().orElse(null);
-        if (current != null && !current.getWorld().equals(logical.getWorld())) {
+        if (current != null && (!current.getWorld().equals(logical.getWorld())
+                || !(current instanceof ItemDisplay))) {
             discardActual(logical, current);
             current = null;
         }
-        org.bukkit.entity.Item actual;
-        if (current instanceof org.bukkit.entity.Item item) {
-            actual = item;
+
+        ItemDisplay actual;
+        if (current instanceof ItemDisplay display) {
+            actual = display;
         } else {
-            if (current != null) {
-                discardActual(logical, current);
-            }
             clearViewerTracking(logical);
-            actual = logical.getWorld().dropItem(logical.getLocation(), logical.getItemStack(), item -> {
-                initializeEntity(item);
-                item.setCanMobPickup(false);
-                item.setCanPlayerPickup(false);
-                item.setUnlimitedLifetime(true);
-                item.setWillAge(false);
-            });
+            actual = logical.getWorld().spawn(logical.getLocation(), ItemDisplay.class,
+                    DisplayManager::initializeDisplay);
             logical.bind(actual);
             trackActual(logical, actual);
         }
-        actual.setItemStack(logical.getItemStack());
-        actual.setPickupDelay(Math.max(logical.getPickupDelay(), Integer.MAX_VALUE / 2));
-        actual.setNoPhysics(false);
-        actual.setGravity(logical.hasGravity());
+
+        ItemStack itemStack = logical.getItemStack();
+        ItemStack previousItemStack = renderedItemStacks.put(logical, itemStack.clone());
+        boolean itemChanged = previousItemStack == null || !previousItemStack.equals(itemStack);
+
+        // The Paper entity is only an invisible tracker/name anchor. Rendering
+        // the stack here would duplicate Sparrow's client-side ITEM entity.
+        actual.setItemStack(ItemStack.empty());
+        actual.setItemDisplayTransform(ItemDisplay.ItemDisplayTransform.GROUND);
+        actual.setBillboard(Display.Billboard.FIXED);
+        actual.setViewRange(1.0F);
+        actual.setShadowRadius(0.0F);
+        actual.setShadowStrength(0.0F);
+        actual.setInterpolationDelay(0);
+        actual.setInterpolationDuration(0);
+        actual.setTeleportDuration(0);
+        applyItemBase(actual, logical);
+
+        Vector velocity = logical.getVelocity();
+        boolean animated = requiresItemAnimation(logical.hasGravity(), velocity);
+        if (animated) {
+            itemAnimations.put(logical, new ItemAnimationState(velocity, logical.hasGravity()));
+            scheduleItemAnimationTick();
+        } else {
+            itemAnimations.remove(logical);
+        }
+
+        if (itemChanged) {
+            respawnVirtualItems(logical);
+        } else {
+            synchronizeVirtualItemMotion(logical, actual.getLocation());
+        }
+    }
+
+    private static void applyItemBase(org.bukkit.entity.Entity actual, Item logical) {
         actual.setGlowing(logical.isGlowing());
         actual.customName(logical.getCustomName());
         actual.setCustomNameVisible(logical.isCustomNameVisible());
@@ -401,7 +470,6 @@ public final class DisplayManager implements Listener {
                 || actual.getLocation().distanceSquared(logical.getLocation()) > 1.0E-8) {
             actual.teleport(logical.getLocation());
         }
-        actual.setVelocity(logical.getVelocity());
     }
 
     private static void syncItemFrame(ItemFrame logical) {
@@ -476,7 +544,275 @@ public final class DisplayManager implements Listener {
         return !logical.getItem().isEmpty();
     }
 
+    static boolean requiresItemAnimation(boolean gravity, Vector velocity) {
+        return gravity || velocity.lengthSquared() > ITEM_ANIMATION_EPSILON;
+    }
+
+    private static void scheduleItemAnimationTick() {
+        if (itemAnimationTickScheduled || itemAnimations.isEmpty()
+                || plugin() == null || !plugin().isEnabled()) {
+            return;
+        }
+        itemAnimationTickScheduled = true;
+        Bukkit.getScheduler().runTaskLater(plugin(), () -> {
+            try {
+                tickItemAnimations();
+            } finally {
+                itemAnimationTickScheduled = false;
+                scheduleItemAnimationTick();
+            }
+        }, 1L);
+    }
+
+    private static void tickItemAnimations() {
+        for (Map.Entry<Item, ItemAnimationState> entry : itemAnimations.entrySet()) {
+            Item logical = entry.getKey();
+            ItemAnimationState animation = entry.getValue();
+            try {
+                tickItemAnimation(logical, animation);
+            } catch (RuntimeException exception) {
+                itemAnimations.remove(logical, animation);
+                remove(null, logical, true);
+                Plugin plugin = plugin();
+                if (plugin != null) {
+                    plugin.getLogger().log(Level.WARNING,
+                            "Stopped an invalid visual item animation at " + logical.getLocation(), exception);
+                }
+            }
+        }
+    }
+
+    private static void tickItemAnimation(Item logical, ItemAnimationState animation) {
+        org.bukkit.entity.Entity entity = logical.getBukkitEntity().orElse(null);
+        if (!active.containsKey(logical) || !(entity instanceof ItemDisplay actual)) {
+            itemAnimations.remove(logical, animation);
+            return;
+        }
+
+        Vector movement = itemMovementForTick(animation.gravity, animation.velocity);
+        Location destination = actual.getLocation().add(movement);
+        destination.checkFinite();
+        World world = destination.getWorld();
+        if (destination.getY() < world.getMinHeight() - ITEM_VOID_MARGIN
+                || !world.isChunkLoaded(destination.getBlockX() >> 4, destination.getBlockZ() >> 4)) {
+            remove(null, logical, true);
+            return;
+        }
+
+        animation.velocity = itemVelocityAfterMovement(movement);
+        if (!actual.teleport(destination)) {
+            remove(null, logical, true);
+            return;
+        }
+        if (animation.gravity) {
+            // Heart's fake item is no-gravity. Absolute correction preserves the
+            // vanilla gravity trajectory; no-gravity motion remains client-run.
+            synchronizeVirtualItemMotion(logical, destination);
+        }
+        if (!animation.gravity && animation.velocity.lengthSquared() <= ITEM_ANIMATION_EPSILON) {
+            itemAnimations.remove(logical, animation);
+            synchronizeVirtualItemMotion(logical, destination);
+        }
+    }
+
+    /** Mirrors the open-air ItemEntity tick order without its collision push-out path. */
+    static Vector itemMovementForTick(boolean gravity, Vector velocity) {
+        Vector movement = velocity.clone();
+        if (gravity) {
+            movement.setY(movement.getY() - ITEM_GRAVITY_PER_TICK);
+        }
+        return movement;
+    }
+
+    /** ItemEntity deliberately uses float precision horizontally and double precision vertically. */
+    static Vector itemVelocityAfterMovement(Vector movement) {
+        return new Vector(
+                movement.getX() * ITEM_HORIZONTAL_DRAG_PER_TICK,
+                movement.getY() * ITEM_VERTICAL_DRAG_PER_TICK,
+                movement.getZ() * ITEM_HORIZONTAL_DRAG_PER_TICK);
+    }
+
+    private static void spawnVirtualItem(Item logical, Player player) {
+        org.bukkit.entity.Entity anchor = logical.getBukkitEntity().orElse(null);
+        Set<UUID> shown = shownViewers.get(logical);
+        if (!(anchor instanceof ItemDisplay) || !active.containsKey(logical)
+                || shown == null || !shown.contains(player.getUniqueId())
+                || !player.isOnline() || !player.getWorld().equals(anchor.getWorld())) {
+            return;
+        }
+
+        Map<UUID, Integer> ids = virtualItemIds.computeIfAbsent(logical, ignored -> new ConcurrentHashMap<>());
+        UUID viewer = player.getUniqueId();
+        if (ids.containsKey(viewer)) {
+            return;
+        }
+
+        Integer spawnedId = null;
+        try {
+            spawnedId = SparrowHeart.getInstance().dropFakeItem(
+                    player, logical.getItemStack(), anchor.getLocation());
+            ids.put(viewer, spawnedId);
+            Vector motion = nextVirtualItemMotion(logical);
+            if (motion.lengthSquared() > ITEM_ANIMATION_EPSILON) {
+                SparrowHeart.getInstance().sendClientSideEntityMotion(player, motion, spawnedId);
+            }
+        } catch (RuntimeException exception) {
+            if (spawnedId != null) {
+                ids.remove(viewer, spawnedId);
+                try {
+                    SparrowHeart.getInstance().removeClientSideEntity(player, spawnedId);
+                } catch (RuntimeException cleanupException) {
+                    exception.addSuppressed(cleanupException);
+                }
+            }
+            if (ids.isEmpty()) {
+                virtualItemIds.remove(logical, ids);
+            }
+            logVirtualItemFailure("spawn", logical, exception);
+        }
+    }
+
+    private static Vector nextVirtualItemMotion(Item logical) {
+        ItemAnimationState animation = itemAnimations.get(logical);
+        return animation == null
+                ? new Vector()
+                : itemMovementForTick(animation.gravity, animation.velocity);
+    }
+
+    private static void synchronizeVirtualItemMotion(Item logical, Location location) {
+        Map<UUID, Integer> ids = virtualItemIds.get(logical);
+        if (ids == null || ids.isEmpty()) {
+            return;
+        }
+        Vector motion = nextVirtualItemMotion(logical);
+        for (Map.Entry<UUID, Integer> entry : ids.entrySet()) {
+            Player player = Bukkit.getPlayer(entry.getKey());
+            if (player == null || !player.isOnline() || !player.getWorld().equals(location.getWorld())) {
+                removeVirtualItem(logical, entry.getKey(), player);
+                continue;
+            }
+            try {
+                // The 26.1/26.2 teleport packet includes delta movement, so one
+                // packet both corrects the absolute position and primes the next tick.
+                SparrowHeart.getInstance().sendClientSideTeleportEntity(
+                        player, location, motion, false, entry.getValue());
+            } catch (RuntimeException exception) {
+                removeVirtualItem(logical, entry.getKey(), player);
+                logVirtualItemFailure("move", logical, exception);
+            }
+        }
+    }
+
+    private static void respawnVirtualItems(Item logical) {
+        Map<UUID, Integer> ids = virtualItemIds.get(logical);
+        if (ids == null || ids.isEmpty()) {
+            return;
+        }
+        Set<UUID> viewers = new HashSet<>(ids.keySet());
+        for (UUID viewer : viewers) {
+            Player player = Bukkit.getPlayer(viewer);
+            removeVirtualItem(logical, viewer, player);
+            if (player != null) {
+                spawnVirtualItem(logical, player);
+            }
+        }
+    }
+
+    private static void collectVirtualItem(Item logical, Player collector) {
+        try {
+            Map<UUID, Integer> ids = virtualItemIds.get(logical);
+            int amount = Math.max(1, logical.getItemStack().getAmount());
+            boolean pickupPacketAvailable = ClientPickupAnimationBridge.initialize();
+            if (ids != null) {
+                for (UUID viewerId : new HashSet<>(ids.keySet())) {
+                    Integer itemEntityId = forgetVirtualItem(logical, viewerId);
+                    if (itemEntityId == null) {
+                        continue;
+                    }
+                    Player viewer = Bukkit.getPlayer(viewerId);
+                    boolean canReceive = viewer != null && viewer.isOnline() && collector.isOnline()
+                            && viewer.getWorld().equals(collector.getWorld());
+                    if (!canReceive || !pickupPacketAvailable) {
+                        removeClaimedVirtualItem(logical, viewer, itemEntityId);
+                        continue;
+                    }
+
+                    try {
+                        // Vanilla broadcasts take to the source item's trackers and
+                        // lets the client resolve the collector (including its local
+                        // player fallback), so do not add a target-tracking filter.
+                        ClientPickupAnimationBridge.send(viewer, itemEntityId, collector, amount);
+                    } catch (RuntimeException | LinkageError exception) {
+                        removeClaimedVirtualItem(logical, viewer, itemEntityId);
+                        logVirtualItemFailure("collect", logical, exception);
+                    }
+                }
+            }
+        } finally {
+            remove(null, logical, true);
+        }
+    }
+
+    private static Integer forgetVirtualItem(Item logical, UUID viewer) {
+        Map<UUID, Integer> ids = virtualItemIds.get(logical);
+        if (ids == null) {
+            return null;
+        }
+        Integer id = ids.remove(viewer);
+        if (ids.isEmpty()) {
+            virtualItemIds.remove(logical, ids);
+        }
+        return id;
+    }
+
+    private static void removeVirtualItem(Item logical, UUID viewer, Player player) {
+        Integer id = forgetVirtualItem(logical, viewer);
+        if (id != null) {
+            removeClaimedVirtualItem(logical, player, id);
+        }
+    }
+
+    private static void removeClaimedVirtualItem(Item logical, Player player, int id) {
+        if (player != null && player.isOnline()) {
+            try {
+                SparrowHeart.getInstance().removeClientSideEntity(player, id);
+            } catch (RuntimeException exception) {
+                logVirtualItemFailure("remove", logical, exception);
+            }
+        }
+    }
+
+    private static void destroyVirtualItems(Item logical) {
+        Map<UUID, Integer> ids = virtualItemIds.remove(logical);
+        if (ids == null) {
+            return;
+        }
+        for (Map.Entry<UUID, Integer> entry : ids.entrySet()) {
+            Player player = Bukkit.getPlayer(entry.getKey());
+            if (player != null && player.isOnline()) {
+                try {
+                    SparrowHeart.getInstance().removeClientSideEntity(player, entry.getValue());
+                } catch (RuntimeException exception) {
+                    logVirtualItemFailure("remove", logical, exception);
+                }
+            }
+        }
+    }
+
+    private static void logVirtualItemFailure(String operation, Item logical, Throwable exception) {
+        Plugin plugin = plugin();
+        if (plugin != null) {
+            plugin.getLogger().log(Level.WARNING,
+                    "Failed to " + operation + " a Sparrow virtual item at " + logical.getLocation(), exception);
+        }
+    }
+
     private static void discardActual(VisualizerEntity logical, org.bukkit.entity.Entity actual) {
+        if (logical instanceof Item item) {
+            itemAnimations.remove(item);
+            renderedItemStacks.remove(item);
+            destroyVirtualItems(item);
+        }
         untrackActual(logical, actual);
         clearViewerTracking(logical, actual);
         actual.remove();
@@ -541,6 +877,9 @@ public final class DisplayManager implements Listener {
     }
 
     private static void clearViewerTracking(VisualizerEntity logical, org.bukkit.entity.Entity actual) {
+        if (logical instanceof Item item) {
+            destroyVirtualItems(item);
+        }
         Set<UUID> shown = shownViewers.remove(logical);
         if (shown == null) {
             return;
@@ -594,6 +933,9 @@ public final class DisplayManager implements Listener {
             if (!desired.contains(uuid)) {
                 Player player = Bukkit.getPlayer(uuid);
                 if (player != null) {
+                    if (logical instanceof Item item) {
+                        removeVirtualItem(item, uuid, player);
+                    }
                     player.hideEntity(plugin(), actual);
                     Set<VisualizerEntity> status = playerStatus.get(player);
                     if (status != null) {
@@ -619,6 +961,10 @@ public final class DisplayManager implements Listener {
             active.remove(logical);
             renderedRevision.remove(logical);
             unindex(logical);
+            if (logical instanceof Item item) {
+                itemAnimations.remove(item);
+                renderedItemStacks.remove(item);
+            }
         }
         runSync(() -> {
             org.bukkit.entity.Entity actual = logical.getBukkitEntity().orElse(null);
@@ -637,6 +983,9 @@ public final class DisplayManager implements Listener {
                 }
                 for (Player player : players) {
                     if (player != null && shown.remove(player.getUniqueId())) {
+                        if (logical instanceof Item item) {
+                            removeVirtualItem(item, player.getUniqueId(), player);
+                        }
                         player.hideEntity(plugin(), actual);
                         Set<VisualizerEntity> status = playerStatus.get(player);
                         if (status != null) {
@@ -660,6 +1009,24 @@ public final class DisplayManager implements Listener {
         }
     }
 
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onTrackEntity(PlayerTrackEntityEvent event) {
+        // A successful Track event is the source of truth. Paper can leave
+        // isTrackedBy() true after another listener cancels this event.
+        VisualizerEntity logical = logicalByActualUuid.get(event.getEntity().getUniqueId());
+        if (logical instanceof Item item) {
+            spawnVirtualItem(item, event.getPlayer());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onUntrackEntity(PlayerUntrackEntityEvent event) {
+        VisualizerEntity logical = logicalByActualUuid.get(event.getEntity().getUniqueId());
+        if (logical instanceof Item item) {
+            removeVirtualItem(item, event.getPlayer().getUniqueId(), event.getPlayer());
+        }
+    }
+
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
         Bukkit.getScheduler().runTask(plugin(), () -> sendPlayerPackets(event.getPlayer()));
@@ -673,7 +1040,12 @@ public final class DisplayManager implements Listener {
     @EventHandler
     public void onLeave(PlayerQuitEvent event) {
         UUID uuid = event.getPlayer().getUniqueId();
-        shownViewers.values().forEach(viewers -> viewers.remove(uuid));
+        for (Map.Entry<VisualizerEntity, Set<UUID>> entry : shownViewers.entrySet()) {
+            entry.getValue().remove(uuid);
+            if (entry.getKey() instanceof Item item) {
+                removeVirtualItem(item, uuid, event.getPlayer());
+            }
+        }
         playerStatus.remove(event.getPlayer());
     }
 
@@ -698,8 +1070,16 @@ public final class DisplayManager implements Listener {
             return;
         }
         actualUuidByLogical.remove(logical, actual.getUniqueId());
+        boolean movingItem = logical instanceof Item item && itemAnimations.remove(item) != null;
         logical.unbind();
         clearViewerTracking(logical);
+        if (event.getCause() == EntityRemoveEvent.Cause.UNLOAD && movingItem) {
+            active.remove(logical);
+            renderedRevision.remove(logical);
+            unindex(logical);
+            renderedItemStacks.remove((Item) logical);
+            return;
+        }
         if (event.getCause() != EntityRemoveEvent.Cause.UNLOAD && active.containsKey(logical)) {
             Bukkit.getScheduler().runTask(plugin(), () -> {
                 Location location = logical.getLocation();
@@ -711,12 +1091,14 @@ public final class DisplayManager implements Listener {
         }
     }
 
-    @EventHandler(ignoreCancelled = true)
-    public void onItemMerge(ItemMergeEvent event) {
-        NamespacedKey key = ownerKey();
-        if (event.getEntity().getPersistentDataContainer().has(key, PersistentDataType.STRING)
-                || event.getTarget().getPersistentDataContainer().has(key, PersistentDataType.STRING)) {
-            event.setCancelled(true);
+    private static final class ItemAnimationState {
+
+        private Vector velocity;
+        private final boolean gravity;
+
+        private ItemAnimationState(Vector velocity, boolean gravity) {
+            this.velocity = velocity.clone();
+            this.gravity = gravity;
         }
     }
 
