@@ -119,7 +119,8 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
             double z = baseZ + ((clusterIndex >>> 2) & 1) * 0.12D;
             world.getChunkAt((int) Math.floor(x) >> 4, (int) Math.floor(z) >> 4).load();
             ItemStack stack = new ItemStack(Material.STONE);
-            stack.editMeta(meta -> meta.customName(Component.text("iv-benchmark-" + index)));
+            int itemId = index;
+            stack.editMeta(meta -> meta.customName(Component.text("iv-benchmark-" + itemId)));
             Item item = world.dropItem(new Location(world, x, y, z), stack, entity -> {
                 entity.setGravity(false);
                 entity.setVelocity(new Vector());
