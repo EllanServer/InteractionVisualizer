@@ -27,7 +27,6 @@ import com.loohp.interactionvisualizer.blocks.EnchantmentTableDisplay;
 import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
-import com.loohp.interactionvisualizer.managers.SoundManager;
 import com.loohp.interactionvisualizer.utils.ComponentFont;
 import com.loohp.interactionvisualizer.utils.RomanNumberUtils;
 import com.loohp.interactionvisualizer.utils.TranslationUtils;
@@ -246,16 +245,10 @@ public class EnchantmentTableAnimation {
             return future;
         }
 
-        Vector lift = new Vector(0.0, 0.15, 0.0);
-        Vector pickup = enchanter.getEyeLocation().add(0.0, -0.5, 0.0).add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector().subtract(location.clone().add(0.5, 1.2, 0.5).toVector()).multiply(0.15).add(lift);
-        item.setVelocity(pickup);
-        item.setGravity(true);
-        item.setPickupDelay(32767);
         DisplayManager.updateItem(item);
+        DisplayManager.collectItem(item, enchanter);
 
         Scheduler.runTaskLater(plugin, () -> {
-            SoundManager.playItemPickup(item.getLocation(), InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY));
-            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
             this.item = Optional.empty();
             future.complete(PLAY_PICKUP);
         }, 8);

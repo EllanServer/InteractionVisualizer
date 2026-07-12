@@ -17,6 +17,7 @@ import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.entityholders.ItemFrame;
 import com.loohp.interactionvisualizer.entityholders.VisualizerEntity;
+import com.loohp.interactionvisualizer.integration.packet.ClientPickupAnimationBridge;
 import com.loohp.interactionvisualizer.utils.DisplayTransformFactory;
 import io.papermc.paper.event.player.PlayerTrackEntityEvent;
 import io.papermc.paper.event.player.PlayerUntrackEntityEvent;
@@ -98,6 +99,11 @@ public final class DisplayManager implements Listener {
         // Fail during enable instead of waiting for the first player tracker event
         // if the shaded packet adapter does not match this Paper runtime.
         SparrowHeart.getInstance();
+        if (!ClientPickupAnimationBridge.initialize()) {
+            plugin().getLogger().log(Level.WARNING,
+                    "Vanilla client pickup animations are unavailable; affected items will be removed immediately",
+                    ClientPickupAnimationBridge.initializationFailure());
+        }
         runSync(() -> removeOwnedEntities(false));
     }
 
@@ -223,6 +229,17 @@ public final class DisplayManager implements Listener {
 
     public static void removeItem(Collection<Player> players, Item entity) {
         remove(players, entity, true);
+    }
+
+    /**
+     * Hands a virtual item to Minecraft's native three-tick client pickup animation.
+     * The client follows the collector and removes the complete displayed stack.
+     */
+    public static void collectItem(Item entity, Player collector) {
+        if (entity == null || collector == null) {
+            return;
+        }
+        runSync(() -> collectVirtualItem(entity, collector));
     }
 
     public static void sendItemFrameSpawn(Collection<Player> players, ItemFrame entity) {
@@ -701,16 +718,62 @@ public final class DisplayManager implements Listener {
         }
     }
 
-    private static void removeVirtualItem(Item logical, UUID viewer, Player player) {
+    private static void collectVirtualItem(Item logical, Player collector) {
+        try {
+            Map<UUID, Integer> ids = virtualItemIds.get(logical);
+            int amount = Math.max(1, logical.getItemStack().getAmount());
+            boolean pickupPacketAvailable = ClientPickupAnimationBridge.initialize();
+            if (ids != null) {
+                for (UUID viewerId : new HashSet<>(ids.keySet())) {
+                    Integer itemEntityId = forgetVirtualItem(logical, viewerId);
+                    if (itemEntityId == null) {
+                        continue;
+                    }
+                    Player viewer = Bukkit.getPlayer(viewerId);
+                    boolean canReceive = viewer != null && viewer.isOnline() && collector.isOnline()
+                            && viewer.getWorld().equals(collector.getWorld());
+                    if (!canReceive || !pickupPacketAvailable) {
+                        removeClaimedVirtualItem(logical, viewer, itemEntityId);
+                        continue;
+                    }
+
+                    try {
+                        // Vanilla broadcasts take to the source item's trackers and
+                        // lets the client resolve the collector (including its local
+                        // player fallback), so do not add a target-tracking filter.
+                        ClientPickupAnimationBridge.send(viewer, itemEntityId, collector, amount);
+                    } catch (RuntimeException | LinkageError exception) {
+                        removeClaimedVirtualItem(logical, viewer, itemEntityId);
+                        logVirtualItemFailure("collect", logical, exception);
+                    }
+                }
+            }
+        } finally {
+            remove(null, logical, true);
+        }
+    }
+
+    private static Integer forgetVirtualItem(Item logical, UUID viewer) {
         Map<UUID, Integer> ids = virtualItemIds.get(logical);
         if (ids == null) {
-            return;
+            return null;
         }
         Integer id = ids.remove(viewer);
         if (ids.isEmpty()) {
             virtualItemIds.remove(logical, ids);
         }
-        if (id != null && player != null && player.isOnline()) {
+        return id;
+    }
+
+    private static void removeVirtualItem(Item logical, UUID viewer, Player player) {
+        Integer id = forgetVirtualItem(logical, viewer);
+        if (id != null) {
+            removeClaimedVirtualItem(logical, player, id);
+        }
+    }
+
+    private static void removeClaimedVirtualItem(Item logical, Player player, int id) {
+        if (player != null && player.isOnline()) {
             try {
                 SparrowHeart.getInstance().removeClientSideEntity(player, id);
             } catch (RuntimeException exception) {
@@ -736,7 +799,7 @@ public final class DisplayManager implements Listener {
         }
     }
 
-    private static void logVirtualItemFailure(String operation, Item logical, RuntimeException exception) {
+    private static void logVirtualItemFailure(String operation, Item logical, Throwable exception) {
         Plugin plugin = plugin();
         if (plugin != null) {
             plugin.getLogger().log(Level.WARNING,

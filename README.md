@@ -30,6 +30,10 @@ outside the supported range.
 - Static items bob and spin entirely client-side with no animation task; only
   active gravity motion needs per-viewer correction because Heart marks its
   fake items as no-gravity.
+- Block-to-player pickup uses Minecraft's native take-item packet through one
+  isolated reflection bridge. The client supplies the vanilla sound and
+  three-tick live-target absorption; arbitrary location-to-location throws keep
+  the existing custom motion path. No Sparrow fork or ProtocolLib is required.
 - Display updates are revision-coalesced; there is no 5 ms packet scan loop.
 - Player/chunk proximity queries use one allocation-light snapshot per world and
   server tick.

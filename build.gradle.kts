@@ -115,7 +115,7 @@ val compilePaper26_2 = tasks.register<JavaCompile>("compilePaper26_2") {
 }
 
 val verifyPaperOnlyArchitecture = tasks.register("verifyPaperOnlyArchitecture") {
-    description = "Rejects direct in-project NMS, Armor Stands, or legacy compatibility layers."
+    description = "Confines NMS reflection to the client pickup bridge and rejects legacy layers."
     group = LifecycleBasePlugin.VERIFICATION_GROUP
     val sources = sourceSets.main.get().allJava
     inputs.files(sources)
@@ -138,9 +138,16 @@ val verifyPaperOnlyArchitecture = tasks.register("verifyPaperOnlyArchitecture") 
             "getPluginLoader()",
             ".spigot()",
         )
+        val pickupBridge = file(
+            "common/src/main/java/com/loohp/interactionvisualizer/integration/packet/ClientPickupAnimationBridge.java",
+        ).canonicalFile
+        val bridgeTokens = setOf("net.minecraft", "org.bukkit.craftbukkit")
         val violations = sources.files.flatMap { source ->
             val text = source.readText()
-            forbidden.filter(text::contains).map { token -> "${source.relativeTo(rootDir)}: $token" }
+            forbidden.filter(text::contains).mapNotNull { token ->
+                val allowed = source.canonicalFile == pickupBridge && token in bridgeTokens
+                if (allowed) null else "${source.relativeTo(rootDir)}: $token"
+            }
         }
         check(violations.isEmpty()) {
             "Paper-only architecture violations:\n${violations.joinToString("\n")}"

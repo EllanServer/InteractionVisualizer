@@ -30,7 +30,6 @@ import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
-import com.loohp.interactionvisualizer.managers.SoundManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
@@ -360,7 +359,6 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
 
         int slot = event.getRawSlot();
         ItemStack itemstack = event.getCurrentItem().clone();
-        Location loc = block.getLocation();
         Player player = (Player) event.getWhoClicked();
 
         Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
@@ -378,17 +376,8 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
             item.setItemStack(itemstack);
             item.setLocked(true);
 
-            Vector lift = new Vector(0.0, 0.15, 0.0);
-            Vector pickup = player.getEyeLocation().add(0.0, -0.5, 0.0).add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector().subtract(loc.clone().add(0.5, 1.2, 0.5).toVector()).multiply(0.15).add(lift);
-            item.setVelocity(pickup);
-            item.setGravity(true);
-            item.setPickupDelay(32767);
             DisplayManager.updateItem(item);
-
-            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                SoundManager.playItemPickup(item.getLocation(), InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY));
-                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
-            }, 8);
+            DisplayManager.collectItem(item, player);
         }, 1);
     }
 
