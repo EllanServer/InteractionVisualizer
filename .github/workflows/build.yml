@@ -29,6 +29,28 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Validate performance tooling
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scripts = @(
+            'tools/perf/phase2-pktmon.ps1',
+            'tools/perf/analyze-presentmon.ps1'
+          )
+          foreach ($script in $scripts) {
+            [void][scriptblock]::Create((Get-Content -Raw -LiteralPath $script))
+          }
+          $pktmonSelfTestJson = & ./tools/perf/phase2-pktmon.ps1 selftest | Out-String
+          $pktmonSelfTest = $pktmonSelfTestJson | ConvertFrom-Json
+          if (-not $pktmonSelfTest.passed) {
+            throw 'PktMon wrapper self-test did not report passed=true.'
+          }
+          $selfTestJson = & ./tools/perf/analyze-presentmon.ps1 -SelfTest | Out-String
+          $selfTest = $selfTestJson | ConvertFrom-Json
+          if (-not $selfTest.passed) {
+            throw 'PresentMon analyzer self-test did not report passed=true.'
+          }
+
       - name: Run checks and build production jar
         run: ./gradlew clean check shadowJar --no-daemon --no-build-cache --rerun-tasks
 
