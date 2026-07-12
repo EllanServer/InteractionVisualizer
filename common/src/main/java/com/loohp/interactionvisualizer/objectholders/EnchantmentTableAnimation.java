@@ -160,7 +160,11 @@ public class EnchantmentTableAnimation {
         item.setGravity(false);
         item.setLocked(true);
         item.setVelocity(new Vector(0.0, 0.05, 0.0));
-        DisplayManager.updateItem(item);
+        if (spawned) {
+            DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+        } else {
+            DisplayManager.updateItem(item);
+        }
         for (Player each : InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY)) {
             each.spawnParticle(Particle.PORTAL, location.clone().add(0.5, 2.6, 0.5), 200);
         }
@@ -279,11 +283,7 @@ public class EnchantmentTableAnimation {
             return future;
         }
 
-        if (spawned) {
-            DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
-        } else {
-            DisplayManager.updateItem(item);
-        }
+        DisplayManager.updateItem(item);
         DisplayManager.collectItem(item, enchanter);
 
         Scheduler.runTaskLater(plugin, () -> {

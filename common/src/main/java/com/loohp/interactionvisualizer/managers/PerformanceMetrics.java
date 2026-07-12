@@ -100,13 +100,13 @@ public final class PerformanceMetrics implements Listener {
             return null;
         }
         INSTANCE.collecting = false;
-        Snapshot snapshot = INSTANCE.snapshot();
+        Snapshot snapshot = INSTANCE.createSnapshot();
         InteractionVisualizer.plugin.getLogger().info("IV_PERF " + snapshot.json());
         return snapshot;
     }
 
     public static Snapshot snapshot() {
-        return INSTANCE.collecting ? INSTANCE.snapshot() : null;
+        return INSTANCE.collecting ? INSTANCE.createSnapshot() : null;
     }
 
     public static void virtualSpawnBundle() {
@@ -212,7 +212,7 @@ public final class PerformanceMetrics implements Listener {
         }
     }
 
-    private Snapshot snapshot() {
+    private Snapshot createSnapshot() {
         int samples = tickCount;
         double[] sorted = Arrays.copyOf(tickDurations, samples);
         Arrays.sort(sorted);
