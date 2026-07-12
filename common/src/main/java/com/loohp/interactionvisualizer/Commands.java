@@ -24,6 +24,8 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.managers.MaterialManager;
 import com.loohp.interactionvisualizer.managers.MusicManager;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
+import com.loohp.interactionvisualizer.managers.PerformanceMetrics;
+import com.loohp.interactionvisualizer.debug.PerformanceScene;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.updater.Updater;
 import com.loohp.interactionvisualizer.updater.Updater.UpdaterResponse;
@@ -58,6 +60,10 @@ public class Commands implements CommandExecutor, TabCompleter {
             sender.sendMessage(Component.text("[InteractionVisualizer] InteractionVisualizer written by LOOHP!", NamedTextColor.AQUA));
             sender.sendMessage(Component.text("[InteractionVisualizer] Running InteractionVisualizer version: " + plugin.getPluginMeta().getVersion(), NamedTextColor.GOLD));
             return true;
+        }
+
+        if (args[0].equalsIgnoreCase("perf")) {
+            return handlePerformanceCommand(sender, args);
         }
 
         if (args[0].equalsIgnoreCase("reload")) {
@@ -261,6 +267,89 @@ public class Commands implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean handlePerformanceCommand(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("interactionvisualizer.performance")) {
+            sender.sendMessage(ChatColorUtils.translateAlternateColorCodes('&', plugin.getConfiguration().getString("Messages.NoPermission")));
+            return true;
+        }
+        if (args.length < 2) {
+            sender.sendMessage(Component.text("Usage: /iv perf <start|stop|status|scene|clear>"));
+            return true;
+        }
+        switch (args[1].toLowerCase()) {
+            case "start" -> {
+                String label = args.length >= 3 ? args[2] : "unnamed";
+                if (PerformanceMetrics.start(label)) {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] Performance sampling started: " + label));
+                } else {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] Performance sampling is already active."));
+                }
+            }
+            case "stop" -> {
+                PerformanceMetrics.Snapshot snapshot = PerformanceMetrics.stop();
+                if (snapshot == null) {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] Performance sampling is not active."));
+                } else {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] " + snapshot.summary()));
+                }
+            }
+            case "status" -> {
+                PerformanceMetrics.Snapshot snapshot = PerformanceMetrics.snapshot();
+                if (snapshot == null) {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] Performance sampling is not active."));
+                } else {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] " + snapshot.summary()));
+                }
+            }
+            case "scene" -> {
+                if (!(sender instanceof Player player)) {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] The scene command must be run by a player."));
+                    return true;
+                }
+                if (args.length < 4) {
+                    sender.sendMessage(Component.text("Usage: /iv perf scene <static|motion> <count> [lifetimeTicks]"));
+                    return true;
+                }
+                boolean moving = args[2].equalsIgnoreCase("motion");
+                if (!moving && !args[2].equalsIgnoreCase("static")) {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] Scene type must be static or motion."));
+                    return true;
+                }
+                int count = parseInteger(args[3], 1);
+                long lifetime = args.length >= 5 ? parseLong(args[4], moving ? 80L : 200L) : moving ? 80L : 200L;
+                int spawned = PerformanceScene.spawn(player, moving, count, lifetime);
+                sender.sendMessage(Component.text("[InteractionVisualizer] Spawned " + spawned + " "
+                        + (moving ? "moving" : "static") + " benchmark items for " + lifetime + " ticks."));
+            }
+            case "clear" -> {
+                if (sender instanceof Player player) {
+                    PerformanceScene.clear(player);
+                    sender.sendMessage(Component.text("[InteractionVisualizer] Cleared your benchmark scene."));
+                } else {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] The clear command must be run by a player."));
+                }
+            }
+            default -> sender.sendMessage(Component.text("Usage: /iv perf <start|stop|status|scene|clear>"));
+        }
+        return true;
+    }
+
+    private static int parseInteger(String value, int defaultValue) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
+        }
+    }
+
+    private static long parseLong(String value, long defaultValue) {
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
+        }
+    }
+
     @Override
     public List<String> onTabComplete(CommandSender sender, Command cmd, String label, String[] args) {
         List<String> tab = new LinkedList<>();
@@ -304,8 +393,19 @@ public class Commands implements CommandExecutor, TabCompleter {
                         tab.add("refresh");
                     }
                 }
+                if (sender.hasPermission("interactionvisualizer.performance") && "perf".startsWith(args[0].toLowerCase())) {
+                    tab.add("perf");
+                }
                 return tab;
             case 2:
+                if (args[0].equalsIgnoreCase("perf") && sender.hasPermission("interactionvisualizer.performance")) {
+                    for (String option : List.of("start", "stop", "status", "scene", "clear")) {
+                        if (option.startsWith(args[1].toLowerCase())) {
+                            tab.add(option);
+                        }
+                    }
+                    return tab;
+                }
                 if (args[0].equalsIgnoreCase("toggle")) {
                     if (sender.hasPermission("interactionvisualizer.toggle")) {
                         if ("itemstand".startsWith(args[1].toLowerCase())) {
@@ -324,6 +424,15 @@ public class Commands implements CommandExecutor, TabCompleter {
                 }
                 return tab;
             case 3:
+                if (args[0].equalsIgnoreCase("perf") && args[1].equalsIgnoreCase("scene")
+                        && sender.hasPermission("interactionvisualizer.performance")) {
+                    for (String option : List.of("static", "motion")) {
+                        if (option.startsWith(args[2].toLowerCase())) {
+                            tab.add(option);
+                        }
+                    }
+                    return tab;
+                }
                 if (args[0].equalsIgnoreCase("toggle")) {
                     if (sender.hasPermission("interactionvisualizer.toggle")) {
                         if (args[1].equalsIgnoreCase("itemstand") || args[1].equalsIgnoreCase("itemdrop") || args[1].equalsIgnoreCase("hologram") || args[1].equalsIgnoreCase("all")) {

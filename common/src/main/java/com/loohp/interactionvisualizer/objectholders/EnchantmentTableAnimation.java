@@ -148,9 +148,10 @@ public class EnchantmentTableAnimation {
 
         this.enchanting.set(true);
 
+        boolean spawned = false;
         if (!this.item.isPresent()) {
             this.item = Optional.of(new Item(location.clone().add(0.5, 1.3, 0.5)));
-            DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item.get());
+            spawned = true;
         }
 
         Item item = this.item.get();
@@ -278,7 +279,11 @@ public class EnchantmentTableAnimation {
             return future;
         }
 
-        DisplayManager.updateItem(item);
+        if (spawned) {
+            DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+        } else {
+            DisplayManager.updateItem(item);
+        }
         DisplayManager.collectItem(item, enchanter);
 
         Scheduler.runTaskLater(plugin, () -> {

@@ -18,6 +18,7 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.integration.CustomContentManager;
+import com.loohp.interactionvisualizer.managers.PerformanceMetrics;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
 import com.loohp.interactionvisualizer.utils.ComponentFont;
@@ -230,6 +231,17 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     }
 
     private void tickAll() {
+        long started = PerformanceMetrics.isCollecting() ? System.nanoTime() : 0L;
+        try {
+            tickAllInternal();
+        } finally {
+            if (started != 0L) {
+                PerformanceMetrics.droppedItemNanos(System.nanoTime() - started);
+            }
+        }
+    }
+
+    private void tickAllInternal() {
         Collection<Player> viewers = reconcileEligibleViewers();
         DroppedItemSpatialIndex.ViewerIndex viewerIndex = new DroppedItemSpatialIndex.ViewerIndex();
         for (Player viewer : viewers) {
@@ -339,6 +351,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     }
 
     private TextDisplay spawnLabel(Item item) {
+        PerformanceMetrics.bukkitEntitySpawn();
         return item.getWorld().spawn(labelLocation(item),
                 TextDisplay.class, display -> {
                     display.setPersistent(false);
@@ -436,6 +449,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 if (!desired.contains(itemId)) {
                     TextDisplay label = labels.get(itemId);
                     if (label != null && label.isValid()) {
+                        PerformanceMetrics.bukkitHide();
                         player.hideEntity(InteractionVisualizer.plugin, label);
                     }
                     state.shown.remove(itemId);
@@ -469,6 +483,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             })) {
                 TextDisplay label = labels.get(itemId);
                 if (label != null && label.isValid()) {
+                    PerformanceMetrics.bukkitShow();
                     player.showEntity(InteractionVisualizer.plugin, label);
                     state.shown.add(itemId);
                 }
@@ -485,6 +500,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             for (UUID itemId : state.shown) {
                 TextDisplay label = labels.get(itemId);
                 if (label != null && label.isValid()) {
+                    PerformanceMetrics.bukkitHide();
                     player.hideEntity(InteractionVisualizer.plugin, label);
                 }
             }
@@ -552,6 +568,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             if (state.shown.remove(itemId) && label != null && label.isValid()) {
                 Player player = Bukkit.getPlayer(entry.getKey());
                 if (player != null) {
+                    PerformanceMetrics.bukkitHide();
                     player.hideEntity(InteractionVisualizer.plugin, label);
                 }
             }
@@ -560,6 +577,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     private void removeLabel(TextDisplay label) {
         if (label != null && label.isValid()) {
+            PerformanceMetrics.bukkitEntityRemove();
             label.remove();
         }
     }

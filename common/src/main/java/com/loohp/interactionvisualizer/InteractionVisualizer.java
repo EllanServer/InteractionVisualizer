@@ -31,6 +31,7 @@ import com.loohp.interactionvisualizer.managers.MaterialManager;
 import com.loohp.interactionvisualizer.managers.MusicManager;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PreferenceManager;
+import com.loohp.interactionvisualizer.managers.PerformanceMetrics;
 import com.loohp.interactionvisualizer.managers.TaskManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.metrics.Charts;
@@ -188,6 +189,7 @@ public class InteractionVisualizer extends JavaPlugin {
         MaterialManager.setup();
 
         getCommand("interactionvisualizer").setExecutor(new Commands());
+        PerformanceMetrics.register(this);
 
         TaskManager.run();
 

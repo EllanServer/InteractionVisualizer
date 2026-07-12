@@ -45,8 +45,10 @@ import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.util.Vector;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -67,6 +69,7 @@ public final class DisplayManager implements Listener {
     private static final double ITEM_HORIZONTAL_DRAG_PER_TICK = 0.98F;
     private static final double ITEM_VERTICAL_DRAG_PER_TICK = 0.98;
     private static final double ITEM_VOID_MARGIN = 64.0;
+    private static final int VIRTUAL_REMOVE_BATCH_SIZE = 256;
 
     public static final Map<VisualizerEntity, Collection<Player>> active = new ConcurrentHashMap<>();
     public static final Map<Player, Set<VisualizerEntity>> playerStatus = new ConcurrentHashMap<>();
@@ -278,14 +281,22 @@ public final class DisplayManager implements Listener {
 
     public static void removeAll(Player player) {
         runSync(() -> {
+            List<Integer> virtualItemIdsToRemove = new ArrayList<>();
             for (Map.Entry<VisualizerEntity, Set<UUID>> entry : shownViewers.entrySet()) {
                 if (entry.getValue().remove(player.getUniqueId())) {
                     if (entry.getKey() instanceof Item item) {
-                        removeVirtualItem(item, player.getUniqueId(), player);
+                        Integer id = forgetVirtualItem(item, player.getUniqueId());
+                        if (id != null) {
+                            virtualItemIdsToRemove.add(id);
+                        }
                     }
-                    entry.getKey().getBukkitEntity().ifPresent(actual -> player.hideEntity(plugin(), actual));
+                    entry.getKey().getBukkitEntity().ifPresent(actual -> {
+                        PerformanceMetrics.bukkitHide();
+                        player.hideEntity(plugin(), actual);
+                    });
                 }
             }
+            removeVirtualItems(player, virtualItemIdsToRemove);
             playerStatus.put(player, ConcurrentHashMap.newKeySet());
         });
     }
@@ -342,6 +353,7 @@ public final class DisplayManager implements Listener {
     }
 
     private static void syncDisplay(DisplayEntity logical) {
+        PerformanceMetrics.displaySync();
         boolean text = logical.isTextDisplay();
         org.bukkit.entity.Entity current = logical.getBukkitEntity().orElse(null);
         if (current != null && (!current.getWorld().equals(logical.getWorld())
@@ -365,6 +377,7 @@ public final class DisplayManager implements Listener {
             actual = text
                     ? logical.getWorld().spawn(logical.getLocation(), TextDisplay.class, DisplayManager::initializeDisplay)
                     : logical.getWorld().spawn(logical.getLocation(), org.bukkit.entity.ItemDisplay.class, DisplayManager::initializeDisplay);
+            PerformanceMetrics.bukkitEntitySpawn();
             logical.bind(actual);
             trackActual(logical, actual);
         } else {
@@ -400,6 +413,7 @@ public final class DisplayManager implements Listener {
         Location target = logical.getLocation();
         if (!actual.getWorld().equals(target.getWorld()) || actual.getLocation().distanceSquared(target) > 1.0E-8
                 || actual.getYaw() != target.getYaw() || actual.getPitch() != target.getPitch()) {
+            PerformanceMetrics.bukkitEntityTeleport();
             actual.teleport(target);
         }
         actual.setSilent(logical.isSilent());
@@ -411,6 +425,7 @@ public final class DisplayManager implements Listener {
     }
 
     private static void syncItem(Item logical) {
+        PerformanceMetrics.itemSync();
         org.bukkit.entity.Entity current = logical.getBukkitEntity().orElse(null);
         if (current != null && (!current.getWorld().equals(logical.getWorld())
                 || !(current instanceof ItemDisplay))) {
@@ -425,6 +440,7 @@ public final class DisplayManager implements Listener {
             clearViewerTracking(logical);
             actual = logical.getWorld().spawn(logical.getLocation(), ItemDisplay.class,
                     DisplayManager::initializeDisplay);
+            PerformanceMetrics.bukkitEntitySpawn();
             logical.bind(actual);
             trackActual(logical, actual);
         }
@@ -468,6 +484,7 @@ public final class DisplayManager implements Listener {
         actual.setCustomNameVisible(logical.isCustomNameVisible());
         if (!actual.getWorld().equals(logical.getWorld())
                 || actual.getLocation().distanceSquared(logical.getLocation()) > 1.0E-8) {
+            PerformanceMetrics.bukkitEntityTeleport();
             actual.teleport(logical.getLocation());
         }
     }
@@ -565,19 +582,26 @@ public final class DisplayManager implements Listener {
     }
 
     private static void tickItemAnimations() {
-        for (Map.Entry<Item, ItemAnimationState> entry : itemAnimations.entrySet()) {
-            Item logical = entry.getKey();
-            ItemAnimationState animation = entry.getValue();
-            try {
-                tickItemAnimation(logical, animation);
-            } catch (RuntimeException exception) {
-                itemAnimations.remove(logical, animation);
-                remove(null, logical, true);
-                Plugin plugin = plugin();
-                if (plugin != null) {
-                    plugin.getLogger().log(Level.WARNING,
-                            "Stopped an invalid visual item animation at " + logical.getLocation(), exception);
+        long started = PerformanceMetrics.isCollecting() ? System.nanoTime() : 0L;
+        try {
+            for (Map.Entry<Item, ItemAnimationState> entry : itemAnimations.entrySet()) {
+                Item logical = entry.getKey();
+                ItemAnimationState animation = entry.getValue();
+                try {
+                    tickItemAnimation(logical, animation);
+                } catch (RuntimeException exception) {
+                    itemAnimations.remove(logical, animation);
+                    remove(null, logical, true);
+                    Plugin plugin = plugin();
+                    if (plugin != null) {
+                        plugin.getLogger().log(Level.WARNING,
+                                "Stopped an invalid visual item animation at " + logical.getLocation(), exception);
+                    }
                 }
+            }
+        } finally {
+            if (started != 0L) {
+                PerformanceMetrics.itemAnimationNanos(System.nanoTime() - started);
             }
         }
     }
@@ -600,6 +624,7 @@ public final class DisplayManager implements Listener {
         }
 
         animation.velocity = itemVelocityAfterMovement(movement);
+        PerformanceMetrics.bukkitEntityTeleport();
         if (!actual.teleport(destination)) {
             remove(null, logical, true);
             return;
@@ -651,16 +676,19 @@ public final class DisplayManager implements Listener {
         try {
             spawnedId = SparrowHeart.getInstance().dropFakeItem(
                     player, logical.getItemStack(), anchor.getLocation());
+            PerformanceMetrics.virtualSpawnBundle();
             ids.put(viewer, spawnedId);
             Vector motion = nextVirtualItemMotion(logical);
             if (motion.lengthSquared() > ITEM_ANIMATION_EPSILON) {
                 SparrowHeart.getInstance().sendClientSideEntityMotion(player, motion, spawnedId);
+                PerformanceMetrics.virtualMotionBundle();
             }
         } catch (RuntimeException exception) {
             if (spawnedId != null) {
                 ids.remove(viewer, spawnedId);
                 try {
                     SparrowHeart.getInstance().removeClientSideEntity(player, spawnedId);
+                    PerformanceMetrics.virtualRemovePacket();
                 } catch (RuntimeException cleanupException) {
                     exception.addSuppressed(cleanupException);
                 }
@@ -696,6 +724,7 @@ public final class DisplayManager implements Listener {
                 // packet both corrects the absolute position and primes the next tick.
                 SparrowHeart.getInstance().sendClientSideTeleportEntity(
                         player, location, motion, false, entry.getValue());
+                PerformanceMetrics.virtualTeleportBundle();
             } catch (RuntimeException exception) {
                 removeVirtualItem(logical, entry.getKey(), player);
                 logVirtualItemFailure("move", logical, exception);
@@ -742,6 +771,7 @@ public final class DisplayManager implements Listener {
                         // lets the client resolve the collector (including its local
                         // player fallback), so do not add a target-tracking filter.
                         ClientPickupAnimationBridge.send(viewer, itemEntityId, collector, amount);
+                        PerformanceMetrics.virtualPickupPacket();
                     } catch (RuntimeException | LinkageError exception) {
                         removeClaimedVirtualItem(logical, viewer, itemEntityId);
                         logVirtualItemFailure("collect", logical, exception);
@@ -776,8 +806,32 @@ public final class DisplayManager implements Listener {
         if (player != null && player.isOnline()) {
             try {
                 SparrowHeart.getInstance().removeClientSideEntity(player, id);
+                PerformanceMetrics.virtualRemovePacket();
             } catch (RuntimeException exception) {
                 logVirtualItemFailure("remove", logical, exception);
+            }
+        }
+    }
+
+    private static void removeVirtualItems(Player player, List<Integer> ids) {
+        if (ids.isEmpty() || player == null || !player.isOnline()) {
+            return;
+        }
+        for (int start = 0; start < ids.size(); start += VIRTUAL_REMOVE_BATCH_SIZE) {
+            int end = Math.min(ids.size(), start + VIRTUAL_REMOVE_BATCH_SIZE);
+            int[] batch = new int[end - start];
+            for (int index = start; index < end; index++) {
+                batch[index - start] = ids.get(index);
+            }
+            try {
+                SparrowHeart.getInstance().removeClientSideEntity(player, batch);
+                PerformanceMetrics.virtualRemovePacket();
+            } catch (RuntimeException exception) {
+                Plugin plugin = plugin();
+                if (plugin != null) {
+                    plugin.getLogger().log(Level.WARNING,
+                            "Failed to batch-remove " + batch.length + " Sparrow virtual items", exception);
+                }
             }
         }
     }
@@ -792,6 +846,7 @@ public final class DisplayManager implements Listener {
             if (player != null && player.isOnline()) {
                 try {
                     SparrowHeart.getInstance().removeClientSideEntity(player, entry.getValue());
+                    PerformanceMetrics.virtualRemovePacket();
                 } catch (RuntimeException exception) {
                     logVirtualItemFailure("remove", logical, exception);
                 }
@@ -815,6 +870,7 @@ public final class DisplayManager implements Listener {
         }
         untrackActual(logical, actual);
         clearViewerTracking(logical, actual);
+        PerformanceMetrics.bukkitEntityRemove();
         actual.remove();
         logical.unbind();
     }
@@ -888,6 +944,7 @@ public final class DisplayManager implements Listener {
             Player player = Bukkit.getPlayer(uuid);
             if (player != null) {
                 if (actual != null) {
+                    PerformanceMetrics.bukkitHide();
                     player.hideEntity(plugin(), actual);
                 }
                 Set<VisualizerEntity> status = playerStatus.get(player);
@@ -905,9 +962,11 @@ public final class DisplayManager implements Listener {
                 if (entity.getPersistentDataContainer().has(key, PersistentDataType.STRING)) {
                     if (clearVisibilityOverrides) {
                         for (Player player : Bukkit.getOnlinePlayers()) {
+                            PerformanceMetrics.bukkitHide();
                             player.hideEntity(plugin(), entity);
                         }
                     }
+                    PerformanceMetrics.bukkitEntityRemove();
                     entity.remove();
                 }
             }
@@ -936,6 +995,7 @@ public final class DisplayManager implements Listener {
                     if (logical instanceof Item item) {
                         removeVirtualItem(item, uuid, player);
                     }
+                    PerformanceMetrics.bukkitHide();
                     player.hideEntity(plugin(), actual);
                     Set<VisualizerEntity> status = playerStatus.get(player);
                     if (status != null) {
@@ -949,6 +1009,7 @@ public final class DisplayManager implements Listener {
             if (shown.add(uuid)) {
                 Player player = Bukkit.getPlayer(uuid);
                 if (player != null) {
+                    PerformanceMetrics.bukkitShow();
                     player.showEntity(plugin(), actual);
                     playerStatus.computeIfAbsent(player, ignored -> ConcurrentHashMap.newKeySet()).add(logical);
                 }
@@ -986,6 +1047,7 @@ public final class DisplayManager implements Listener {
                         if (logical instanceof Item item) {
                             removeVirtualItem(item, player.getUniqueId(), player);
                         }
+                        PerformanceMetrics.bukkitHide();
                         player.hideEntity(plugin(), actual);
                         Set<VisualizerEntity> status = playerStatus.get(player);
                         if (status != null) {
@@ -1043,7 +1105,9 @@ public final class DisplayManager implements Listener {
         for (Map.Entry<VisualizerEntity, Set<UUID>> entry : shownViewers.entrySet()) {
             entry.getValue().remove(uuid);
             if (entry.getKey() instanceof Item item) {
-                removeVirtualItem(item, uuid, event.getPlayer());
+                // The connection is closing; discard bookkeeping without
+                // sending a remove packet that cannot be observed.
+                forgetVirtualItem(item, uuid);
             }
         }
         playerStatus.remove(event.getPlayer());
