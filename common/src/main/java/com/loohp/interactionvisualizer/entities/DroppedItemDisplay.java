@@ -32,6 +32,7 @@ import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Color;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
@@ -51,6 +52,9 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.Damageable;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.util.Transformation;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -79,6 +83,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     private String mediumColor = "";
     private String lowColor = "";
     private int cramp = 6;
+    private double labelYOffset = 0.8D;
     private int updateRate = 20;
     private int ticksUntilUpdate;
     private int despawnTicks = 6000;
@@ -98,6 +103,9 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         mediumColor = configString("Entities.Item.Options.Color.Medium");
         lowColor = configString("Entities.Item.Options.Color.Low");
         cramp = InteractionVisualizer.plugin.getConfiguration().getInt("Entities.Item.Options.Cramping");
+        double configuredLabelYOffset = InteractionVisualizer.plugin.getConfiguration()
+                .getDouble("Entities.Item.Options.LabelYOffset");
+        labelYOffset = Double.isFinite(configuredLabelYOffset) ? configuredLabelYOffset : 0.8D;
         updateRate = Math.max(1, InteractionVisualizer.plugin.getConfiguration().getInt("Entities.Item.Options.UpdateRate"));
         int configuredDespawnTicks = InteractionVisualizer.plugin.getConfiguration().getInt("Entities.Item.Options.DespawnTicks");
         despawnTicks = configuredDespawnTicks > 0 ? configuredDespawnTicks : 6000;
@@ -229,14 +237,10 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             label.text(text);
         }
         boolean mounted = item.equals(label.getVehicle()) || item.addPassenger(label);
-        if (created) {
-            // Mount before revealing the label so Paper can pair both entities
-            // with their passenger relationship in the initial tracking bundle.
-            showToEligibleViewers(label);
-        }
         if (mounted) {
             // A mounted display follows the item on every client render frame.
             // Text refreshes stay low-frequency without sampling item positions.
+            setLabelVerticalTranslation(label, mountedLabelTranslation(labelYOffset, item.getHeight()));
             if (label.getInterpolationDuration() != 0) {
                 label.setInterpolationDuration(0);
             }
@@ -246,16 +250,22 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         } else {
             // Preserve a safe fallback if another plugin cancels the mount or
             // changes either entity during the update.
+            setLabelVerticalTranslation(label, 0.0F);
             int transitionTicks = Math.min(59, updateRate);
             if (label.getTeleportDuration() != transitionTicks) {
                 label.setTeleportDuration(transitionTicks);
             }
-            label.teleport(item.getLocation().add(0.0, item.getHeight() * 1.7, 0.0));
+            label.teleport(labelLocation(item));
+        }
+        if (created) {
+            // Mount and configure the final render height before revealing the
+            // label so the first tracking bundle cannot flash at item height.
+            showToEligibleViewers(label);
         }
     }
 
     private TextDisplay spawnLabel(Item item) {
-        return item.getWorld().spawn(item.getLocation().add(0.0, item.getHeight() * 1.7, 0.0),
+        return item.getWorld().spawn(labelLocation(item),
                 TextDisplay.class, display -> {
                     display.setPersistent(false);
                     display.setVisibleByDefault(false);
@@ -275,6 +285,27 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                     display.setLineWidth(240);
                     display.getPersistentDataContainer().set(ownerKey(), PersistentDataType.STRING, "dropped_item_label");
                 });
+    }
+
+    private Location labelLocation(Item item) {
+        return item.getLocation().add(0.0, labelYOffset, 0.0);
+    }
+
+    static float mountedLabelTranslation(double yOffset, double itemHeight) {
+        return (float) (yOffset - itemHeight);
+    }
+
+    private static void setLabelVerticalTranslation(TextDisplay label, float targetY) {
+        Transformation current = label.getTransformation();
+        Vector3f translation = current.getTranslation();
+        if (Math.abs(translation.y - targetY) <= 1.0E-4F) {
+            return;
+        }
+        label.setTransformation(new Transformation(
+                new Vector3f(translation.x, targetY, translation.z),
+                new Quaternionf(current.getLeftRotation()),
+                new Vector3f(current.getScale()),
+                new Quaternionf(current.getRightRotation())));
     }
 
     private void reconcileEligibleViewers() {

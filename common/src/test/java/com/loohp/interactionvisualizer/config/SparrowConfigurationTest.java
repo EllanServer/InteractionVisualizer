@@ -105,4 +105,17 @@ class SparrowConfigurationTest {
                 Map.of("myplugin:life.steal", "Life Steal", "myplugin:frost", "Frost"),
                 configuration.getConfigurationSection("enchantments").getValues(false));
     }
+
+    @Test
+    void defaultConfigKeepsDroppedItemLabelsAboveTheItem() throws Exception {
+        Path file = temporaryDirectory.resolve("plugin-config.yml");
+        Files.writeString(file, "", StandardCharsets.UTF_8);
+
+        SparrowConfiguration configuration = new SparrowConfiguration(
+                file.toFile(),
+                SparrowConfigurationTest.class.getClassLoader().getResourceAsStream("config.yml"),
+                false);
+
+        assertEquals(0.8D, configuration.getDouble("Entities.Item.Options.LabelYOffset"));
+    }
 }
