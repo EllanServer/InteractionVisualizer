@@ -70,6 +70,24 @@ sourceSets {
     }
 }
 
+val benchmarkSourceSet = sourceSets.create("benchmark") {
+    java.setSrcDirs(listOf("benchmark/src/main/java"))
+    resources.setSrcDirs(listOf("benchmark/src/main/resources"))
+    compileClasspath += sourceSets.main.get().output + configurations.compileClasspath.get()
+    runtimeClasspath += output + compileClasspath
+}
+
+val benchmarkJar = tasks.register<Jar>("benchmarkJar") {
+    description = "Builds the standalone Paper A/B benchmark plugin (never shipped in production)."
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    dependsOn(benchmarkSourceSet.classesTaskName)
+    archiveClassifier = "benchmark"
+    from(benchmarkSourceSet.output)
+    from(sourceSets.main.get().output) {
+        include("com/loohp/interactionvisualizer/entities/DroppedItemSpatialIndex*.class")
+    }
+}
+
 tasks.withType<JavaCompile>().configureEach {
     options.release = 25
     options.encoding = "UTF-8"
