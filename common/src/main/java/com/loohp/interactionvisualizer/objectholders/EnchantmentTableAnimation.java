@@ -67,8 +67,7 @@ public class EnchantmentTableAnimation {
     public static final int PLAY_PICKUP = 2;
     public static final int CLOSE_TABLE = 3;
 
-    // ClientboundTakeItemEntityPacket uses a fixed three-tick client animation.
-    private static final int CLIENT_PICKUP_ANIMATION_TICKS = 3;
+    private static final int PICKUP_COMPLETION_DELAY_TICKS = 8;
 
     private static final Map<Block, EnchantmentTableAnimation> tables = new ConcurrentHashMap<>();
 
@@ -284,7 +283,7 @@ public class EnchantmentTableAnimation {
         Scheduler.runTaskLater(plugin, () -> {
             this.item = Optional.empty();
             future.complete(PLAY_PICKUP);
-        }, CLIENT_PICKUP_ANIMATION_TICKS);
+        }, PICKUP_COMPLETION_DELAY_TICKS);
         return future;
     }
 
