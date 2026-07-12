@@ -56,8 +56,11 @@ import org.bukkit.util.Transformation;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -71,6 +74,8 @@ import java.util.UUID;
 public final class DroppedItemDisplay extends VisualizerRunnableDisplay implements Listener {
 
     public static final EntryKey KEY = new EntryKey("item");
+    private static final int DEFAULT_VIEW_DISTANCE = 64;
+    private static final int VIEW_DISTANCE_HYSTERESIS = 16;
 
     private final Map<UUID, Item> trackedItems = new HashMap<>();
     private final Map<UUID, TextDisplay> labels = new HashMap<>();
@@ -87,6 +92,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     private int updateRate = 20;
     private int ticksUntilUpdate;
     private int despawnTicks = 6000;
+    private int viewDistance = DEFAULT_VIEW_DISTANCE;
     private boolean stripColorBlacklist;
     private DroppedItemBlacklist blacklist = DroppedItemBlacklist.compile(List.of(), DroppedItemDisplay::warn);
 
@@ -107,6 +113,11 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 .getDouble("Entities.Item.Options.LabelYOffset");
         labelYOffset = Double.isFinite(configuredLabelYOffset) ? configuredLabelYOffset : 0.8D;
         updateRate = Math.max(1, InteractionVisualizer.plugin.getConfiguration().getInt("Entities.Item.Options.UpdateRate"));
+        int configuredViewDistance = InteractionVisualizer.plugin.getConfiguration()
+                .getInt("Entities.Item.Options.ViewDistance");
+        viewDistance = configuredViewDistance > 0
+                ? Math.max(8, Math.min(512, configuredViewDistance))
+                : DEFAULT_VIEW_DISTANCE;
         int configuredDespawnTicks = InteractionVisualizer.plugin.getConfiguration().getInt("Entities.Item.Options.DespawnTicks");
         despawnTicks = configuredDespawnTicks > 0 ? configuredDespawnTicks : 6000;
         stripColorBlacklist = InteractionVisualizer.plugin.getConfiguration()
@@ -200,18 +211,61 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     }
 
     private void tickAll() {
-        reconcileEligibleViewers();
-        for (Map.Entry<UUID, Item> entry : new HashMap<>(trackedItems).entrySet()) {
+        Collection<Player> viewers = reconcileEligibleViewers();
+        DroppedItemSpatialIndex.ViewerIndex viewerIndex = new DroppedItemSpatialIndex.ViewerIndex();
+        for (Player viewer : viewers) {
+            Location location = viewer.getLocation();
+            viewerIndex.addViewer(viewer.getWorld().getUID(), location.getX(), location.getY(), location.getZ());
+        }
+
+        List<TrackedItem> validItems = new ArrayList<>(trackedItems.size());
+        Iterator<Map.Entry<UUID, Item>> iterator = trackedItems.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<UUID, Item> entry = iterator.next();
             Item item = entry.getValue();
             if (!item.isValid() || item.isDead()) {
-                remove(entry.getKey());
+                iterator.remove();
+                removeLabel(entry.getKey());
                 continue;
             }
-            update(item);
+            validItems.add(new TrackedItem(entry.getKey(), item, item.getLocation()));
+        }
+
+        if (viewerIndex.isEmpty()) {
+            for (UUID itemId : new HashSet<>(labels.keySet())) {
+                removeLabel(itemId);
+            }
+            return;
+        }
+
+        DroppedItemSpatialIndex itemIndex = new DroppedItemSpatialIndex();
+        for (TrackedItem tracked : validItems) {
+            Location location = tracked.location();
+            itemIndex.addItem(tracked.item().getWorld().getUID(),
+                    location.getX(), location.getY(), location.getZ());
+        }
+        for (TrackedItem tracked : validItems) {
+            update(tracked, itemIndex, viewerIndex);
         }
     }
 
-    private void update(Item item) {
+    private void update(TrackedItem tracked, DroppedItemSpatialIndex itemIndex,
+                        DroppedItemSpatialIndex.ViewerIndex viewerIndex) {
+        Item item = tracked.item();
+        Location itemLocation = tracked.location();
+        TextDisplay label = labels.get(tracked.itemId());
+        int trackingDistance = InteractionVisualizer.playerTrackingRange
+                .getOrDefault(item.getWorld(), DEFAULT_VIEW_DISTANCE);
+        int effectiveViewDistance = Math.min(viewDistance, trackingDistance);
+        int cullingDistance = label == null
+                ? effectiveViewDistance
+                : effectiveViewDistance + VIEW_DISTANCE_HYSTERESIS;
+        if (!viewerIndex.hasViewerWithin(item.getWorld().getUID(),
+                itemLocation.getX(), itemLocation.getY(), itemLocation.getZ(), cullingDistance)) {
+            removeLabel(tracked.itemId());
+            return;
+        }
+
         ItemStack stack = item.getItemStack();
         String matchingName = matchingName(stack);
         NamespacedKey customItemId = blacklist.requiresCustomItemId()
@@ -219,13 +273,14 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 : null;
         int ticksLeft = despawnTicks - item.getTicksLived();
         if (stack.isEmpty() || blacklist.matches(matchingName, stack.getType(), customItemId)
-                || item.getPickupDelay() >= Short.MAX_VALUE || ticksLeft <= 0 || isCramping(item)) {
+                || item.getPickupDelay() >= Short.MAX_VALUE || ticksLeft <= 0
+                || (cramp > 0 && itemIndex.exceedsItemLimit(item.getWorld().getUID(),
+                itemLocation.getX(), itemLocation.getY(), itemLocation.getZ(), cramp))) {
             removeLabel(item.getUniqueId());
             return;
         }
 
         Component text = format(stack, ticksLeft);
-        TextDisplay label = labels.get(item.getUniqueId());
         boolean created = false;
         if (label == null || !label.isValid() || !label.getWorld().equals(item.getWorld())) {
             removeLabel(item.getUniqueId());
@@ -235,6 +290,10 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         }
         if (!text.equals(label.text())) {
             label.text(text);
+        }
+        float targetViewRange = labelViewRange();
+        if (Math.abs(label.getViewRange() - targetViewRange) > 1.0E-4F) {
+            label.setViewRange(targetViewRange);
         }
         boolean mounted = item.equals(label.getVehicle()) || item.addPassenger(label);
         if (mounted) {
@@ -274,7 +333,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                     display.setSilent(true);
                     display.setNoPhysics(true);
                     display.setBillboard(Display.Billboard.CENTER);
-                    display.setViewRange(1.0F);
+                    display.setViewRange(labelViewRange());
                     display.setInterpolationDuration(0);
                     display.setTeleportDuration(0);
                     display.setShadowed(true);
@@ -285,6 +344,10 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                     display.setLineWidth(240);
                     display.getPersistentDataContainer().set(ownerKey(), PersistentDataType.STRING, "dropped_item_label");
                 });
+    }
+
+    private float labelViewRange() {
+        return (float) Math.max(0.125D, Math.min(8.0D, viewDistance / 64.0D));
     }
 
     private Location labelLocation(Item item) {
@@ -308,7 +371,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 new Quaternionf(current.getRightRotation())));
     }
 
-    private void reconcileEligibleViewers() {
+    private Collection<Player> reconcileEligibleViewers() {
         Map<UUID, Player> desired = new HashMap<>();
         for (Player player : InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY)) {
             if (player.isOnline()) {
@@ -338,6 +401,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 }
             }
         }
+        return desired.values();
     }
 
     private void showToEligibleViewers(TextDisplay label) {
@@ -390,15 +454,6 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         return stripColorBlacklist ? ChatColorUtils.stripColor(plain) : plain;
     }
 
-    private boolean isCramping(Item item) {
-        return cramp > 0 && item.getWorld()
-                .getNearbyEntitiesByType(Item.class, item.getLocation(), 0.5, 0.5, 0.5)
-                .stream()
-                .filter(nearby -> !isOwned(nearby))
-                .limit(cramp + 1L)
-                .count() > cramp;
-    }
-
     private void remove(UUID itemId) {
         trackedItems.remove(itemId);
         removeLabel(itemId);
@@ -426,5 +481,8 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     private static NamespacedKey ownerKey() {
         return new NamespacedKey(InteractionVisualizer.plugin, "visual_entity");
+    }
+
+    private record TrackedItem(UUID itemId, Item item, Location location) {
     }
 }
