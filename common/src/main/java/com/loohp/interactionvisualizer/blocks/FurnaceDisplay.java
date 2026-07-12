@@ -501,6 +501,7 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
         Vector direction = target.toVector().subtract(origin.toVector()).multiply(0.7);
 
         Location loc = block.getLocation().clone().add(direction).add(0.5, 0.2, 0.5);
+        loc.setDirection(facing.getDirection());
         DisplayEntity slot1 = new DisplayEntity(loc.clone());
         setStand(slot1);
 

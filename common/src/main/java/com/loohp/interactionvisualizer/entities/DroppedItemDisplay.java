@@ -24,6 +24,7 @@ import com.loohp.interactionvisualizer.utils.ComponentFont;
 import com.loohp.interactionvisualizer.utils.ItemNameUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledRunnable;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TextReplacementConfig;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -40,7 +41,9 @@ import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityRemoveEvent;
 import org.bukkit.event.entity.ItemSpawnEvent;
 import org.bukkit.event.world.EntitiesLoadEvent;
 import org.bukkit.event.world.EntitiesUnloadEvent;
@@ -170,6 +173,20 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         }
     }
 
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onEntityRemove(EntityRemoveEvent event) {
+        if (event.getEntity() instanceof Item item) {
+            UUID itemId = item.getUniqueId();
+            trackedItems.remove(itemId);
+            TextDisplay label = labels.remove(itemId);
+            if (label != null) {
+                // EntityRemoveEvent is monitoring-only. Defer entity mutation
+                // until Paper has finished removing the item's passengers.
+                Scheduler.runTask(InteractionVisualizer.plugin, () -> removeLabel(label));
+            }
+        }
+    }
+
     private void track(Item item) {
         trackedItems.put(item.getUniqueId(), item);
     }
@@ -211,16 +228,29 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         if (!text.equals(label.text())) {
             label.text(text);
         }
-        int transitionTicks = Math.min(59, updateRate);
-        if (label.getInterpolationDuration() != transitionTicks) {
-            label.setInterpolationDuration(transitionTicks);
-        }
-        if (label.getTeleportDuration() != transitionTicks) {
-            label.setTeleportDuration(transitionTicks);
-        }
-        label.teleport(item.getLocation().add(0.0, item.getHeight() * 1.7, 0.0));
+        boolean mounted = item.equals(label.getVehicle()) || item.addPassenger(label);
         if (created) {
+            // Mount before revealing the label so Paper can pair both entities
+            // with their passenger relationship in the initial tracking bundle.
             showToEligibleViewers(label);
+        }
+        if (mounted) {
+            // A mounted display follows the item on every client render frame.
+            // Text refreshes stay low-frequency without sampling item positions.
+            if (label.getInterpolationDuration() != 0) {
+                label.setInterpolationDuration(0);
+            }
+            if (label.getTeleportDuration() != 0) {
+                label.setTeleportDuration(0);
+            }
+        } else {
+            // Preserve a safe fallback if another plugin cancels the mount or
+            // changes either entity during the update.
+            int transitionTicks = Math.min(59, updateRate);
+            if (label.getTeleportDuration() != transitionTicks) {
+                label.setTeleportDuration(transitionTicks);
+            }
+            label.teleport(item.getLocation().add(0.0, item.getHeight() * 1.7, 0.0));
         }
     }
 
@@ -235,8 +265,8 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                     display.setNoPhysics(true);
                     display.setBillboard(Display.Billboard.CENTER);
                     display.setViewRange(1.0F);
-                    display.setInterpolationDuration(Math.min(59, updateRate));
-                    display.setTeleportDuration(Math.min(59, updateRate));
+                    display.setInterpolationDuration(0);
+                    display.setTeleportDuration(0);
                     display.setShadowed(true);
                     display.setSeeThrough(false);
                     display.setDefaultBackground(false);
@@ -344,7 +374,10 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     }
 
     private void removeLabel(UUID itemId) {
-        TextDisplay label = labels.remove(itemId);
+        removeLabel(labels.remove(itemId));
+    }
+
+    private void removeLabel(TextDisplay label) {
         if (label != null && label.isValid()) {
             for (UUID uuid : eligibleViewers) {
                 Player player = Bukkit.getPlayer(uuid);
