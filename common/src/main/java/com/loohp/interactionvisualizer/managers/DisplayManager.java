@@ -19,11 +19,14 @@ import com.loohp.interactionvisualizer.entityholders.ItemFrame;
 import com.loohp.interactionvisualizer.entityholders.VisualizerEntity;
 import com.loohp.interactionvisualizer.integration.packet.ClientPickupAnimationBridge;
 import com.loohp.interactionvisualizer.utils.DisplayTransformFactory;
+import io.papermc.paper.event.packet.PlayerChunkLoadEvent;
+import io.papermc.paper.event.packet.PlayerChunkUnloadEvent;
 import io.papermc.paper.event.player.PlayerTrackEntityEvent;
 import io.papermc.paper.event.player.PlayerUntrackEntityEvent;
 import net.kyori.adventure.text.Component;
 import net.momirealms.sparrow.heart.SparrowHeart;
 import org.bukkit.Bukkit;
+import org.bukkit.Chunk;
 import org.bukkit.Color;
 import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
@@ -39,28 +42,34 @@ import org.bukkit.event.entity.EntityRemoveEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.util.Vector;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 
 /**
  * Main-thread Paper entity renderer.
  *
- * <p>Paper's native tracker owns range and chunk lifecycle. Logical items use
- * empty display anchors plus Sparrow's client-side {@code ITEM} packets, so
- * the client keeps vanilla bob/spin rendering without server item physics.</p>
+ * <p>Paper's native tracker owns range and chunk lifecycle for displays and
+ * animated/name-bearing items. Eligible static items can instead follow the
+ * player's sent-chunk lifecycle and use only Sparrow client-side {@code ITEM}
+ * packets, retaining vanilla bob/spin rendering without server item physics.</p>
  */
 public final class DisplayManager implements Listener {
 
@@ -77,6 +86,7 @@ public final class DisplayManager implements Listener {
     private static final Map<VisualizerEntity, Integer> renderedRevision = new ConcurrentHashMap<>();
     private static final Map<VisualizerEntity, Set<UUID>> shownViewers = new ConcurrentHashMap<>();
     private static final Set<VisualizerEntity> scheduled = ConcurrentHashMap.newKeySet();
+    private static final Set<VisualizerEntity> forceScheduled = ConcurrentHashMap.newKeySet();
     private static final Map<UUID, VisualizerEntity> logicalByActualUuid = new ConcurrentHashMap<>();
     private static final Map<VisualizerEntity, UUID> actualUuidByLogical = new ConcurrentHashMap<>();
     private static final Map<ChunkKey, Set<VisualizerEntity>> logicalsByChunk = new ConcurrentHashMap<>();
@@ -84,7 +94,11 @@ public final class DisplayManager implements Listener {
     private static final Map<Item, ItemAnimationState> itemAnimations = new ConcurrentHashMap<>();
     private static final Map<Item, Map<UUID, Integer>> virtualItemIds = new ConcurrentHashMap<>();
     private static final Map<Item, ItemStack> renderedItemStacks = new ConcurrentHashMap<>();
+    private static final Map<Item, Location> renderedItemLocations = new ConcurrentHashMap<>();
+    private static final Set<Item> packetOnlyItems = ConcurrentHashMap.newKeySet();
+    private static final Map<UUID, VisibilityShowQueue<VisualizerEntity>> visibilityShowQueues = new ConcurrentHashMap<>();
     private static boolean itemAnimationTickScheduled;
+    private static boolean visibilityTickScheduled;
 
     public DisplayManager() {
     }
@@ -113,9 +127,38 @@ public final class DisplayManager implements Listener {
     /** One-shot liveness and viewer reconciliation, used after configuration reloads. */
     public static void update() {
         runSync(() -> {
+            // Active viewer collections are live filtered views. A reload can
+            // therefore invalidate requests that have not reached shownViewers
+            // yet; clear them once and rebuild from the new desired sets below.
+            for (VisibilityShowQueue<VisualizerEntity> queue : visibilityShowQueues.values()) {
+                queue.clear();
+            }
             for (VisualizerEntity logical : new HashSet<>(active.keySet())) {
                 index(logical);
-                if (logical.getBukkitEntity().isEmpty() && requiresActualEntity(logical)) {
+                if (logical instanceof Item item) {
+                    // These experiment flags are not part of the logical entity's
+                    // cache code. Force a sync only when a reload actually changes
+                    // the representation; otherwise avoid a full item teleport burst.
+                    ItemAnimationState animation = itemAnimations.get(item);
+                    boolean desiredStaticAnchor = useStaticAnchorForAnimation(
+                            InteractionVisualizer.staticVirtualItemAnchorsDuringAnimation,
+                            item.isCustomNameVisible());
+                    boolean packetOnly = qualifiesForPacketOnlyStatic(item);
+                    boolean representationChanged = packetOnlyItems.contains(item) != packetOnly
+                            || animation != null && animation.staticAnchor != desiredStaticAnchor;
+                    boolean missingRequiredAnchor = !packetOnly && item.getBukkitEntity().isEmpty();
+                    Location location = item.getLocation();
+                    boolean chunkLoaded = location.getWorld().isChunkLoaded(
+                            location.getBlockX() >> 4, location.getBlockZ() >> 4);
+                    if ((representationChanged || missingRequiredAnchor) && (packetOnly || chunkLoaded)) {
+                        schedule(logical, true);
+                    } else {
+                        // If packet-only was disabled while the chunk is absent,
+                        // hide its old fake viewers now; ChunkLoadEvent will create
+                        // the real anchor without synchronously loading the chunk.
+                        reconcileViewers(logical);
+                    }
+                } else if (logical.getBukkitEntity().isEmpty() && requiresActualEntity(logical)) {
                     Location location = logical.getLocation();
                     if (location.getWorld().isChunkLoaded(location.getBlockX() >> 4, location.getBlockZ() >> 4)) {
                         schedule(logical, true);
@@ -123,6 +166,9 @@ public final class DisplayManager implements Listener {
                 } else {
                     reconcileViewers(logical);
                 }
+            }
+            if (!InteractionVisualizer.visibilityRateLimiting) {
+                drainVisibilityShowQueues();
             }
         });
     }
@@ -146,6 +192,7 @@ public final class DisplayManager implements Listener {
             renderedRevision.clear();
             shownViewers.clear();
             scheduled.clear();
+            forceScheduled.clear();
             logicalByActualUuid.clear();
             actualUuidByLogical.clear();
             logicalsByChunk.clear();
@@ -153,7 +200,14 @@ public final class DisplayManager implements Listener {
             itemAnimations.clear();
             virtualItemIds.clear();
             renderedItemStacks.clear();
+            renderedItemLocations.clear();
+            packetOnlyItems.clear();
+            for (VisibilityShowQueue<VisualizerEntity> queue : visibilityShowQueues.values()) {
+                queue.clear();
+            }
+            visibilityShowQueues.clear();
             itemAnimationTickScheduled = false;
+            visibilityTickScheduled = false;
             playerStatus.clear();
             removeOwnedEntities(true);
         };
@@ -281,6 +335,7 @@ public final class DisplayManager implements Listener {
 
     public static void removeAll(Player player) {
         runSync(() -> {
+            clearVisibilityShowQueue(player.getUniqueId());
             List<Integer> virtualItemIdsToRemove = new ArrayList<>();
             for (Map.Entry<VisualizerEntity, Set<UUID>> entry : shownViewers.entrySet()) {
                 if (entry.getValue().remove(player.getUniqueId())) {
@@ -305,8 +360,8 @@ public final class DisplayManager implements Listener {
         runSync(() -> {
             playerStatus.putIfAbsent(player, ConcurrentHashMap.newKeySet());
             for (VisualizerEntity logical : active.keySet()) {
-                if (logical.getBukkitEntity().isPresent()) {
-                    reconcileViewers(logical);
+                if (logical.getBukkitEntity().isPresent() || packetOnlyItems.contains(logical)) {
+                    reconcileViewer(logical, player);
                 } else if (requiresActualEntity(logical)) {
                     schedule(logical, true);
                 }
@@ -318,13 +373,19 @@ public final class DisplayManager implements Listener {
         if (logical == null || plugin() == null || !plugin().isEnabled()) {
             return;
         }
+        if (force) {
+            // A force request may arrive while a normal sync is already queued.
+            // Preserve the upgrade until whichever task observes it.
+            forceScheduled.add(logical);
+        }
         if (scheduled.add(logical)) {
             runSync(() -> {
                 try {
+                    boolean forceSync = forceScheduled.remove(logical);
                     if (active.containsKey(logical)) {
                         index(logical);
                         int revision = logical.cacheCode();
-                        if (force || (requiresActualEntity(logical) && logical.getBukkitEntity().isEmpty())
+                        if (forceSync || (requiresActualEntity(logical) && logical.getBukkitEntity().isEmpty())
                                 || renderedRevision.getOrDefault(logical, Integer.MIN_VALUE) != revision) {
                             sync(logical, revision);
                         }
@@ -332,8 +393,8 @@ public final class DisplayManager implements Listener {
                 } finally {
                     scheduled.remove(logical);
                 }
-                if (active.containsKey(logical)
-                        && renderedRevision.getOrDefault(logical, Integer.MIN_VALUE) != logical.cacheCode()) {
+                if (active.containsKey(logical) && (forceScheduled.contains(logical)
+                        || renderedRevision.getOrDefault(logical, Integer.MIN_VALUE) != logical.cacheCode())) {
                     schedule(logical, false);
                 }
             });
@@ -426,7 +487,44 @@ public final class DisplayManager implements Listener {
 
     private static void syncItem(Item logical) {
         PerformanceMetrics.itemSync();
+        boolean packetOnly = qualifiesForPacketOnlyStatic(logical);
+        boolean wasPacketOnly = packetOnlyItems.contains(logical);
         org.bukkit.entity.Entity current = logical.getBukkitEntity().orElse(null);
+
+        if (packetOnly) {
+            PerformanceMetrics.packetOnlyItemSync();
+            ItemStack itemStack = logical.getItemStack();
+            Location location = logical.getLocation();
+
+            if (current != null) {
+                discardActual(logical, current);
+            } else if (!wasPacketOnly) {
+                clearViewerTracking(logical);
+                logical.unbind();
+                untrackActual(logical);
+            }
+
+            packetOnlyItems.add(logical);
+            itemAnimations.remove(logical);
+            ItemStack previousItemStack = renderedItemStacks.put(logical, itemStack.clone());
+            Location previousLocation = renderedItemLocations.put(logical, location.clone());
+            boolean itemChanged = previousItemStack == null || !previousItemStack.equals(itemStack);
+            boolean locationChanged = previousLocation == null || !previousLocation.equals(location);
+            if (wasPacketOnly && (itemChanged || locationChanged)) {
+                respawnVirtualItems(logical);
+            }
+            return;
+        }
+
+        if (wasPacketOnly) {
+            packetOnlyItems.remove(logical);
+            renderedItemLocations.remove(logical);
+            itemAnimations.remove(logical);
+            clearViewerTracking(logical);
+            logical.unbind();
+            untrackActual(logical);
+        }
+
         if (current != null && (!current.getWorld().equals(logical.getWorld())
                 || !(current instanceof ItemDisplay))) {
             discardActual(logical, current);
@@ -447,6 +545,7 @@ public final class DisplayManager implements Listener {
 
         ItemStack itemStack = logical.getItemStack();
         ItemStack previousItemStack = renderedItemStacks.put(logical, itemStack.clone());
+        renderedItemLocations.remove(logical);
         boolean itemChanged = previousItemStack == null || !previousItemStack.equals(itemStack);
 
         // The Paper entity is only an invisible tracker/name anchor. Rendering
@@ -554,7 +653,7 @@ public final class DisplayManager implements Listener {
         if (logical instanceof ItemFrame frame) {
             return shouldRender(frame);
         }
-        return logical instanceof Item;
+        return logical instanceof Item item && !qualifiesForPacketOnlyStatic(item);
     }
 
     private static boolean shouldRender(DisplayEntity logical) {
@@ -571,6 +670,19 @@ public final class DisplayManager implements Listener {
 
     static boolean useStaticAnchorForAnimation(boolean configured, boolean customNameVisible) {
         return configured && !customNameVisible;
+    }
+
+    static boolean qualifiesForPacketOnlyStatic(boolean configured, boolean gravity, Vector velocity,
+                                                 boolean customNameVisible, boolean glowing) {
+        return configured && !gravity && velocity != null
+                && velocity.getX() == 0.0D && velocity.getY() == 0.0D && velocity.getZ() == 0.0D
+                && !customNameVisible && !glowing;
+    }
+
+    private static boolean qualifiesForPacketOnlyStatic(Item logical) {
+        return qualifiesForPacketOnlyStatic(
+                InteractionVisualizer.packetOnlyStaticVirtualItems,
+                logical.hasGravity(), logical.getVelocity(), logical.isCustomNameVisible(), logical.isGlowing());
     }
 
     private static void scheduleItemAnimationTick() {
@@ -675,25 +787,38 @@ public final class DisplayManager implements Listener {
                 movement.getZ() * ITEM_HORIZONTAL_DRAG_PER_TICK);
     }
 
-    private static void spawnVirtualItem(Item logical, Player player) {
+    private static boolean spawnVirtualItem(Item logical, Player player) {
         org.bukkit.entity.Entity anchor = logical.getBukkitEntity().orElse(null);
         Set<UUID> shown = shownViewers.get(logical);
-        if (!(anchor instanceof ItemDisplay) || !active.containsKey(logical)
-                || shown == null || !shown.contains(player.getUniqueId())
-                || !player.isOnline() || !player.getWorld().equals(anchor.getWorld())) {
-            return;
+        boolean packetOnly = packetOnlyItems.contains(logical);
+        Location source;
+        if (!active.containsKey(logical) || shown == null || !shown.contains(player.getUniqueId())
+                || !player.isOnline()) {
+            return false;
+        }
+        if (packetOnly) {
+            source = logical.getLocation();
+            if (!qualifiesForPacketOnlyStatic(logical) || !player.getWorld().equals(source.getWorld())
+                    || !player.isChunkSent(Chunk.getChunkKey(source))) {
+                return false;
+            }
+        } else {
+            if (!(anchor instanceof ItemDisplay) || !player.getWorld().equals(anchor.getWorld())) {
+                return false;
+            }
+            source = anchor.getLocation();
         }
 
         Map<UUID, Integer> ids = virtualItemIds.computeIfAbsent(logical, ignored -> new ConcurrentHashMap<>());
         UUID viewer = player.getUniqueId();
         if (ids.containsKey(viewer)) {
-            return;
+            return true;
         }
 
         Integer spawnedId = null;
         try {
             spawnedId = SparrowHeart.getInstance().dropFakeItem(
-                    player, logical.getItemStack(), anchor.getLocation());
+                    player, logical.getItemStack(), source);
             PerformanceMetrics.virtualSpawnBundle();
             ids.put(viewer, spawnedId);
             Vector motion = nextVirtualItemMotion(logical);
@@ -701,6 +826,7 @@ public final class DisplayManager implements Listener {
                 SparrowHeart.getInstance().sendClientSideEntityMotion(player, motion, spawnedId);
                 PerformanceMetrics.virtualMotionBundle();
             }
+            return true;
         } catch (RuntimeException exception) {
             if (spawnedId != null) {
                 ids.remove(viewer, spawnedId);
@@ -715,6 +841,7 @@ public final class DisplayManager implements Listener {
                 virtualItemIds.remove(logical, ids);
             }
             logVirtualItemFailure("spawn", logical, exception);
+            return false;
         }
     }
 
@@ -756,11 +883,13 @@ public final class DisplayManager implements Listener {
             return;
         }
         Set<UUID> viewers = new HashSet<>(ids.keySet());
+        boolean packetOnly = packetOnlyItems.contains(logical);
         for (UUID viewer : viewers) {
             Player player = Bukkit.getPlayer(viewer);
             removeVirtualItem(logical, viewer, player);
-            if (player != null) {
-                spawnVirtualItem(logical, player);
+            boolean spawned = player != null && spawnVirtualItem(logical, player);
+            if (packetOnly && !spawned) {
+                forgetShownViewer(logical, viewer, player);
             }
         }
     }
@@ -951,6 +1080,7 @@ public final class DisplayManager implements Listener {
     }
 
     private static void clearViewerTracking(VisualizerEntity logical, org.bukkit.entity.Entity actual) {
+        cancelVisibilityShows(logical);
         if (logical instanceof Item item) {
             destroyVirtualItems(item);
         }
@@ -969,6 +1099,227 @@ public final class DisplayManager implements Listener {
                 if (status != null) {
                     status.remove(logical);
                 }
+            }
+        }
+    }
+
+    private static boolean isViewerEnabledFor(VisualizerEntity logical, Player player) {
+        Collection<Player> desiredPlayers = active.get(logical);
+        if (desiredPlayers == null || player == null) {
+            return false;
+        }
+        UUID viewer = player.getUniqueId();
+        for (Player candidate : desiredPlayers) {
+            if (candidate != null && viewer.equals(candidate.getUniqueId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isViewerDesired(VisualizerEntity logical, Player player) {
+        return isViewerRenderable(logical, player) && isViewerEnabledFor(logical, player);
+    }
+
+    private static boolean isQueuedViewerStillRenderable(VisualizerEntity logical, Player player) {
+        // Eligibility was checked before enqueueing. Every internal eligibility
+        // mutation (preference reset, reload, world/chunk lifecycle, removal)
+        // explicitly cancels or reconciles the queue, so the hot drain path only
+        // needs O(1) liveness/renderability validation.
+        return active.containsKey(logical) && isViewerRenderable(logical, player);
+    }
+
+    private static boolean isViewerRenderable(VisualizerEntity logical, Player player) {
+        if (player == null || !player.isOnline()) {
+            return false;
+        }
+        if (logical instanceof Item item && packetOnlyItems.contains(item)) {
+            Location location = item.getLocation();
+            if (!player.getWorld().equals(location.getWorld())) {
+                return false;
+            }
+            PerformanceMetrics.virtualViewerChecks(1);
+            return qualifiesForPacketOnlyStatic(item) && player.isChunkSent(Chunk.getChunkKey(location));
+        }
+        org.bukkit.entity.Entity actual = logical.getBukkitEntity().orElse(null);
+        return actual != null && player.getWorld().equals(actual.getWorld());
+    }
+
+    private static void requestViewerShow(VisualizerEntity logical, Player player) {
+        Set<UUID> shown = shownViewers.get(logical);
+        if (shown != null && shown.contains(player.getUniqueId())) {
+            cancelVisibilityShow(logical, player.getUniqueId());
+            return;
+        }
+        if (!InteractionVisualizer.visibilityRateLimiting) {
+            cancelVisibilityShow(logical, player.getUniqueId());
+            showViewerNow(logical, player);
+            return;
+        }
+
+        VisibilityShowQueue<VisualizerEntity> queue = visibilityShowQueues.computeIfAbsent(
+                player.getUniqueId(), ignored -> new VisibilityShowQueue<>(
+                        InteractionVisualizer.visibilityRateLimitBucketSize, currentServerTick()));
+        if (queue.request(logical)) {
+            PerformanceMetrics.visibilityShowQueued();
+        }
+        scheduleVisibilityTick();
+    }
+
+    private static void showViewerNow(VisualizerEntity logical, Player player) {
+        cancelVisibilityShow(logical, player.getUniqueId());
+        Set<UUID> shown = shownViewers.computeIfAbsent(logical, ignored -> ConcurrentHashMap.newKeySet());
+        UUID viewer = player.getUniqueId();
+        if (!shown.add(viewer)) {
+            return;
+        }
+
+        boolean shownSuccessfully;
+        if (logical instanceof Item item && packetOnlyItems.contains(item)) {
+            shownSuccessfully = spawnVirtualItem(item, player);
+        } else {
+            org.bukkit.entity.Entity actual = logical.getBukkitEntity().orElse(null);
+            shownSuccessfully = actual != null;
+            if (shownSuccessfully) {
+                PerformanceMetrics.bukkitShow();
+                player.showEntity(plugin(), actual);
+            }
+        }
+
+        if (shownSuccessfully) {
+            playerStatus.computeIfAbsent(player, ignored -> ConcurrentHashMap.newKeySet()).add(logical);
+        } else {
+            forgetShownViewer(logical, viewer, player);
+        }
+    }
+
+    private static void hideViewer(VisualizerEntity logical, UUID viewer, Player player) {
+        cancelVisibilityShow(logical, viewer);
+        Set<UUID> shown = shownViewers.get(logical);
+        boolean wasShown = shown != null && shown.remove(viewer);
+        if (shown != null && shown.isEmpty()) {
+            shownViewers.remove(logical, shown);
+        }
+        if (logical instanceof Item item) {
+            removeVirtualItem(item, viewer, player);
+        }
+        org.bukkit.entity.Entity actual = logical.getBukkitEntity().orElse(null);
+        if (wasShown && actual != null && player != null) {
+            PerformanceMetrics.bukkitHide();
+            player.hideEntity(plugin(), actual);
+        }
+        if (player != null) {
+            Set<VisualizerEntity> status = playerStatus.get(player);
+            if (status != null) {
+                status.remove(logical);
+            }
+        }
+    }
+
+    private static Integer forgetShownViewer(VisualizerEntity logical, UUID viewer, Player player) {
+        cancelVisibilityShow(logical, viewer);
+        Set<UUID> shown = shownViewers.get(logical);
+        if (shown != null) {
+            shown.remove(viewer);
+            if (shown.isEmpty()) {
+                shownViewers.remove(logical, shown);
+            }
+        }
+        Integer forgottenVirtualId = logical instanceof Item item ? forgetVirtualItem(item, viewer) : null;
+        if (player != null) {
+            Set<VisualizerEntity> status = playerStatus.get(player);
+            if (status != null) {
+                status.remove(logical);
+            }
+        }
+        return forgottenVirtualId;
+    }
+
+    private static void cancelVisibilityShow(VisualizerEntity logical, UUID viewer) {
+        VisibilityShowQueue<VisualizerEntity> queue = visibilityShowQueues.get(viewer);
+        if (queue != null) {
+            queue.cancel(logical);
+        }
+    }
+
+    private static void cancelVisibilityShows(VisualizerEntity logical) {
+        for (VisibilityShowQueue<VisualizerEntity> queue : visibilityShowQueues.values()) {
+            queue.cancel(logical);
+        }
+    }
+
+    private static void clearVisibilityShowQueue(UUID viewer) {
+        VisibilityShowQueue<VisualizerEntity> queue = visibilityShowQueues.remove(viewer);
+        if (queue != null) {
+            queue.clear();
+        }
+    }
+
+    private static void scheduleVisibilityTick() {
+        if (visibilityTickScheduled || !hasPendingVisibilityShows()
+                || plugin() == null || !plugin().isEnabled()) {
+            return;
+        }
+        visibilityTickScheduled = true;
+        Bukkit.getScheduler().runTaskLater(plugin(), () -> {
+            try {
+                drainVisibilityShowQueues();
+            } finally {
+                visibilityTickScheduled = false;
+                scheduleVisibilityTick();
+            }
+        }, 1L);
+    }
+
+    private static void drainVisibilityShowQueues() {
+        boolean limited = InteractionVisualizer.visibilityRateLimiting;
+        int capacity = InteractionVisualizer.visibilityRateLimitBucketSize;
+        int refill = InteractionVisualizer.visibilityRateLimitRestorePerTick;
+        long currentTick = limited ? currentServerTick() : 0L;
+        for (Map.Entry<UUID, VisibilityShowQueue<VisualizerEntity>> entry : visibilityShowQueues.entrySet()) {
+            UUID viewer = entry.getKey();
+            VisibilityShowQueue<VisualizerEntity> queue = entry.getValue();
+            Player player = Bukkit.getPlayer(viewer);
+            if (player == null || !player.isOnline()) {
+                queue.clear();
+                visibilityShowQueues.remove(viewer, queue);
+                continue;
+            }
+
+            Predicate<VisualizerEntity> desired = logical -> isQueuedViewerStillRenderable(logical, player);
+            List<VisualizerEntity> ready = limited
+                    ? queue.drain(capacity, refill, currentTick, desired)
+                    : queue.drainAll(desired);
+            for (VisualizerEntity logical : ready) {
+                PerformanceMetrics.visibilityShowDrained();
+                showViewerNow(logical, player);
+            }
+        }
+    }
+
+    private static boolean hasPendingVisibilityShows() {
+        for (VisibilityShowQueue<VisualizerEntity> queue : visibilityShowQueues.values()) {
+            if (queue.hasPending()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static long currentServerTick() {
+        return Integer.toUnsignedLong(Bukkit.getCurrentTick());
+    }
+
+    private static void forgetPacketOnlyViewer(Player player) {
+        UUID viewer = player.getUniqueId();
+        clearVisibilityShowQueue(viewer);
+        Set<VisualizerEntity> status = playerStatus.get(player);
+        if (status == null || status.isEmpty()) {
+            return;
+        }
+        for (VisualizerEntity logical : new HashSet<>(status)) {
+            if (logical instanceof Item item && packetOnlyItems.contains(item)) {
+                forgetShownViewer(item, viewer, player);
             }
         }
     }
@@ -992,46 +1343,43 @@ public final class DisplayManager implements Listener {
     }
 
     private static void reconcileViewers(VisualizerEntity logical) {
-        org.bukkit.entity.Entity actual = logical.getBukkitEntity().orElse(null);
         Collection<Player> desiredPlayers = active.get(logical);
-        if (actual == null || desiredPlayers == null) {
-            return;
-        }
-
         Set<UUID> desired = new HashSet<>();
-        for (Player player : desiredPlayers) {
-            if (player != null && player.isOnline() && player.getWorld().equals(actual.getWorld())) {
-                desired.add(player.getUniqueId());
+        if (desiredPlayers != null) {
+            for (Player player : desiredPlayers) {
+                if (isViewerRenderable(logical, player)) {
+                    desired.add(player.getUniqueId());
+                }
             }
         }
-
-        Set<UUID> shown = shownViewers.computeIfAbsent(logical, ignored -> ConcurrentHashMap.newKeySet());
-        for (UUID uuid : new HashSet<>(shown)) {
-            if (!desired.contains(uuid)) {
-                Player player = Bukkit.getPlayer(uuid);
-                if (player != null) {
-                    if (logical instanceof Item item) {
-                        removeVirtualItem(item, uuid, player);
-                    }
-                    PerformanceMetrics.bukkitHide();
-                    player.hideEntity(plugin(), actual);
-                    Set<VisualizerEntity> status = playerStatus.get(player);
-                    if (status != null) {
-                        status.remove(logical);
-                    }
+        Set<UUID> shown = shownViewers.get(logical);
+        if (shown != null) {
+            for (UUID uuid : new HashSet<>(shown)) {
+                if (!desired.contains(uuid)) {
+                    hideViewer(logical, uuid, Bukkit.getPlayer(uuid));
                 }
-                shown.remove(uuid);
             }
         }
         for (UUID uuid : desired) {
-            if (shown.add(uuid)) {
+            shown = shownViewers.get(logical);
+            if (shown == null || !shown.contains(uuid)) {
                 Player player = Bukkit.getPlayer(uuid);
                 if (player != null) {
-                    PerformanceMetrics.bukkitShow();
-                    player.showEntity(plugin(), actual);
-                    playerStatus.computeIfAbsent(player, ignored -> ConcurrentHashMap.newKeySet()).add(logical);
+                    requestViewerShow(logical, player);
                 }
             }
+        }
+    }
+
+    private static void reconcileViewer(VisualizerEntity logical, Player player) {
+        UUID viewer = player.getUniqueId();
+        if (!isViewerDesired(logical, player)) {
+            hideViewer(logical, viewer, player);
+            return;
+        }
+        Set<UUID> shown = shownViewers.get(logical);
+        if (shown == null || !shown.contains(viewer)) {
+            requestViewerShow(logical, player);
         }
     }
 
@@ -1039,10 +1387,13 @@ public final class DisplayManager implements Listener {
         if (removeFromActive) {
             active.remove(logical);
             renderedRevision.remove(logical);
+            forceScheduled.remove(logical);
             unindex(logical);
             if (logical instanceof Item item) {
                 itemAnimations.remove(item);
                 renderedItemStacks.remove(item);
+                renderedItemLocations.remove(item);
+                packetOnlyItems.remove(item);
             }
         }
         runSync(() -> {
@@ -1055,22 +1406,10 @@ public final class DisplayManager implements Listener {
                     logical.unbind();
                     clearViewerTracking(logical);
                 }
-            } else if (actual != null && players != null) {
-                Set<UUID> shown = shownViewers.get(logical);
-                if (shown == null) {
-                    return;
-                }
+            } else if (players != null) {
                 for (Player player : players) {
-                    if (player != null && shown.remove(player.getUniqueId())) {
-                        if (logical instanceof Item item) {
-                            removeVirtualItem(item, player.getUniqueId(), player);
-                        }
-                        PerformanceMetrics.bukkitHide();
-                        player.hideEntity(plugin(), actual);
-                        Set<VisualizerEntity> status = playerStatus.get(player);
-                        if (status != null) {
-                            status.remove(logical);
-                        }
+                    if (player != null) {
+                        hideViewer(logical, player.getUniqueId(), player);
                     }
                 }
             }
@@ -1109,17 +1448,26 @@ public final class DisplayManager implements Listener {
 
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
+        forgetPacketOnlyViewer(event.getPlayer());
         Bukkit.getScheduler().runTask(plugin(), () -> sendPlayerPackets(event.getPlayer()));
     }
 
     @EventHandler
     public void onWorldChange(PlayerChangedWorldEvent event) {
+        forgetPacketOnlyViewer(event.getPlayer());
+        Bukkit.getScheduler().runTask(plugin(), () -> sendPlayerPackets(event.getPlayer()));
+    }
+
+    @EventHandler
+    public void onRespawn(PlayerRespawnEvent event) {
+        forgetPacketOnlyViewer(event.getPlayer());
         Bukkit.getScheduler().runTask(plugin(), () -> sendPlayerPackets(event.getPlayer()));
     }
 
     @EventHandler
     public void onLeave(PlayerQuitEvent event) {
         UUID uuid = event.getPlayer().getUniqueId();
+        clearVisibilityShowQueue(uuid);
         for (Map.Entry<VisualizerEntity, Set<UUID>> entry : shownViewers.entrySet()) {
             entry.getValue().remove(uuid);
             if (entry.getKey() instanceof Item item) {
@@ -1129,6 +1477,48 @@ public final class DisplayManager implements Listener {
             }
         }
         playerStatus.remove(event.getPlayer());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPlayerChunkLoad(PlayerChunkLoadEvent event) {
+        if (!InteractionVisualizer.packetOnlyStaticVirtualItems) {
+            return;
+        }
+        Chunk chunk = event.getChunk();
+        ChunkKey key = new ChunkKey(chunk.getWorld().getUID(), chunk.getX(), chunk.getZ());
+        Set<VisualizerEntity> logicals = logicalsByChunk.get(key);
+        if (logicals == null) {
+            return;
+        }
+        for (VisualizerEntity logical : new HashSet<>(logicals)) {
+            if (logical instanceof Item item && packetOnlyItems.contains(item)) {
+                reconcileViewer(item, event.getPlayer());
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPlayerChunkUnload(PlayerChunkUnloadEvent event) {
+        if (!InteractionVisualizer.packetOnlyStaticVirtualItems || packetOnlyItems.isEmpty()) {
+            return;
+        }
+        Chunk chunk = event.getChunk();
+        ChunkKey key = new ChunkKey(chunk.getWorld().getUID(), chunk.getX(), chunk.getZ());
+        Set<VisualizerEntity> logicals = logicalsByChunk.get(key);
+        if (logicals == null) {
+            return;
+        }
+        Player player = event.getPlayer();
+        List<Integer> virtualItemIdsToRemove = new ArrayList<>();
+        for (VisualizerEntity logical : new HashSet<>(logicals)) {
+            if (logical instanceof Item item && packetOnlyItems.contains(item)) {
+                Integer id = forgetShownViewer(item, player.getUniqueId(), player);
+                if (id != null) {
+                    virtualItemIdsToRemove.add(id);
+                }
+            }
+        }
+        removeVirtualItems(player, virtualItemIdsToRemove);
     }
 
     @EventHandler
@@ -1160,6 +1550,8 @@ public final class DisplayManager implements Listener {
             renderedRevision.remove(logical);
             unindex(logical);
             renderedItemStacks.remove((Item) logical);
+            renderedItemLocations.remove((Item) logical);
+            packetOnlyItems.remove((Item) logical);
             return;
         }
         if (event.getCause() != EntityRemoveEvent.Cause.UNLOAD && active.containsKey(logical)) {
@@ -1170,6 +1562,99 @@ public final class DisplayManager implements Listener {
                     schedule(logical, true);
                 }
             });
+        }
+    }
+
+    static final class VisibilityShowQueue<T> {
+
+        private final Deque<QueuedShow<T>> pending;
+        private final Map<T, Long> queued;
+        private int tokens;
+        private long lastRefillTick;
+        private long nextGeneration;
+
+        VisibilityShowQueue(int initialTokens) {
+            this(initialTokens, 0L);
+        }
+
+        VisibilityShowQueue(int initialTokens, long initialTick) {
+            this.pending = new ArrayDeque<>();
+            this.queued = new HashMap<>();
+            this.tokens = Math.max(0, initialTokens);
+            this.lastRefillTick = initialTick;
+        }
+
+        boolean request(T value) {
+            if (queued.containsKey(value)) {
+                return false;
+            }
+            long generation = ++nextGeneration;
+            queued.put(value, generation);
+            pending.addLast(new QueuedShow<>(value, generation));
+            return true;
+        }
+
+        void cancel(T value) {
+            queued.remove(value);
+            if (queued.isEmpty()) {
+                pending.clear();
+            }
+        }
+
+        List<T> drain(int capacity, int refill, Predicate<T> desired) {
+            return drain(capacity, refill, lastRefillTick + 1L, desired);
+        }
+
+        List<T> drain(int capacity, int refill, long currentTick, Predicate<T> desired) {
+            int boundedCapacity = Math.max(1, capacity);
+            long elapsedTicks = Math.max(0L, currentTick - lastRefillTick);
+            long restored = elapsedTicks * (long) Math.max(0, refill);
+            tokens = (int) Math.min(boundedCapacity, Math.max(0L, tokens + restored));
+            lastRefillTick = Math.max(lastRefillTick, currentTick);
+            List<T> ready = new ArrayList<>(Math.min(tokens, queued.size()));
+            int inspected = 0;
+            while (tokens > 0 && inspected < boundedCapacity && !pending.isEmpty()) {
+                QueuedShow<T> request = pending.removeFirst();
+                inspected++;
+                T value = request.value();
+                if (!queued.remove(value, request.generation()) || !desired.test(value)) {
+                    continue;
+                }
+                ready.add(value);
+                tokens--;
+            }
+            if (queued.isEmpty()) {
+                pending.clear();
+            }
+            return ready;
+        }
+
+        List<T> drainAll(Predicate<T> desired) {
+            List<T> ready = new ArrayList<>(queued.size());
+            while (!pending.isEmpty()) {
+                QueuedShow<T> request = pending.removeFirst();
+                T value = request.value();
+                if (queued.remove(value, request.generation()) && desired.test(value)) {
+                    ready.add(value);
+                }
+            }
+            return ready;
+        }
+
+        boolean isEmpty() {
+            return queued.isEmpty();
+        }
+
+        boolean hasPending() {
+            return !queued.isEmpty();
+        }
+
+        void clear() {
+            pending.clear();
+            queued.clear();
+        }
+
+        private record QueuedShow<T>(T value, long generation) {
         }
     }
 

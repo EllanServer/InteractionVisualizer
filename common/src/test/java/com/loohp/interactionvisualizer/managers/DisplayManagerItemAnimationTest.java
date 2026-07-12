@@ -48,6 +48,25 @@ class DisplayManagerItemAnimationTest {
     }
 
     @Test
+    void packetOnlyStaticItemsRequireEverySafeProperty() {
+        assertTrue(DisplayManager.qualifiesForPacketOnlyStatic(
+                true, false, new Vector(), false, false));
+
+        assertFalse(DisplayManager.qualifiesForPacketOnlyStatic(
+                false, false, new Vector(), false, false));
+        assertFalse(DisplayManager.qualifiesForPacketOnlyStatic(
+                true, true, new Vector(), false, false));
+        assertFalse(DisplayManager.qualifiesForPacketOnlyStatic(
+                true, false, new Vector(0.0, 0.01, 0.0), false, false));
+        assertFalse(DisplayManager.qualifiesForPacketOnlyStatic(
+                true, false, new Vector(Double.MIN_VALUE, 0.0, 0.0), false, false));
+        assertFalse(DisplayManager.qualifiesForPacketOnlyStatic(
+                true, false, new Vector(), true, false));
+        assertFalse(DisplayManager.qualifiesForPacketOnlyStatic(
+                true, false, new Vector(), false, true));
+    }
+
+    @Test
     void copiesTheNmsAirMovementOrderAndPrecision() {
         Vector movement = DisplayManager.itemMovementForTick(true, new Vector(0.18, 0.15, 0.05));
         assertEquals(new Vector(0.18, 0.11, 0.05), movement);

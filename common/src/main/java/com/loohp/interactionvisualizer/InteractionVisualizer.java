@@ -105,6 +105,17 @@ public class InteractionVisualizer extends JavaPlugin {
     public static boolean defaultDisabledAll = false;
     /** A/B switch: virtual item remains authoritative while an invisible tracker stays stationary. */
     public static boolean staticVirtualItemAnchorsDuringAnimation = false;
+    /** A/B switch: eligible stationary virtual items are tracked and rendered entirely by packets. */
+    public static boolean packetOnlyStaticVirtualItems = false;
+    /** A/B switch: smooths visibility recovery bursts; hides are always immediate. */
+    public static boolean visibilityRateLimiting = false;
+    public static int visibilityRateLimitBucketSize = 128;
+    public static int visibilityRateLimitRestorePerTick = 32;
+    /** A/B switch: coalesces block changes and updates tracked blocks from fixed-budget loops. */
+    public static boolean eventDrivenBlockUpdates = false;
+    public static int blockUpdateMaxDirtyPerTick = 64;
+
+    private boolean blockUpdateModeInitialized;
 
     public static ILightManager lightManager;
     public static PreferenceManager preferenceManager;
@@ -291,6 +302,25 @@ public class InteractionVisualizer extends JavaPlugin {
         defaultDisabledAll = getConfiguration().getBoolean("Settings.DefaultDisableAll");
         staticVirtualItemAnchorsDuringAnimation = getConfiguration().getBoolean(
                 "Settings.Performance.VirtualItems.StaticAnchorDuringAnimation");
+        packetOnlyStaticVirtualItems = getConfiguration().getBoolean(
+                "Settings.Performance.VirtualItems.PacketOnlyStatic");
+        visibilityRateLimiting = getConfiguration().getBoolean(
+                "Settings.Performance.VisibilityRateLimit.Enabled");
+        visibilityRateLimitBucketSize = Math.max(1, getConfiguration().getInt(
+                "Settings.Performance.VisibilityRateLimit.BucketSize"));
+        visibilityRateLimitRestorePerTick = Math.max(1, getConfiguration().getInt(
+                "Settings.Performance.VisibilityRateLimit.RestorePerTick"));
+        boolean configuredEventDrivenBlockUpdates = getConfiguration().getBoolean(
+                "Settings.Performance.BlockUpdates.EventDriven");
+        if (!blockUpdateModeInitialized) {
+            eventDrivenBlockUpdates = configuredEventDrivenBlockUpdates;
+        } else if (eventDrivenBlockUpdates != configuredEventDrivenBlockUpdates) {
+            getLogger().warning("Settings.Performance.BlockUpdates.EventDriven is applied only at startup; "
+                    + "restart the server to change the active block update mode.");
+        }
+        blockUpdateMaxDirtyPerTick = Math.max(1, getConfiguration().getInt(
+                "Settings.Performance.BlockUpdates.MaxDirtyPerTick"));
+        blockUpdateModeInitialized = true;
 
         getServer().getPluginManager().callEvent(new InteractionVisualizerReloadEvent());
     }

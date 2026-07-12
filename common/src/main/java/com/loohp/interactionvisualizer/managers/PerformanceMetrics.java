@@ -38,6 +38,13 @@ public final class PerformanceMetrics implements Listener {
 
     private volatile boolean collecting;
     private String label = "";
+    private boolean configStaticAnchor;
+    private boolean configPacketOnlyStatic;
+    private boolean configVisibilityRateLimit;
+    private int configVisibilityBucketSize;
+    private int configVisibilityRestorePerTick;
+    private boolean configEventDrivenBlockUpdates;
+    private int configBlockUpdateMaxDirtyPerTick;
     private long startedNanos;
     private int tickCount;
     private long tickSamplesDropped;
@@ -53,9 +60,14 @@ public final class PerformanceMetrics implements Listener {
     private long bukkitHideCalls;
     private long displaySyncs;
     private long itemSyncs;
+    private long packetOnlyItemSyncs;
     private long virtualViewerChecks;
+    private long visibilityShowsQueued;
+    private long visibilityShowsDrained;
     private long itemAnimationNanos;
     private long droppedItemNanos;
+    private long blockUpdateChecks;
+    private long blockUpdateNanos;
 
     private PerformanceMetrics() {
     }
@@ -73,6 +85,13 @@ public final class PerformanceMetrics implements Listener {
             return false;
         }
         INSTANCE.label = sanitizeLabel(requestedLabel);
+        INSTANCE.configStaticAnchor = InteractionVisualizer.staticVirtualItemAnchorsDuringAnimation;
+        INSTANCE.configPacketOnlyStatic = InteractionVisualizer.packetOnlyStaticVirtualItems;
+        INSTANCE.configVisibilityRateLimit = InteractionVisualizer.visibilityRateLimiting;
+        INSTANCE.configVisibilityBucketSize = InteractionVisualizer.visibilityRateLimitBucketSize;
+        INSTANCE.configVisibilityRestorePerTick = InteractionVisualizer.visibilityRateLimitRestorePerTick;
+        INSTANCE.configEventDrivenBlockUpdates = InteractionVisualizer.eventDrivenBlockUpdates;
+        INSTANCE.configBlockUpdateMaxDirtyPerTick = InteractionVisualizer.blockUpdateMaxDirtyPerTick;
         INSTANCE.startedNanos = System.nanoTime();
         INSTANCE.tickCount = 0;
         INSTANCE.tickSamplesDropped = 0;
@@ -88,9 +107,14 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.bukkitHideCalls = 0;
         INSTANCE.displaySyncs = 0;
         INSTANCE.itemSyncs = 0;
+        INSTANCE.packetOnlyItemSyncs = 0;
         INSTANCE.virtualViewerChecks = 0;
+        INSTANCE.visibilityShowsQueued = 0;
+        INSTANCE.visibilityShowsDrained = 0;
         INSTANCE.itemAnimationNanos = 0;
         INSTANCE.droppedItemNanos = 0;
+        INSTANCE.blockUpdateChecks = 0;
+        INSTANCE.blockUpdateNanos = 0;
         INSTANCE.collecting = true;
         return true;
     }
@@ -181,9 +205,27 @@ public final class PerformanceMetrics implements Listener {
         }
     }
 
+    public static void packetOnlyItemSync() {
+        if (INSTANCE.collecting) {
+            INSTANCE.packetOnlyItemSyncs++;
+        }
+    }
+
     public static void virtualViewerChecks(int checks) {
         if (INSTANCE.collecting) {
             INSTANCE.virtualViewerChecks += checks;
+        }
+    }
+
+    public static void visibilityShowQueued() {
+        if (INSTANCE.collecting) {
+            INSTANCE.visibilityShowsQueued++;
+        }
+    }
+
+    public static void visibilityShowDrained() {
+        if (INSTANCE.collecting) {
+            INSTANCE.visibilityShowsDrained++;
         }
     }
 
@@ -196,6 +238,13 @@ public final class PerformanceMetrics implements Listener {
     public static void droppedItemNanos(long nanos) {
         if (INSTANCE.collecting) {
             INSTANCE.droppedItemNanos += nanos;
+        }
+    }
+
+    public static void blockUpdateChecks(int checks, long nanos) {
+        if (INSTANCE.collecting) {
+            INSTANCE.blockUpdateChecks += checks;
+            INSTANCE.blockUpdateNanos += nanos;
         }
     }
 
@@ -226,13 +275,16 @@ public final class PerformanceMetrics implements Listener {
         }
         mean = samples == 0 ? 0.0D : mean / samples;
         long elapsedNanos = Math.max(1L, System.nanoTime() - startedNanos);
-        return new Snapshot(label, elapsedNanos, samples, tickSamplesDropped,
+        return new Snapshot(label, configStaticAnchor, configPacketOnlyStatic, configVisibilityRateLimit,
+                configVisibilityBucketSize, configVisibilityRestorePerTick, configEventDrivenBlockUpdates,
+                configBlockUpdateMaxDirtyPerTick, elapsedNanos, samples, tickSamplesDropped,
                 percentile(sorted, 0.50D), percentile(sorted, 0.95D), percentile(sorted, 0.99D),
                 percentile(sorted, 0.999D), samples == 0 ? 0.0D : sorted[samples - 1], mean, over50,
                 virtualSpawnBundles, virtualMotionBundles, virtualTeleportBundles, virtualRemovePackets,
                 virtualPickupPackets, bukkitEntitySpawns, bukkitEntityRemoves, bukkitEntityTeleports,
-                bukkitShowCalls, bukkitHideCalls, displaySyncs, itemSyncs, virtualViewerChecks,
-                itemAnimationNanos, droppedItemNanos);
+                bukkitShowCalls, bukkitHideCalls, displaySyncs, itemSyncs, packetOnlyItemSyncs,
+                virtualViewerChecks, visibilityShowsQueued, visibilityShowsDrained,
+                itemAnimationNanos, droppedItemNanos, blockUpdateChecks, blockUpdateNanos);
     }
 
     private static double percentile(double[] sorted, double percentile) {
@@ -247,11 +299,19 @@ public final class PerformanceMetrics implements Listener {
         if (value == null || value.isBlank()) {
             return "unnamed";
         }
-        return value.replaceAll("[^A-Za-z0-9_.-]", "_").substring(0, Math.min(48, value.length()));
+        String sanitized = value.replaceAll("[^A-Za-z0-9_.-]", "_");
+        return sanitized.substring(0, Math.min(48, sanitized.length()));
     }
 
     public record Snapshot(
             String label,
+            boolean staticAnchorDuringAnimation,
+            boolean packetOnlyStatic,
+            boolean visibilityRateLimit,
+            int visibilityBucketSize,
+            int visibilityRestorePerTick,
+            boolean eventDrivenBlockUpdates,
+            int blockUpdateMaxDirtyPerTick,
             long elapsedNanos,
             int tickSamples,
             long droppedTickSamples,
@@ -274,9 +334,14 @@ public final class PerformanceMetrics implements Listener {
             long bukkitHideCalls,
             long displaySyncs,
             long itemSyncs,
+            long packetOnlyItemSyncs,
             long virtualViewerChecks,
+            long visibilityShowsQueued,
+            long visibilityShowsDrained,
             long itemAnimationNanos,
-            long droppedItemNanos) {
+            long droppedItemNanos,
+            long blockUpdateChecks,
+            long blockUpdateNanos) {
 
         public double seconds() {
             return elapsedNanos / 1_000_000_000.0D;
@@ -290,14 +355,20 @@ public final class PerformanceMetrics implements Listener {
 
         public String summary() {
             return String.format(Locale.ROOT,
-                    "label=%s samples=%d p50/p95/p99=%.3f/%.3f/%.3fms virtualPackets=%d anchors=%d/%d/%d",
-                    label, tickSamples, msptP50, msptP95, msptP99, knownVirtualPackets(),
+                    "label=%s modes=%s/%s/%s/%s samples=%d p50/p95/p99=%.3f/%.3f/%.3fms virtualPackets=%d anchors=%d/%d/%d",
+                    label, staticAnchorDuringAnimation, packetOnlyStatic, visibilityRateLimit,
+                    eventDrivenBlockUpdates,
+                    tickSamples, msptP50, msptP95, msptP99, knownVirtualPackets(),
                     bukkitEntitySpawns, bukkitEntityTeleports, bukkitEntityRemoves);
         }
 
         public String json() {
             return String.format(Locale.ROOT,
-                    "{\"label\":\"%s\",\"seconds\":%.3f,\"tickSamples\":%d," +
+                    "{\"label\":\"%s\",\"staticAnchorDuringAnimation\":%b," +
+                            "\"packetOnlyStatic\":%b,\"visibilityRateLimit\":%b," +
+                            "\"visibilityBucketSize\":%d,\"visibilityRestorePerTick\":%d," +
+                            "\"eventDrivenBlockUpdates\":%b,\"blockUpdateMaxDirtyPerTick\":%d," +
+                            "\"seconds\":%.3f,\"tickSamples\":%d," +
                             "\"droppedTickSamples\":%d,\"msptP50\":%.6f,\"msptP95\":%.6f," +
                             "\"msptP99\":%.6f,\"msptP999\":%.6f,\"msptMax\":%.6f," +
                             "\"msptMean\":%.6f,\"ticksOver50ms\":%d," +
@@ -307,13 +378,20 @@ public final class PerformanceMetrics implements Listener {
                             "\"bukkitEntitySpawns\":%d,\"bukkitEntityRemoves\":%d," +
                             "\"bukkitEntityTeleports\":%d,\"bukkitShowCalls\":%d," +
                             "\"bukkitHideCalls\":%d,\"displaySyncs\":%d,\"itemSyncs\":%d," +
-                            "\"virtualViewerChecks\":%d,\"itemAnimationMs\":%.6f,\"droppedItemMs\":%.6f}",
-                    label, seconds(), tickSamples, droppedTickSamples, msptP50, msptP95, msptP99,
+                            "\"packetOnlyItemSyncs\":%d,\"virtualViewerChecks\":%d," +
+                            "\"visibilityShowsQueued\":%d,\"visibilityShowsDrained\":%d," +
+                            "\"itemAnimationMs\":%.6f,\"droppedItemMs\":%.6f," +
+                            "\"blockUpdateChecks\":%d,\"blockUpdateMs\":%.6f}",
+                    label, staticAnchorDuringAnimation, packetOnlyStatic, visibilityRateLimit,
+                    visibilityBucketSize, visibilityRestorePerTick, eventDrivenBlockUpdates,
+                    blockUpdateMaxDirtyPerTick, seconds(), tickSamples, droppedTickSamples, msptP50, msptP95, msptP99,
                     msptP999, msptMax, msptMean, ticksOver50ms, virtualSpawnBundles,
                     virtualMotionBundles, virtualTeleportBundles, virtualRemovePackets, virtualPickupPackets,
                     knownVirtualPackets(), bukkitEntitySpawns, bukkitEntityRemoves, bukkitEntityTeleports,
-                    bukkitShowCalls, bukkitHideCalls, displaySyncs, itemSyncs, virtualViewerChecks,
-                    itemAnimationNanos / 1_000_000.0D, droppedItemNanos / 1_000_000.0D);
+                    bukkitShowCalls, bukkitHideCalls, displaySyncs, itemSyncs, packetOnlyItemSyncs,
+                    virtualViewerChecks, visibilityShowsQueued, visibilityShowsDrained,
+                    itemAnimationNanos / 1_000_000.0D, droppedItemNanos / 1_000_000.0D,
+                    blockUpdateChecks, blockUpdateNanos / 1_000_000.0D);
         }
     }
 }

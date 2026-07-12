@@ -25,10 +25,14 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
+import com.loohp.interactionvisualizer.api.events.TileEntityActivatedEvent;
+import com.loohp.interactionvisualizer.api.events.TileEntityAddedEvent;
+import com.loohp.interactionvisualizer.api.events.TileEntityDeactivatedEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
 import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
+import com.loohp.interactionvisualizer.managers.PerformanceMetrics;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
@@ -36,17 +40,28 @@ import com.loohp.interactionvisualizer.utils.ChatColorUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
+import org.bukkit.entity.Bee;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockBurnEvent;
+import org.bukkit.event.block.BlockDispenseEvent;
+import org.bukkit.event.block.BlockExplodeEvent;
+import org.bukkit.event.block.BlockFadeEvent;
+import org.bukkit.event.block.BlockFromToEvent;
+import org.bukkit.event.block.BlockIgniteEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityEnterBlockEvent;
+import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.util.EulerAngle;
 import org.bukkit.util.Vector;
@@ -70,9 +85,12 @@ public class BeeHiveDisplay extends VisualizerRunnableDisplay implements Listene
     private String filledColor = "&e";
     private String noCampfireColor = "&c";
     private String beeCountText = "&e{Current}&6/{Max}";
+    private final BlockUpdateScheduler<Block> blockUpdates;
 
     public BeeHiveDisplay() {
         onReload(new InteractionVisualizerReloadEvent());
+        this.blockUpdates = new BlockUpdateScheduler<>(this::nearbyBeehive,
+                this.checkingPeriod, this.gcPeriod);
     }
 
     @EventHandler
@@ -93,6 +111,9 @@ public class BeeHiveDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask gc() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return null;
+        }
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = beehiveMap.entrySet().iterator();
             int count = 0;
@@ -140,6 +161,21 @@ public class BeeHiveDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask run() {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return legacyRun();
+        }
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
+            boolean collecting = PerformanceMetrics.isCollecting();
+            long start = collecting ? System.nanoTime() : 0L;
+            int checks = this.blockUpdates.tick(Bukkit.getCurrentTick(),
+                    InteractionVisualizer.blockUpdateMaxDirtyPerTick, this::updateHybridBlock);
+            if (collecting) {
+                PerformanceMetrics.blockUpdateChecks(checks, System.nanoTime() - start);
+            }
+        }, 0, 1);
+    }
+
+    private ScheduledTask legacyRun() {
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyBeehive();
             for (Block block : list) {
@@ -168,10 +204,169 @@ public class BeeHiveDisplay extends VisualizerRunnableDisplay implements Listene
                 }
                 Block block = entry.getKey();
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                    updateBlock(block);
+                    measureLegacyUpdate(block);
                 }, delay, block.getLocation());
             }
         }, 0, checkingPeriod);
+    }
+
+    private void measureLegacyUpdate(Block block) {
+        if (!PerformanceMetrics.isCollecting()) {
+            updateBlock(block);
+            return;
+        }
+        long start = System.nanoTime();
+        try {
+            updateBlock(block);
+        } finally {
+            PerformanceMetrics.blockUpdateChecks(1, System.nanoTime() - start);
+        }
+    }
+
+    private boolean updateHybridBlock(Block block) {
+        if (!TileEntityManager.getTileEntities(TileEntityType.BEEHIVE).contains(block)) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (block.getType() != Material.BEEHIVE) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isActive(block.getLocation())) {
+            return false;
+        }
+        if (!beehiveMap.containsKey(block)) {
+            beehiveMap.put(block, new HashMap<>(spawnDisplayEntitys(block)));
+        }
+        updateBlock(block);
+        return false;
+    }
+
+    private void markDirty(Block block) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates && block != null
+                && block.getType() == Material.BEEHIVE && beehiveMap.containsKey(block)) {
+            blockUpdates.markDirty(block, (long) Bukkit.getCurrentTick() + 1L);
+        }
+    }
+
+    private void markAffectedColumnDirty(Block changedBlock) {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates || changedBlock == null) {
+            return;
+        }
+        for (int distance = 1; distance <= 5; distance++) {
+            markDirty(changedBlock.getRelative(BlockFace.UP, distance));
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onAffectedBlockPlace(BlockPlaceEvent event) {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
+        markAffectedColumnDirty(event.getBlockPlaced());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onAffectedBlockBreak(BlockBreakEvent event) {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
+        markAffectedColumnDirty(event.getBlock());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onAffectedBlockBurn(BlockBurnEvent event) {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
+        markAffectedColumnDirty(event.getBlock());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onAffectedBlockFade(BlockFadeEvent event) {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
+        markAffectedColumnDirty(event.getBlock());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onAffectedBlockIgnite(BlockIgniteEvent event) {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
+        markAffectedColumnDirty(event.getBlock());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onAffectedFluidFlow(BlockFromToEvent event) {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
+        markAffectedColumnDirty(event.getToBlock());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onAffectedBlockExplode(BlockExplodeEvent event) {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
+        for (Block block : event.blockList()) {
+            markAffectedColumnDirty(block);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onAffectedEntityExplode(EntityExplodeEvent event) {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
+        for (Block block : event.blockList()) {
+            markAffectedColumnDirty(block);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onDispenserHarvest(BlockDispenseEvent event) {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
+        Material dispensed = event.getItem().getType();
+        if (dispensed != Material.GLASS_BOTTLE && dispensed != Material.SHEARS) {
+            return;
+        }
+        BlockData data = event.getBlock().getBlockData();
+        if (data instanceof Directional directional) {
+            markDirty(event.getBlock().getRelative(directional.getFacing()));
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onBeehiveAdded(TileEntityAddedEvent event) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates
+                && event.getTileEntityType() == TileEntityType.BEEHIVE) {
+            blockUpdates.markDirty(event.getBlock(), (long) Bukkit.getCurrentTick() + 1L);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onBeehiveActivated(TileEntityActivatedEvent event) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates
+                && event.getTileEntityType() == TileEntityType.BEEHIVE) {
+            blockUpdates.markDirty(event.getBlock(), (long) Bukkit.getCurrentTick() + 1L);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onBeehiveDeactivated(TileEntityDeactivatedEvent event) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates
+                && event.getTileEntityType() == TileEntityType.BEEHIVE) {
+            removeTrackedDisplay(event.getBlock());
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -180,7 +375,15 @@ public class BeeHiveDisplay extends VisualizerRunnableDisplay implements Listene
             return;
         }
         Block block = event.getBlock();
-        Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> updateBlock(block), 1, block.getLocation());
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            if (!(event.getEntity() instanceof Bee) || block.getType() != Material.BEEHIVE
+                    || !beehiveMap.containsKey(block)) {
+                return;
+            }
+            markDirty(block);
+        } else {
+            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> measureLegacyUpdate(block), 1, block.getLocation());
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -189,7 +392,16 @@ public class BeeHiveDisplay extends VisualizerRunnableDisplay implements Listene
             return;
         }
         Block block = event.getBlock();
-        Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> updateBlock(block), 1, block.getLocation());
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            markAffectedColumnDirty(block);
+            if (!(event.getEntity() instanceof Bee) || block.getType() != Material.BEEHIVE
+                    || !beehiveMap.containsKey(block)) {
+                return;
+            }
+            markDirty(block);
+        } else {
+            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> measureLegacyUpdate(block), 1, block.getLocation());
+        }
     }
 
     @SuppressWarnings("deprecation")
@@ -199,19 +411,30 @@ public class BeeHiveDisplay extends VisualizerRunnableDisplay implements Listene
             return;
         }
         Block block = event.getClickedBlock();
-        if (block != null) {
-            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> updateBlock(block), 1, block.getLocation());
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            if (block == null) {
+                return;
+            }
+            // Covers both harvesting the hive itself and toggling an
+            // obstruction (for example a trapdoor) in the smoke column.
+            markAffectedColumnDirty(block);
+            markDirty(block);
+        } else if (block != null) {
+            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> measureLegacyUpdate(block), 1, block.getLocation());
         }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakBeehive(TileEntityRemovedEvent event) {
-        Block block = event.getBlock();
-        if (!beehiveMap.containsKey(block)) {
+        removeTrackedDisplay(event.getBlock());
+    }
+
+    private void removeTrackedDisplay(Block block) {
+        blockUpdates.remove(block);
+        Map<String, Object> map = beehiveMap.remove(block);
+        if (map == null) {
             return;
         }
-
-        Map<String, Object> map = beehiveMap.get(block);
         if (map.get("0") instanceof DisplayEntity) {
             DisplayEntity stand = (DisplayEntity) map.get("0");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
@@ -220,7 +443,6 @@ public class BeeHiveDisplay extends VisualizerRunnableDisplay implements Listene
             DisplayEntity stand = (DisplayEntity) map.get("1");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        beehiveMap.remove(block);
     }
 
     public void updateBlock(Block block) {

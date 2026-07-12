@@ -25,10 +25,15 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
+import com.loohp.interactionvisualizer.api.events.TileEntityActivatedEvent;
+import com.loohp.interactionvisualizer.api.events.TileEntityAddedEvent;
+import com.loohp.interactionvisualizer.api.events.TileEntityDeactivatedEvent;
+import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
 import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
+import com.loohp.interactionvisualizer.managers.PerformanceMetrics;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
@@ -38,6 +43,7 @@ import com.loohp.interactionvisualizer.utils.VanishUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -50,9 +56,14 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.inventory.FurnaceBurnEvent;
+import org.bukkit.event.inventory.FurnaceExtractEvent;
+import org.bukkit.event.inventory.FurnaceSmeltEvent;
+import org.bukkit.event.inventory.FurnaceStartSmeltEvent;
 import org.bukkit.event.inventory.InventoryAction;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.EulerAngle;
@@ -78,9 +89,12 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
     private String noFuelColor = "&c";
     private int progressBarLength = 10;
     private String amountPending = " &7+{Amount}";
+    private final BlockUpdateScheduler<Block> blockUpdates;
 
     public SmokerDisplay() {
         onReload(new InteractionVisualizerReloadEvent());
+        this.blockUpdates = new BlockUpdateScheduler<>(this::nearbySmoker,
+                this.checkingPeriod, this.gcPeriod);
     }
 
     @EventHandler
@@ -102,6 +116,9 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
 
     @Override
     public ScheduledTask gc() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return null;
+        }
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = smokerMap.entrySet().iterator();
             int count = 0;
@@ -149,6 +166,21 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
 
     @Override
     public ScheduledTask run() {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return legacyRun();
+        }
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
+            boolean collecting = PerformanceMetrics.isCollecting();
+            long start = collecting ? System.nanoTime() : 0L;
+            int checks = this.blockUpdates.tick(Bukkit.getCurrentTick(),
+                    InteractionVisualizer.blockUpdateMaxDirtyPerTick, this::updateHybridBlock);
+            if (collecting) {
+                PerformanceMetrics.blockUpdateChecks(checks, System.nanoTime() - start);
+            }
+        }, 0, 1);
+    }
+
+    private ScheduledTask legacyRun() {
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbySmoker();
             for (Block block : list) {
@@ -178,15 +210,18 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
                 }
                 Block block = entry.getKey();
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                    if (!isActive(block.getLocation())) {
-                        return;
-                    }
-                    if (!block.getType().equals(Material.SMOKER)) {
-                        return;
-                    }
-                    org.bukkit.block.Smoker smoker = (org.bukkit.block.Smoker) block.getState();
+                    boolean collecting = PerformanceMetrics.isCollecting();
+                    long start = collecting ? System.nanoTime() : 0L;
+                    try {
+                        if (!isActive(block.getLocation())) {
+                            return;
+                        }
+                        if (!block.getType().equals(Material.SMOKER)) {
+                            return;
+                        }
+                        org.bukkit.block.Smoker smoker = (org.bukkit.block.Smoker) block.getState();
 
-                    {
+                        {
                         Inventory inv = smoker.getInventory();
                         ItemStack itemstack = inv.getItem(0);
                         if (itemstack != null) {
@@ -281,10 +316,112 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
                                 DisplayManager.updateDisplay(stand);
                             }
                         }
+                        }
+                    } finally {
+                        if (collecting) {
+                            PerformanceMetrics.blockUpdateChecks(1, System.nanoTime() - start);
+                        }
                     }
                 }, delay, block.getLocation());
             }
         }, 0, checkingPeriod);
+    }
+
+    private boolean updateHybridBlock(Block block) {
+        if (!TileEntityManager.getTileEntities(TileEntityType.SMOKER).contains(block)) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isSmoker(block.getType())) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isActive(block.getLocation())) {
+            return false;
+        }
+        Map<String, Object> values = smokerMap.get(block);
+        if (values == null) {
+            values = new HashMap<>();
+            values.put("Item", "N/A");
+            values.putAll(spawnDisplayEntitys(block));
+            smokerMap.put(block, values);
+        }
+        org.bukkit.block.Furnace furnace = (org.bukkit.block.Furnace) block.getState();
+        return FurnaceDisplayUpdater.update(furnace, values, KEY, progressBarCharacter, emptyColor,
+                filledColor, noFuelColor, progressBarLength, amountPending);
+    }
+
+    private void markDirty(Block block) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates && block != null && isSmoker(block.getType())) {
+            blockUpdates.markDirty(block, (long) Bukkit.getCurrentTick() + 1L);
+        }
+    }
+
+    private void markDirty(Inventory inventory) {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
+        Location location;
+        try {
+            location = inventory.getLocation();
+        } catch (Exception | AbstractMethodError ignored) {
+            return;
+        }
+        if (location != null) {
+            markDirty(location.getBlock());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onSmokerBurn(FurnaceBurnEvent event) {
+        markDirty(event.getBlock());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onSmokerStartSmelt(FurnaceStartSmeltEvent event) {
+        markDirty(event.getBlock());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onSmokerSmelt(FurnaceSmeltEvent event) {
+        markDirty(event.getBlock());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onSmokerExtract(FurnaceExtractEvent event) {
+        markDirty(event.getBlock());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onSmokerMoveItem(InventoryMoveItemEvent event) {
+        markDirty(event.getSource());
+        markDirty(event.getDestination());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onSmokerAdded(TileEntityAddedEvent event) {
+        if (event.getTileEntityType() == TileEntityType.SMOKER) {
+            markDirty(event.getBlock());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onSmokerActivated(TileEntityActivatedEvent event) {
+        if (event.getTileEntityType() == TileEntityType.SMOKER) {
+            markDirty(event.getBlock());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onSmokerDeactivated(TileEntityDeactivatedEvent event) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates
+                && event.getTileEntityType() == TileEntityType.SMOKER) {
+            removeTrackedDisplay(event.getBlock());
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -348,6 +485,7 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
         if (!event.getView().getTopInventory().getLocation().getBlock().getType().equals(Material.SMOKER)) {
             return;
         }
+        markDirty(event.getView().getTopInventory().getLocation().getBlock());
 
         Block block = event.getView().getTopInventory().getLocation().getBlock();
 
@@ -438,6 +576,7 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
 
         for (int slot : event.getRawSlots()) {
             if (slot >= 0 && slot <= 2) {
+                markDirty(event.getView().getTopInventory().getLocation().getBlock());
                 DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
                 break;
             }
@@ -446,12 +585,23 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakSmoker(BlockBreakEvent event) {
-        Block block = event.getBlock();
-        if (!smokerMap.containsKey(block)) {
+        removeTrackedDisplay(event.getBlock());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onRemoveSmoker(TileEntityRemovedEvent event) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates
+                && event.getTileEntityType() == TileEntityType.SMOKER) {
+            removeTrackedDisplay(event.getBlock());
+        }
+    }
+
+    private void removeTrackedDisplay(Block block) {
+        blockUpdates.remove(block);
+        Map<String, Object> map = smokerMap.remove(block);
+        if (map == null) {
             return;
         }
-
-        Map<String, Object> map = smokerMap.get(block);
         if (map.get("Item") instanceof Item) {
             Item item = (Item) map.get("Item");
             DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
@@ -460,7 +610,6 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
             DisplayEntity stand = (DisplayEntity) map.get("Stand");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        smokerMap.remove(block);
     }
 
     public boolean hasItemToCook(org.bukkit.block.Smoker smoker) {
@@ -488,6 +637,10 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
 
     public boolean isActive(Location loc) {
         return PlayerLocationManager.hasPlayerNearby(loc);
+    }
+
+    private boolean isSmoker(Material material) {
+        return material == Material.SMOKER;
     }
 
     public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) {

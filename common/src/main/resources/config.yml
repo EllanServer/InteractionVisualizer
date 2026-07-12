@@ -333,6 +333,20 @@ Settings:
       #A/B switch: keeps invisible tracker anchors still during short item animations.
       #The client-side virtual item remains corrected every tick; turn this on only after profiling your server.
       StaticAnchorDuringAnimation: false
+      #A/B switch: eligible stationary virtual items without a visible custom name use no Bukkit tracker entity.
+      #Requires separate packet-capture and client compatibility validation before enabling in production.
+      PacketOnlyStatic: false
+    VisibilityRateLimit:
+      #A/B switch: hides remain immediate; newly visible entities are restored through a per-player token bucket.
+      Enabled: false
+      BucketSize: 128
+      RestorePerTick: 32
+    BlockUpdates:
+      #A/B switch: coalesces event-driven changes and replaces per-block child tasks with fixed-budget loops.
+      #Restart the server after changing this option so runnable display tasks are recreated.
+      EventDriven: false
+      #Dirty-update budget per block display type; active rotation and fallback audit have separate bounded work.
+      MaxDirtyPerTick: 64
 
 Options:
   Updater: true
