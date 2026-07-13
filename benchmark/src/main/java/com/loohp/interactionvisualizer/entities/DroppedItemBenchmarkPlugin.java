@@ -86,7 +86,7 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         for (String distribution : List.of("uniform", "hotspot", "no-hit", "enclosed-no-hit",
                 "diagonal-no-hit", "late-hit")) {
             for (int itemCount : List.of(500, 2000, 8000)) {
-                for (int viewerCount : List.of(1, 8, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024)) {
+                for (int viewerCount : List.of(1, 8, 32, 64, 96, 128, 191, 192, 256, 384, 512, 768, 1024)) {
                     for (int seed = 0; seed < VISIBILITY_SEEDS; seed++) {
                         benchmarkVisibility(itemCount, viewerCount, distribution, seed);
                     }

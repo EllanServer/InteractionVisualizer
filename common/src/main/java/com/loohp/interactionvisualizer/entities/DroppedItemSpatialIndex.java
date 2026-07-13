@@ -122,7 +122,32 @@ final class DroppedItemSpatialIndex {
             WorldViewerBucket viewers = viewersByWorld == null
                     ? java.util.Objects.equals(singleWorldId, worldId) ? singleWorldViewers : null
                     : viewersByWorld.get(worldId);
-            return viewers != null && viewers.hasViewerWithin(x, y, z, range, remainingQueries);
+            if (viewers == null) {
+                return false;
+            }
+            double rangeSquared = range * range;
+            if (!viewers.boundsActive && !viewers.useGrid && viewers.expensiveQueries == 0) {
+                double[] xCoordinates = viewers.xCoordinates;
+                double[] yCoordinates = viewers.yCoordinates;
+                double[] zCoordinates = viewers.zCoordinates;
+                int viewerCount = viewers.size;
+                for (int index = 0; index < viewerCount; index++) {
+                    double deltaX = xCoordinates[index] - x;
+                    double deltaY = yCoordinates[index] - y;
+                    double deltaZ = zCoordinates[index] - z;
+                    if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
+                        int matchingViewer = index + 1;
+                        if (matchingViewer < WorldViewerBucket.MINIMUM_DEEP_SCAN_VIEWERS) {
+                            return true;
+                        }
+                        return viewers.resolveLinearResult(
+                                x, y, z, range, remainingQueries, matchingViewer);
+                    }
+                }
+                return viewers.resolveLinearResult(x, y, z, range, remainingQueries, 0);
+            }
+            return viewers.hasViewerWithinAdaptiveState(
+                    x, y, z, range, rangeSquared, remainingQueries);
         }
 
         boolean hasAdaptiveGrid(UUID worldId) {
@@ -205,19 +230,6 @@ final class DroppedItemSpatialIndex {
                 return x < minimumX - range || x > maximumX + range
                         || y < minimumY - range || y > maximumY + range
                         || z < minimumZ - range || z > maximumZ + range;
-            }
-
-            private boolean hasViewerWithin(double x, double y, double z,
-                                            double range, int remainingQueries) {
-                double rangeSquared = range * range;
-                if (!boundsActive && !useGrid && expensiveQueries == 0) {
-                    int matchingViewer = firstViewerWithin(x, y, z, rangeSquared);
-                    if (matchingViewer > 0 && matchingViewer < MINIMUM_DEEP_SCAN_VIEWERS) {
-                        return true;
-                    }
-                    return resolveLinearResult(x, y, z, range, remainingQueries, matchingViewer);
-                }
-                return hasViewerWithinAdaptiveState(x, y, z, range, rangeSquared, remainingQueries);
             }
 
             private boolean hasViewerWithinAdaptiveState(double x, double y, double z, double range,

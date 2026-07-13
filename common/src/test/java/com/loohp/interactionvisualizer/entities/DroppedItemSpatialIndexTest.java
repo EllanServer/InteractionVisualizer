@@ -171,6 +171,46 @@ class DroppedItemSpatialIndexTest {
     }
 
     @Test
+    void viewerBeforeDeepScanThresholdStaysOnThePrimitiveFastPath() {
+        UUID world = UUID.randomUUID();
+        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(191);
+        addViewerRing(viewers, world, 190, 300.0D);
+        viewers.addViewer(world, 0.0D, 64.0D, 0.0D);
+
+        for (int query = 0; query < 16; query++) {
+            assertTrue(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D,
+                    72.0D, 511 - query));
+        }
+        assertFalse(viewers.hasAdaptiveGrid(world));
+        assertFalse(viewers.isUsingAdaptiveGrid(world));
+        assertFalse(viewers.hasActiveBounds(world));
+    }
+
+    @Test
+    void addingViewerResetsPartiallyPrimedAdaptiveState() {
+        UUID world = UUID.randomUUID();
+        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(193);
+        addViewerRing(viewers, world, 191, 300.0D);
+        viewers.addViewer(world, 0.0D, 64.0D, 0.0D);
+
+        for (int query = 0; query < 7; query++) {
+            assertTrue(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D,
+                    72.0D, 511 - query));
+        }
+        assertFalse(viewers.hasAdaptiveGrid(world));
+
+        viewers.addViewer(world, 600.0D, 64.0D, 0.0D);
+        assertTrue(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 72.0D, 504));
+        assertFalse(viewers.hasAdaptiveGrid(world));
+        for (int query = 0; query < 7; query++) {
+            assertTrue(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D,
+                    72.0D, 503 - query));
+        }
+        assertTrue(viewers.hasAdaptiveGrid(world));
+        assertTrue(viewers.isUsingAdaptiveGrid(world));
+    }
+
+    @Test
     void denseDiagonalMissesStayOnThePrimitiveScan() {
         UUID world = UUID.randomUUID();
         DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(384);
