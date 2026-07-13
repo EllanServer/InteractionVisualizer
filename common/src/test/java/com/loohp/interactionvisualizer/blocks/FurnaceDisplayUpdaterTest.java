@@ -11,9 +11,18 @@
 
 package com.loohp.interactionvisualizer.blocks;
 
+import com.loohp.interactionvisualizer.utils.ComponentFont;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FurnaceDisplayUpdaterTest {
 
@@ -24,6 +33,24 @@ class FurnaceDisplayUpdaterTest {
         assertEquals(0.0D, FurnaceDisplayUpdater.scaledProgress(-20, 200, 10));
         assertEquals(5.0D, FurnaceDisplayUpdater.scaledProgress(100, 200, 10));
         assertEquals(10.0D, FurnaceDisplayUpdater.scaledProgress(Short.MAX_VALUE, 1, 10));
+    }
+
+    @Test
+    void coloredProgressTextIsComparedByItsRawRenderedState() {
+        Map<String, Object> values = new HashMap<>();
+        String colored = "\u00a7e\u258e\u00a77\u258e";
+        String plain = PlainTextComponentSerializer.plainText().serialize(ComponentFont.parseFont(
+                LegacyComponentSerializer.legacySection().deserialize(colored)));
+
+        assertEquals("\u258e\u258e", plain);
+        assertNotEquals(colored, plain);
+        assertTrue(FurnaceDisplayUpdater.shouldUpdateProgress(values, colored, true));
+        values.put(FurnaceDisplayUpdater.PROGRESS_TEXT_KEY, colored);
+        assertFalse(FurnaceDisplayUpdater.shouldUpdateProgress(values, new String(colored), true));
+        assertTrue(FurnaceDisplayUpdater.shouldUpdateProgress(values, "\u00a7c\u258e\u258e", true));
+        assertTrue(FurnaceDisplayUpdater.shouldUpdateProgress(values, colored, false));
+        values.remove(FurnaceDisplayUpdater.PROGRESS_TEXT_KEY);
+        assertTrue(FurnaceDisplayUpdater.shouldUpdateProgress(values, colored, true));
     }
 
 }

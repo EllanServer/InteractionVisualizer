@@ -29,6 +29,8 @@ import java.util.Map;
 /** Shared hybrid update path for the three Bukkit furnace variants. */
 final class FurnaceDisplayUpdater {
 
+    static final String PROGRESS_TEXT_KEY = "ProgressText";
+
     private FurnaceDisplayUpdater() {
     }
 
@@ -69,7 +71,7 @@ final class FurnaceDisplayUpdater {
         DisplayEntity stand = (DisplayEntity) values.get("Stand");
         ItemStack input = normalize(inventory.getItem(0));
         if (input == null) {
-            hideProgress(stand);
+            hideProgress(stand, values);
             return false;
         }
 
@@ -103,12 +105,7 @@ final class FurnaceDisplayUpdater {
         if (!hasFuel(furnace)) {
             text = noFuelColor + ChatColorUtils.stripColor(text);
         }
-        if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals(text)
-                || !stand.isCustomNameVisible()) {
-            stand.setCustomNameVisible(true);
-            stand.setCustomName(text);
-            DisplayManager.updateDisplay(stand);
-        }
+        showProgress(stand, values, text);
         return furnace.getBurnTime() > 0 || furnace.getCookTime() > 0;
     }
 
@@ -132,12 +129,27 @@ final class FurnaceDisplayUpdater {
         return normalize(furnace.getInventory().getItem(1)) != null;
     }
 
-    private static void hideProgress(DisplayEntity stand) {
-        if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).isEmpty()
+    static boolean shouldUpdateProgress(Map<String, Object> values, String text, boolean visible) {
+        return !visible || !text.equals(values.get(PROGRESS_TEXT_KEY));
+    }
+
+    static void showProgress(DisplayEntity stand, Map<String, Object> values, String text) {
+        if (shouldUpdateProgress(values, text, stand.isCustomNameVisible())) {
+            stand.setCustomNameVisible(true);
+            stand.setCustomName(text);
+            DisplayManager.updateDisplay(stand);
+            values.put(PROGRESS_TEXT_KEY, text);
+        }
+    }
+
+    static void hideProgress(DisplayEntity stand, Map<String, Object> values) {
+        if (values.containsKey(PROGRESS_TEXT_KEY)
+                || !PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).isEmpty()
                 || stand.isCustomNameVisible()) {
             stand.setCustomNameVisible(false);
             stand.setCustomName("");
             DisplayManager.updateDisplay(stand);
+            values.remove(PROGRESS_TEXT_KEY);
         }
     }
 

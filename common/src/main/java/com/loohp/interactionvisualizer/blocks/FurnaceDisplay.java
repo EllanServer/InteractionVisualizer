@@ -42,7 +42,6 @@ import com.loohp.interactionvisualizer.utils.InventoryUtils;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
@@ -294,25 +293,13 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
                                 symbol = symbol.replace("{CompletedAmount}", (inv.getItem(2) == null ? 0 : inv.getItem(2).getAmount()) + "");
                             }
                             if (hasFuel(furnace)) {
-                                if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals(symbol) || !stand.isCustomNameVisible()) {
-                                    stand.setCustomNameVisible(true);
-                                    stand.setCustomName(symbol);
-                                    DisplayManager.updateDisplay(stand);
-                                }
+                                FurnaceDisplayUpdater.showProgress(stand, entry.getValue(), symbol);
                             } else {
                                 symbol = noFuelColor + ChatColorUtils.stripColor(symbol);
-                                if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals(symbol) || !stand.isCustomNameVisible()) {
-                                    stand.setCustomNameVisible(true);
-                                    stand.setCustomName(symbol);
-                                    DisplayManager.updateDisplay(stand);
-                                }
+                                FurnaceDisplayUpdater.showProgress(stand, entry.getValue(), symbol);
                             }
                         } else {
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals("") || stand.isCustomNameVisible()) {
-                                stand.setCustomNameVisible(false);
-                                stand.setCustomName("");
-                                DisplayManager.updateDisplay(stand);
-                            }
+                            FurnaceDisplayUpdater.hideProgress(stand, entry.getValue());
                         }
                         }
                     } finally {
