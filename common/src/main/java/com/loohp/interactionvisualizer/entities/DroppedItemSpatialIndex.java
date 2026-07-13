@@ -171,12 +171,20 @@ final class DroppedItemSpatialIndex {
 
             private void add(double x, double y, double z) {
                 if (pointStorage) {
-                    if (size == points.length) {
-                        points = grow(points, grownCapacity(size));
-                    }
-                    points[size++] = new Point(x, y, z);
+                    addPoint(x, y, z);
                     return;
                 }
+                addCoordinates(x, y, z);
+            }
+
+            private void addPoint(double x, double y, double z) {
+                if (size == points.length) {
+                    points = grow(points, grownCapacity(size));
+                }
+                points[size++] = new Point(x, y, z);
+            }
+
+            private void addCoordinates(double x, double y, double z) {
                 if (size == xCoordinates.length) {
                     int capacity = grownCapacity(size);
                     xCoordinates = grow(xCoordinates, capacity);
@@ -190,18 +198,25 @@ final class DroppedItemSpatialIndex {
             }
 
             private boolean hasViewerWithin(double x, double y, double z, double rangeSquared) {
-                if (pointStorage) {
-                    for (int index = 0; index < size; index++) {
-                        Point point = points[index];
-                        double deltaX = point.x() - x;
-                        double deltaY = point.y() - y;
-                        double deltaZ = point.z() - z;
-                        if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
-                            return true;
-                        }
+                return pointStorage
+                        ? hasPointWithin(x, y, z, rangeSquared)
+                        : hasCoordinatesWithin(x, y, z, rangeSquared);
+            }
+
+            private boolean hasPointWithin(double x, double y, double z, double rangeSquared) {
+                for (int index = 0; index < size; index++) {
+                    Point point = points[index];
+                    double deltaX = point.x() - x;
+                    double deltaY = point.y() - y;
+                    double deltaZ = point.z() - z;
+                    if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
+                        return true;
                     }
-                    return false;
                 }
+                return false;
+            }
+
+            private boolean hasCoordinatesWithin(double x, double y, double z, double rangeSquared) {
                 for (int index = 0; index < size; index++) {
                     double deltaX = xCoordinates[index] - x;
                     double deltaY = yCoordinates[index] - y;
