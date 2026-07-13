@@ -35,6 +35,7 @@ public final class PerformanceMetrics implements Listener {
     private static final PerformanceMetrics INSTANCE = new PerformanceMetrics();
 
     private final double[] tickDurations = new double[MAX_TICK_SAMPLES];
+    private final SlowestTickTracker slowestTickTracker = new SlowestTickTracker();
 
     private volatile boolean collecting;
     private String label = "";
@@ -115,6 +116,7 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.droppedItemNanos = 0;
         INSTANCE.blockUpdateChecks = 0;
         INSTANCE.blockUpdateNanos = 0;
+        INSTANCE.slowestTickTracker.reset();
         INSTANCE.collecting = true;
         return true;
     }
@@ -245,6 +247,7 @@ public final class PerformanceMetrics implements Listener {
         if (INSTANCE.collecting) {
             INSTANCE.blockUpdateChecks += checks;
             INSTANCE.blockUpdateNanos += nanos;
+            INSTANCE.slowestTickTracker.blockUpdateChecks(checks, nanos);
         }
     }
 
@@ -255,9 +258,12 @@ public final class PerformanceMetrics implements Listener {
         }
         if (tickCount < tickDurations.length) {
             // Paper exposes this duration in milliseconds.
-            tickDurations[tickCount++] = event.getTickDuration();
+            double duration = event.getTickDuration();
+            tickDurations[tickCount++] = duration;
+            slowestTickTracker.completeTick(Bukkit.getCurrentTick(), duration);
         } else {
             tickSamplesDropped++;
+            slowestTickTracker.discardTick();
         }
     }
 
@@ -279,7 +285,10 @@ public final class PerformanceMetrics implements Listener {
                 configVisibilityBucketSize, configVisibilityRestorePerTick, configEventDrivenBlockUpdates,
                 configBlockUpdateMaxDirtyPerTick, elapsedNanos, samples, tickSamplesDropped,
                 percentile(sorted, 0.50D), percentile(sorted, 0.95D), percentile(sorted, 0.99D),
-                percentile(sorted, 0.999D), samples == 0 ? 0.0D : sorted[samples - 1], mean, over50,
+                percentile(sorted, 0.999D), samples == 0 ? 0.0D : sorted[samples - 1],
+                slowestTickTracker.slowestBukkitTick(), slowestTickTracker.slowestEndEpochMillis(),
+                slowestTickTracker.slowestBlockUpdateChecks(),
+                slowestTickTracker.slowestBlockUpdateNanos(), mean, over50,
                 virtualSpawnBundles, virtualMotionBundles, virtualTeleportBundles, virtualRemovePackets,
                 virtualPickupPackets, bukkitEntitySpawns, bukkitEntityRemoves, bukkitEntityTeleports,
                 bukkitShowCalls, bukkitHideCalls, displaySyncs, itemSyncs, packetOnlyItemSyncs,
@@ -320,6 +329,10 @@ public final class PerformanceMetrics implements Listener {
             double msptP99,
             double msptP999,
             double msptMax,
+            int msptMaxBukkitTick,
+            long msptMaxEndEpochMillis,
+            long msptMaxBlockUpdateChecks,
+            long msptMaxBlockUpdateNanos,
             double msptMean,
             long ticksOver50ms,
             long virtualSpawnBundles,
@@ -377,6 +390,9 @@ public final class PerformanceMetrics implements Listener {
                             "\"seconds\":%.3f,\"tickSamples\":%d,\"observedTps\":%.6f," +
                             "\"droppedTickSamples\":%d,\"msptP50\":%.6f,\"msptP95\":%.6f," +
                             "\"msptP99\":%.6f,\"msptP999\":%.6f,\"msptMax\":%.6f," +
+                            "\"msptMaxBukkitTick\":%d,\"msptMaxEndEpochMillis\":%d," +
+                            "\"msptMaxBlockUpdateChecks\":%d," +
+                            "\"msptMaxBlockUpdateMs\":%.6f," +
                             "\"msptMean\":%.6f,\"ticksOver50ms\":%d," +
                             "\"virtualSpawnBundles\":%d,\"virtualMotionBundles\":%d," +
                             "\"virtualTeleportBundles\":%d,\"virtualRemovePackets\":%d," +
@@ -392,13 +408,87 @@ public final class PerformanceMetrics implements Listener {
                     visibilityBucketSize, visibilityRestorePerTick, eventDrivenBlockUpdates,
                     blockUpdateMaxDirtyPerTick, seconds(), tickSamples, observedTps(), droppedTickSamples,
                     msptP50, msptP95, msptP99,
-                    msptP999, msptMax, msptMean, ticksOver50ms, virtualSpawnBundles,
+                    msptP999, msptMax, msptMaxBukkitTick, msptMaxEndEpochMillis, msptMaxBlockUpdateChecks,
+                    msptMaxBlockUpdateNanos / 1_000_000.0D, msptMean, ticksOver50ms, virtualSpawnBundles,
                     virtualMotionBundles, virtualTeleportBundles, virtualRemovePackets, virtualPickupPackets,
                     knownVirtualPackets(), bukkitEntitySpawns, bukkitEntityRemoves, bukkitEntityTeleports,
                     bukkitShowCalls, bukkitHideCalls, displaySyncs, itemSyncs, packetOnlyItemSyncs,
                     virtualViewerChecks, visibilityShowsQueued, visibilityShowsDrained,
                     itemAnimationNanos / 1_000_000.0D, droppedItemNanos / 1_000_000.0D,
                     blockUpdateChecks, blockUpdateNanos / 1_000_000.0D);
+        }
+    }
+
+    /**
+     * Constant-space attribution for block-update work performed during the
+     * slowest completed tick. This tracker is main-thread confined by the
+     * Paper runtime; package visibility keeps its rollover semantics directly
+     * unit-testable without starting a server.
+     */
+    static final class SlowestTickTracker {
+
+        private long currentBlockUpdateChecks;
+        private long currentBlockUpdateNanos;
+        private double slowestDuration;
+        private int slowestBukkitTick;
+        private long slowestEndEpochMillis;
+        private long slowestBlockUpdateChecks;
+        private long slowestBlockUpdateNanos;
+
+        SlowestTickTracker() {
+            reset();
+        }
+
+        void reset() {
+            currentBlockUpdateChecks = 0;
+            currentBlockUpdateNanos = 0;
+            slowestDuration = -1.0D;
+            slowestBukkitTick = -1;
+            slowestEndEpochMillis = -1L;
+            slowestBlockUpdateChecks = 0;
+            slowestBlockUpdateNanos = 0;
+        }
+
+        void blockUpdateChecks(int checks, long nanos) {
+            currentBlockUpdateChecks += checks;
+            currentBlockUpdateNanos += nanos;
+        }
+
+        void completeTick(int bukkitTick, double duration) {
+            long endEpochMillis = duration > slowestDuration ? System.currentTimeMillis() : -1L;
+            completeTick(bukkitTick, duration, endEpochMillis);
+        }
+
+        void completeTick(int bukkitTick, double duration, long endEpochMillis) {
+            if (duration > slowestDuration) {
+                slowestDuration = duration;
+                slowestBukkitTick = bukkitTick;
+                slowestEndEpochMillis = endEpochMillis;
+                slowestBlockUpdateChecks = currentBlockUpdateChecks;
+                slowestBlockUpdateNanos = currentBlockUpdateNanos;
+            }
+            discardTick();
+        }
+
+        void discardTick() {
+            currentBlockUpdateChecks = 0;
+            currentBlockUpdateNanos = 0;
+        }
+
+        int slowestBukkitTick() {
+            return slowestBukkitTick;
+        }
+
+        long slowestEndEpochMillis() {
+            return slowestEndEpochMillis;
+        }
+
+        long slowestBlockUpdateChecks() {
+            return slowestBlockUpdateChecks;
+        }
+
+        long slowestBlockUpdateNanos() {
+            return slowestBlockUpdateNanos;
         }
     }
 }

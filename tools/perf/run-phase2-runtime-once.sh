@@ -112,6 +112,11 @@ capture_path="$run_directory/$run_id.pcap"
 capture_log="$run_directory/tcpdump.log"
 protocol_trace_path="$run_directory/$run_id.protocol-trace.json"
 protocol_trace_analysis_path="$run_directory/$run_id.protocol-trace-analysis.json"
+jvm_gc_safepoint_log_name="jvm-gc-safepoint.log"
+jvm_gc_safepoint_log="$run_directory/$jvm_gc_safepoint_log_name"
+jvm_diagnostics_metadata="$run_directory/jvm-diagnostics.json"
+jvm_gc_safepoint_xlog="-Xlog:gc*=info,safepoint=info:file=$jvm_gc_safepoint_log_name:time,uptime,level,tags:filecount=0"
+jvm_arguments_fingerprint="-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch -Dinteractionvisualizer.performance.allowBlockScene=true $jvm_gc_safepoint_xlog -Dfile.encoding=UTF-8"
 
 cp "$paper_jar" "$run_directory/server.jar"
 cp "$plugin_jar" "$run_directory/plugins/InteractionVisualizer.jar"
@@ -473,6 +478,7 @@ console_open=1
   cd "$run_directory"
   exec java -Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch \
     -Dinteractionvisualizer.performance.allowBlockScene=true \
+    "$jvm_gc_safepoint_xlog" \
     -Dfile.encoding=UTF-8 -jar server.jar --nogui < console.pipe
 ) > "$server_log" 2>&1 &
 server_pid=$!
@@ -688,6 +694,34 @@ if metrics.get("droppedTickSamples") != 0:
     raise SystemExit(f"droppedTickSamples={metrics.get('droppedTickSamples')}")
 if metrics.get("tickSamples", 0) <= 0 or metrics.get("seconds", 0) <= 0:
     raise SystemExit("IV_PERF sampling window is empty")
+slowest_tick = metrics.get("msptMaxBukkitTick")
+slowest_epoch_ms = metrics.get("msptMaxEndEpochMillis")
+slowest_block_checks = metrics.get("msptMaxBlockUpdateChecks")
+slowest_block_ms = metrics.get("msptMaxBlockUpdateMs")
+total_block_checks = metrics.get("blockUpdateChecks")
+total_block_ms = metrics.get("blockUpdateMs")
+if isinstance(slowest_tick, bool) or not isinstance(slowest_tick, int) or slowest_tick < 0:
+    raise SystemExit(f"invalid msptMaxBukkitTick={slowest_tick!r}")
+if isinstance(slowest_epoch_ms, bool) or not isinstance(slowest_epoch_ms, int) or slowest_epoch_ms <= 0:
+    raise SystemExit(f"invalid msptMaxEndEpochMillis={slowest_epoch_ms!r}")
+if (isinstance(slowest_block_checks, bool) or not isinstance(slowest_block_checks, int)
+        or slowest_block_checks < 0):
+    raise SystemExit(f"invalid msptMaxBlockUpdateChecks={slowest_block_checks!r}")
+if (isinstance(slowest_block_ms, bool) or not isinstance(slowest_block_ms, (int, float))
+        or not math.isfinite(slowest_block_ms) or slowest_block_ms < 0):
+    raise SystemExit(f"invalid msptMaxBlockUpdateMs={slowest_block_ms!r}")
+if (isinstance(total_block_checks, bool) or not isinstance(total_block_checks, int)
+        or total_block_checks < 0):
+    raise SystemExit(f"invalid blockUpdateChecks={total_block_checks!r}")
+if (isinstance(total_block_ms, bool) or not isinstance(total_block_ms, (int, float))
+        or not math.isfinite(total_block_ms) or total_block_ms < 0):
+    raise SystemExit(f"invalid blockUpdateMs={total_block_ms!r}")
+if slowest_block_checks > total_block_checks or slowest_block_ms > total_block_ms:
+    raise SystemExit(
+        "slowest-tick block attribution exceeds the complete sample: "
+        f"checks={slowest_block_checks}/{total_block_checks} "
+        f"ms={slowest_block_ms}/{total_block_ms}"
+    )
 visibility_scenario = scenario.startswith("visibility-")
 block_scenario = scenario.startswith("block-")
 expected_packet_only = scenario == "visibility-return" or (
@@ -755,12 +789,14 @@ if [[ "$block_scene_enabled" == 1 ]]; then
   capture_block_scene_record "$block_clear_prefix" "$block_scene_clear_record" 180
   validate_block_scene_record "$block_scene_clear_record" clear "$block_scene_record_mode" "$item_count"
   python3 - "$scenario" "$block_scene_create_record" "$block_scene_mutate_record" \
-    "$block_scene_clear_record" "$block_scene_records_json" <<'PY'
+    "$block_scene_clear_record" "$block_scene_records_json" \
+    "$run_directory/iv-perf.json" <<'PY'
 from pathlib import Path
 import json
+import math
 import sys
 
-scenario, create_path_text, mutate_path_text, clear_path_text, output_path_text = sys.argv[1:]
+scenario, create_path_text, mutate_path_text, clear_path_text, output_path_text, metrics_path_text = sys.argv[1:]
 
 def parse_record(path_text):
     path = Path(path_text)
@@ -775,8 +811,11 @@ create = parse_record(create_path_text)
 clear = parse_record(clear_path_text)
 mutate_path = Path(mutate_path_text)
 mutate = parse_record(mutate_path_text) if mutate_path.is_file() else None
+with Path(metrics_path_text).open(encoding="utf-8") as stream:
+    metrics = json.load(stream)
 create_revision = int(create["fields"]["revision"])
 clear_revision = int(clear["fields"]["revision"])
+direct_write_diagnostics = None
 if scenario == "block-direct-write":
     if mutate is None:
         raise SystemExit("direct-write block scene is missing its mutate machine record")
@@ -786,6 +825,42 @@ if scenario == "block-direct-write":
             f"unexpected direct-write revisions: create={create_revision} "
             f"mutate={mutate_revision} clear={clear_revision}"
         )
+    mutation_start_tick = int(mutate["fields"]["mutationStartBukkitTick"])
+    mutation_end_tick = int(mutate["fields"]["mutationEndBukkitTick"])
+    mutation_elapsed_ms = float(mutate["fields"]["mutationElapsedMs"])
+    if mutation_start_tick < 0 or mutation_end_tick != mutation_start_tick:
+        raise SystemExit(
+            f"direct-write mutation did not complete synchronously in one Bukkit tick: "
+            f"start={mutation_start_tick} end={mutation_end_tick}"
+        )
+    if not math.isfinite(mutation_elapsed_ms) or mutation_elapsed_ms <= 0:
+        raise SystemExit(f"invalid direct-write mutationElapsedMs={mutation_elapsed_ms!r}")
+    for field in ("mutationStartBukkitTick", "mutationEndBukkitTick", "mutationElapsedMs"):
+        if clear["fields"].get(field) != mutate["fields"].get(field):
+            raise SystemExit(f"clear record did not preserve direct-write timing field {field}")
+    slowest_tick = int(metrics["msptMaxBukkitTick"])
+    slowest_epoch_ms = int(metrics["msptMaxEndEpochMillis"])
+    slowest_block_checks = int(metrics["msptMaxBlockUpdateChecks"])
+    slowest_block_ms = float(metrics["msptMaxBlockUpdateMs"])
+    slowest_ms = float(metrics["msptMax"])
+    direct_write_diagnostics = {
+        "schemaVersion": 1,
+        "mutationStartBukkitTick": mutation_start_tick,
+        "mutationEndBukkitTick": mutation_end_tick,
+        "mutationElapsedMs": mutation_elapsed_ms,
+        "slowestBukkitTick": slowest_tick,
+        "slowestTickEndEpochMillis": slowest_epoch_ms,
+        "slowestTickMs": slowest_ms,
+        "slowestTickBlockUpdateChecks": slowest_block_checks,
+        "slowestTickBlockUpdateMs": slowest_block_ms,
+        "slowestTickWithinMutation": mutation_start_tick <= slowest_tick <= mutation_end_tick,
+        "mutationFractionOfSlowestTick": (
+            mutation_elapsed_ms / slowest_ms if slowest_ms > 0 else None
+        ),
+        "blockUpdateFractionOfSlowestTick": (
+            slowest_block_ms / slowest_ms if slowest_ms > 0 else None
+        ),
+    }
 elif mutate is not None:
     raise SystemExit(f"{scenario} unexpectedly produced a mutate machine record")
 elif clear_revision != create_revision:
@@ -794,10 +869,11 @@ elif clear_revision != create_revision:
     )
 
 evidence = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "scenario": scenario,
     "formalEvidenceReady": True,
     "records": {"create": create, "mutate": mutate, "clear": clear},
+    "directWriteDiagnostics": direct_write_diagnostics,
 }
 Path(output_path_text).write_text(
     json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
@@ -874,9 +950,169 @@ PY
   protocol_trace_manifest_analyzer_sha="\"$protocol_trace_analyzer_sha\""
 fi
 
+send_console "stop"
+for _ in $(seq 1 90); do
+  kill -0 "$server_pid" 2>/dev/null || break
+  sleep 1
+done
+if kill -0 "$server_pid" 2>/dev/null; then
+  echo "Paper did not stop cleanly" >&2
+  exit 1
+fi
+wait "$server_pid"
+server_pid=""
+exec 3>&-
+console_open=0
+rm -f -- "$console_fifo"
+
+if grep -Eq '^\[[^]]+ ERROR\]:' "$server_log"; then
+  echo "Paper logged an ERROR during $run_id" >&2
+  grep -E '^\[[^]]+ ERROR\]:' "$server_log" >&2 || true
+  exit 1
+fi
+
+python3 - \
+  "$jvm_gc_safepoint_log" \
+  "$jvm_diagnostics_metadata" \
+  "$jvm_gc_safepoint_log_name" \
+  "$jvm_arguments_fingerprint" \
+  "$jvm_gc_safepoint_xlog" <<'PY'
+from pathlib import Path
+import hashlib
+import json
+import re
+import sys
+
+log_path = Path(sys.argv[1])
+metadata_path = Path(sys.argv[2])
+log_name = sys.argv[3]
+jvm_arguments_fingerprint = sys.argv[4]
+unified_logging_option = sys.argv[5]
+
+if not log_path.is_file():
+    raise SystemExit(f"finalized JVM diagnostic log is missing: {log_path}")
+raw = log_path.read_bytes()
+if not raw:
+    raise SystemExit(f"finalized JVM diagnostic log is empty: {log_path}")
+if b"\x00" in raw:
+    raise SystemExit(f"finalized JVM diagnostic log contains NUL bytes: {log_path}")
+try:
+    text = raw.decode("utf-8")
+except UnicodeDecodeError as error:
+    raise SystemExit(f"finalized JVM diagnostic log is not UTF-8: {error}") from error
+
+lines = [line for line in text.splitlines() if line.strip()]
+if not lines:
+    raise SystemExit(f"finalized JVM diagnostic log has no records: {log_path}")
+
+record_pattern = re.compile(
+    r"^\[[^\]\r\n]+\]"
+    r"\[(?:\d+(?:\.\d+)?|\.\d+)s\]"
+    r"\[(trace|debug|info|warning|error)\]"
+    r"\[([^\]\r\n]+)\](?: .*)?$"
+)
+malformed = []
+gc_tagged_line_count = 0
+safepoint_tagged_line_count = 0
+gc_pause_line_count = 0
+safepoint_event_line_count = 0
+for line_number, line in enumerate(lines, start=1):
+    match = record_pattern.fullmatch(line)
+    if match is None:
+        malformed.append((line_number, line[:160]))
+        continue
+    tags = {tag.strip() for tag in match.group(2).split(",")}
+    message = line[match.end(2) + 1 :].lstrip()
+    if "gc" in tags:
+        gc_tagged_line_count += 1
+        if "Pause" in message:
+            gc_pause_line_count += 1
+    if "safepoint" in tags:
+        safepoint_tagged_line_count += 1
+        if "Safepoint " in message:
+            safepoint_event_line_count += 1
+
+if malformed:
+    preview = "; ".join(f"line {number}: {line!r}" for number, line in malformed[:5])
+    raise SystemExit(f"malformed JVM unified-log records: {preview}")
+if gc_tagged_line_count <= 0:
+    raise SystemExit("finalized JVM diagnostic log contains no GC-tagged records")
+if safepoint_tagged_line_count <= 0:
+    raise SystemExit("finalized JVM diagnostic log contains no safepoint-tagged records")
+
+metadata = {
+    "schemaVersion": 1,
+    "formalEvidenceReady": True,
+    "finalizedAfterServerExit": True,
+    "serverStoppedCleanly": True,
+    "jvmArgumentsFingerprint": jvm_arguments_fingerprint,
+    "unifiedLoggingOption": unified_logging_option,
+    "gcSafepointLog": {
+        "path": log_name,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "sizeBytes": len(raw),
+        "lineCount": len(lines),
+        "gcTaggedLineCount": gc_tagged_line_count,
+        "safepointTaggedLineCount": safepoint_tagged_line_count,
+        "gcPauseLineCount": gc_pause_line_count,
+        "safepointEventLineCount": safepoint_event_line_count,
+        "rotationDisabled": True,
+        "decorations": ["time", "uptime", "level", "tags"],
+    },
+}
+metadata_path.write_text(
+    json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+
+test -s "$jvm_diagnostics_metadata"
+jvm_gc_safepoint_sha="$(sha256sum "$jvm_gc_safepoint_log" | awk '{print $1}')"
+python3 - \
+  "$jvm_diagnostics_metadata" \
+  "$jvm_gc_safepoint_sha" \
+  "$jvm_arguments_fingerprint" \
+  "$jvm_gc_safepoint_xlog" <<'PY'
+import json
+import sys
+
+metadata_path, expected_log_sha, expected_arguments, expected_logging_option = sys.argv[1:]
+with open(metadata_path, encoding="utf-8") as stream:
+    metadata = json.load(stream)
+if metadata.get("formalEvidenceReady") is not True:
+    raise SystemExit("JVM diagnostic metadata is not formal-evidence ready")
+if metadata.get("finalizedAfterServerExit") is not True:
+    raise SystemExit("JVM diagnostic metadata was not finalized after server exit")
+if metadata.get("jvmArgumentsFingerprint") != expected_arguments:
+    raise SystemExit("JVM argument fingerprint mismatch in diagnostic metadata")
+if metadata.get("unifiedLoggingOption") != expected_logging_option:
+    raise SystemExit("JVM unified-logging option mismatch in diagnostic metadata")
+recorded_log_sha = metadata.get("gcSafepointLog", {}).get("sha256")
+if recorded_log_sha != expected_log_sha:
+    raise SystemExit(
+        f"finalized JVM diagnostic SHA mismatch: metadata={recorded_log_sha!r} "
+        f"actual={expected_log_sha!r}"
+    )
+PY
+jvm_diagnostics_metadata_sha="$(sha256sum "$jvm_diagnostics_metadata" | awk '{print $1}')"
+jvm_diagnostics_manifest_json="$(python3 - \
+  "$jvm_diagnostics_metadata" \
+  "$jvm_diagnostics_metadata_sha" <<'PY'
+import json
+import sys
+
+metadata_path, metadata_sha = sys.argv[1:]
+with open(metadata_path, encoding="utf-8") as stream:
+    metadata = json.load(stream)
+metadata["metadataPath"] = "jvm-diagnostics.json"
+metadata["metadataSha256"] = metadata_sha
+print(json.dumps(metadata, ensure_ascii=False, separators=(",", ":")))
+PY
+)"
+
 cat > "$run_directory/run-manifest.json" <<EOF
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "runId": "$run_id",
   "scenario": "$scenario",
   "variant": "$variant",
@@ -910,29 +1146,47 @@ cat > "$run_directory/run-manifest.json" <<EOF
     "mode": $block_scene_manifest_mode,
     "recordsPath": $block_scene_manifest_records_path,
     "recordsSha256": $block_scene_manifest_records_sha
-  }
+  },
+  "jvmDiagnostics": $jvm_diagnostics_manifest_json
 }
 EOF
 
-send_console "stop"
-for _ in $(seq 1 90); do
-  kill -0 "$server_pid" 2>/dev/null || break
-  sleep 1
-done
-if kill -0 "$server_pid" 2>/dev/null; then
-  echo "Paper did not stop cleanly" >&2
-  exit 1
-fi
-wait "$server_pid"
-server_pid=""
-exec 3>&-
-console_open=0
-rm -f -- "$console_fifo"
+python3 - \
+  "$run_directory/run-manifest.json" \
+  "$jvm_diagnostics_metadata" \
+  "$jvm_diagnostics_metadata_sha" \
+  "$jvm_gc_safepoint_sha" <<'PY'
+from pathlib import Path
+import hashlib
+import json
+import sys
 
-if grep -Eq '^\[[^]]+ ERROR\]:' "$server_log"; then
-  echo "Paper logged an ERROR during $run_id" >&2
-  grep -E '^\[[^]]+ ERROR\]:' "$server_log" >&2 || true
-  exit 1
-fi
+manifest_path = Path(sys.argv[1])
+metadata_path = Path(sys.argv[2])
+expected_metadata_sha = sys.argv[3]
+expected_log_sha = sys.argv[4]
+with manifest_path.open(encoding="utf-8") as stream:
+    manifest = json.load(stream)
+with metadata_path.open(encoding="utf-8") as stream:
+    metadata = json.load(stream)
+
+actual_metadata_sha = hashlib.sha256(metadata_path.read_bytes()).hexdigest()
+if actual_metadata_sha != expected_metadata_sha:
+    raise SystemExit("JVM diagnostic metadata changed before manifest validation")
+embedded = manifest.get("jvmDiagnostics")
+if not isinstance(embedded, dict):
+    raise SystemExit("run manifest has no JVM diagnostic metadata")
+if embedded.get("metadataPath") != "jvm-diagnostics.json":
+    raise SystemExit("run manifest has the wrong JVM diagnostic metadata path")
+if embedded.get("metadataSha256") != expected_metadata_sha:
+    raise SystemExit("run manifest has the wrong JVM diagnostic metadata SHA")
+embedded_metadata = dict(embedded)
+embedded_metadata.pop("metadataPath")
+embedded_metadata.pop("metadataSha256")
+if embedded_metadata != metadata:
+    raise SystemExit("run manifest JVM diagnostics do not match jvm-diagnostics.json")
+if embedded.get("gcSafepointLog", {}).get("sha256") != expected_log_sha:
+    raise SystemExit("run manifest has the wrong finalized JVM diagnostic log SHA")
+PY
 
 echo "Completed Phase 2 runtime sample $run_id"

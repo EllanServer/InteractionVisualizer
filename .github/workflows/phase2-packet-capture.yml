@@ -173,7 +173,7 @@ jobs:
               sha256sum tools/perf/run-phase2-runtime-once.sh
               java -version 2>&1
               printf '%s\n' \
-                'java=-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch -Dinteractionvisualizer.performance.allowBlockScene=true' \
+                'java=-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch -Dinteractionvisualizer.performance.allowBlockScene=true -Xlog:gc*=info,safepoint=info:file=jvm-gc-safepoint.log:time,uptime,level,tags:filecount=0 -Dfile.encoding=UTF-8' \
                 "scenario=$SCENARIO" "snaplen=$SNAPLEN" 'protocolTrace=semantic-lifecycle-v1'
             } | sha256sum | awk '{print $1}'
           )
