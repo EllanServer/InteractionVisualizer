@@ -124,40 +124,45 @@ final class DroppedItemSpatialIndex {
 
         private static final class WorldViewerBucket {
 
-            private static final int INITIAL_CAPACITY = 8;
+            private static final int COORDINATES_PER_VIEWER = 3;
+            private static final int INITIAL_COORDINATE_CAPACITY = 8 * COORDINATES_PER_VIEWER;
+            private static final int MAX_COORDINATE_CAPACITY = Integer.MAX_VALUE - 8;
             private static final double[] EMPTY = new double[0];
 
-            private double[] xCoordinates = EMPTY;
-            private double[] yCoordinates = EMPTY;
-            private double[] zCoordinates = EMPTY;
+            private double[] coordinates = EMPTY;
             private int size;
 
             private WorldViewerBucket(int initialCapacity) {
                 if (initialCapacity > 0) {
-                    xCoordinates = new double[initialCapacity];
-                    yCoordinates = new double[initialCapacity];
-                    zCoordinates = new double[initialCapacity];
+                    if (initialCapacity > MAX_COORDINATE_CAPACITY / COORDINATES_PER_VIEWER) {
+                        throw new IllegalArgumentException("initialCapacity is too large");
+                    }
+                    coordinates = new double[initialCapacity * COORDINATES_PER_VIEWER];
                 }
             }
 
             private void add(double x, double y, double z) {
-                if (size == xCoordinates.length) {
-                    int capacity = Math.max(INITIAL_CAPACITY, size << 1);
-                    xCoordinates = grow(xCoordinates, capacity);
-                    yCoordinates = grow(yCoordinates, capacity);
-                    zCoordinates = grow(zCoordinates, capacity);
+                if (size > MAX_COORDINATE_CAPACITY - COORDINATES_PER_VIEWER) {
+                    throw new OutOfMemoryError("Too many viewer coordinates");
                 }
-                xCoordinates[size] = x;
-                yCoordinates[size] = y;
-                zCoordinates[size] = z;
-                size++;
+                int required = size + COORDINATES_PER_VIEWER;
+                if (required > coordinates.length) {
+                    int capacity = size > MAX_COORDINATE_CAPACITY / 2
+                            ? MAX_COORDINATE_CAPACITY
+                            : Math.max(INITIAL_COORDINATE_CAPACITY, size << 1);
+                    coordinates = grow(coordinates, Math.max(required, capacity));
+                }
+                coordinates[size] = x;
+                coordinates[size + 1] = y;
+                coordinates[size + 2] = z;
+                size = required;
             }
 
             private boolean hasViewerWithin(double x, double y, double z, double rangeSquared) {
-                for (int index = 0; index < size; index++) {
-                    double deltaX = xCoordinates[index] - x;
-                    double deltaY = yCoordinates[index] - y;
-                    double deltaZ = zCoordinates[index] - z;
+                for (int index = 0; index < size; index += COORDINATES_PER_VIEWER) {
+                    double deltaX = coordinates[index] - x;
+                    double deltaY = coordinates[index + 1] - y;
+                    double deltaZ = coordinates[index + 2] - z;
                     if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
                         return true;
                     }
