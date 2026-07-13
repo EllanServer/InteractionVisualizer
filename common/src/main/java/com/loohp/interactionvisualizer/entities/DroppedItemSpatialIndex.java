@@ -126,7 +126,7 @@ final class DroppedItemSpatialIndex {
                 return false;
             }
             double rangeSquared = range * range;
-            if (!viewers.boundsActive && !viewers.useGrid && viewers.expensiveQueries == 0) {
+            if (!viewers.boundsActive && !viewers.useGrid) {
                 double[] xCoordinates = viewers.xCoordinates;
                 double[] yCoordinates = viewers.yCoordinates;
                 double[] zCoordinates = viewers.zCoordinates;
@@ -138,13 +138,33 @@ final class DroppedItemSpatialIndex {
                     if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
                         int matchingViewer = index + 1;
                         if (matchingViewer < WorldViewerBucket.MINIMUM_DEEP_SCAN_VIEWERS) {
+                            if (viewers.expensiveQueries != 0 || viewers.persistentGridHits) {
+                                viewers.expensiveQueries = 0;
+                                viewers.persistentGridHits = false;
+                            }
                             return true;
                         }
-                        return viewers.resolveLinearResult(
-                                x, y, z, range, remainingQueries, matchingViewer);
+                        int expensiveQueries = ++viewers.expensiveQueries;
+                        if (expensiveQueries >= WorldViewerBucket.EXPENSIVE_QUERIES_BEFORE_GRID) {
+                            viewers.activateGridIfBeneficial(x, z, range, remainingQueries,
+                                    matchingViewer, matchingViewer - 1, true);
+                        }
+                        return true;
                     }
                 }
-                return viewers.resolveLinearResult(x, y, z, range, remainingQueries, 0);
+                if (!viewers.boundsInitialized) {
+                    viewers.initializeBounds();
+                }
+                if (viewers.isOutsideBounds(x, y, z, range)) {
+                    viewers.boundsActive = true;
+                    return false;
+                }
+                int expensiveQueries = ++viewers.expensiveQueries;
+                if (expensiveQueries >= WorldViewerBucket.EXPENSIVE_QUERIES_BEFORE_GRID) {
+                    viewers.activateGridIfBeneficial(x, z, range, remainingQueries,
+                            viewerCount, -1, false);
+                }
+                return false;
             }
             return viewers.hasViewerWithinAdaptiveState(
                     x, y, z, range, rangeSquared, remainingQueries);
@@ -298,7 +318,11 @@ final class DroppedItemSpatialIndex {
             }
 
             private int firstViewerWithin(double x, double y, double z, double rangeSquared) {
-                for (int index = 0; index < size; index++) {
+                double[] xCoordinates = this.xCoordinates;
+                double[] yCoordinates = this.yCoordinates;
+                double[] zCoordinates = this.zCoordinates;
+                int viewerCount = size;
+                for (int index = 0; index < viewerCount; index++) {
                     double deltaX = xCoordinates[index] - x;
                     double deltaY = yCoordinates[index] - y;
                     double deltaZ = zCoordinates[index] - z;
