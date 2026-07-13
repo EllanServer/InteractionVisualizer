@@ -236,7 +236,7 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
             }
             case "diagonal-no-hit" -> {
                 items = centralPoints(random, itemCount, 4.0D);
-                viewers = diagonalMissPoints(random, viewerCount);
+                viewers = diagonalMissPoints(random, viewerCount, range);
             }
             case "late-hit" -> {
                 items = centralPoints(random, itemCount, 4.0D);
@@ -469,16 +469,18 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         return points;
     }
 
-    private static List<Point> diagonalMissPoints(Random random, int count) {
+    private static List<Point> diagonalMissPoints(Random random, int count, double range) {
         List<Point> points = new ArrayList<>(count);
+        double minimumOffset = range - 12.0D;
+        double maximumOffset = range - 8.0D;
         for (int index = 0; index < count; index++) {
             int quadrant = index & 3;
             double xSign = (quadrant & 1) == 0 ? -1.0D : 1.0D;
             double zSign = (quadrant & 2) == 0 ? -1.0D : 1.0D;
             points.add(new Point(index,
-                    512.0D + xSign * random.nextDouble(60.0D, 64.0D),
+                    512.0D + xSign * random.nextDouble(minimumOffset, maximumOffset),
                     80.0D,
-                    512.0D + zSign * random.nextDouble(60.0D, 64.0D)));
+                    512.0D + zSign * random.nextDouble(minimumOffset, maximumOffset)));
         }
         return points;
     }
