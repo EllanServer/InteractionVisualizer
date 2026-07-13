@@ -1039,13 +1039,13 @@ for ($index = 0; $index -lt $scenarioGroups.Count; $index++) {
 }
 
 $extendedRuns = @($runs | Where-Object HasExtendedProvenance)
-$abFactors = @($extendedRuns.AbFactor | Sort-Object -Unique)
+$abFactors = @($extendedRuns | ForEach-Object AbFactor | Sort-Object -Unique)
 $rootAbFactor = if ($abFactors.Count -eq 0) {
     $null
 } else {
     $abFactors[0]
 }
-$rootConfigHashes = @($extendedRuns.ConfigSha256 | Sort-Object -Unique)
+$rootConfigHashes = @($extendedRuns | ForEach-Object ConfigSha256 | Sort-Object -Unique)
 $rootConfigHashesByVariant = [ordered]@{
     A = @($extendedRuns | Where-Object Variant -eq "A" |
         ForEach-Object ConfigSha256 | Sort-Object -Unique)
@@ -1058,7 +1058,8 @@ $rootJvmArgumentsHashesByVariant = [ordered]@{
     B = @($extendedRuns | Where-Object Variant -eq "B" |
         ForEach-Object JvmArgumentsSha256 | Sort-Object -Unique)
 }
-$rootNormalizedJvmHashes = @($extendedRuns.JvmArgumentsNormalizedSha256 | Sort-Object -Unique)
+$rootNormalizedJvmHashes = @($extendedRuns | ForEach-Object JvmArgumentsNormalizedSha256 |
+    Sort-Object -Unique)
 $rootNormalizedJvmHash = if ($rootNormalizedJvmHashes.Count -eq 1) {
     $rootNormalizedJvmHashes[0]
 } else {
