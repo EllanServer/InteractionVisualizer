@@ -660,8 +660,8 @@ function Export-PcapFieldsCsv {
 
     & $tshark @arguments 2> $ErrorPath | Set-Content -LiteralPath $CsvPath -Encoding UTF8
     $exitCode = $LASTEXITCODE
-    $standardError = if (Test-Path -LiteralPath $ErrorPath) {
-        Get-Content -LiteralPath $ErrorPath -Raw -Encoding UTF8
+    [string]$standardError = if (Test-Path -LiteralPath $ErrorPath) {
+        [string](Get-Content -LiteralPath $ErrorPath -Raw -Encoding UTF8)
     } else { "" }
     if ($exitCode -ne 0) {
         throw "tshark field export failed (exit $exitCode): $standardError"

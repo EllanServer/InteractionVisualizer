@@ -601,5 +601,5 @@ Write-JsonResult ([ordered]@{
     pairing = "adjacent positions 1-2 and 3-4 within each restart-per-run block"
     estimator = "exp(median(paired log(B/A)))"
     confidenceInterval = "deterministic paired bootstrap percentile 95% CI"
-    results = @($results)
+    results = @($results.ToArray())
 })
