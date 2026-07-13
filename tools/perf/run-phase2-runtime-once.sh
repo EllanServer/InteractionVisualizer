@@ -86,11 +86,17 @@ fi
 [[ "$protocol_trace_enabled" == 0 || "$protocol_trace_enabled" == 1 ]] \
   || { echo "PHASE2_PROTOCOL_TRACE_ENABLED must be 0 or 1" >&2; exit 64; }
 case "$spark_profile_mode" in
-  none|cpu|alloc) ;;
-  *) echo "PHASE2_SPARK_PROFILE_MODE must be none, cpu, or alloc" >&2; exit 64 ;;
+  none|cpu|cpu-all|alloc) ;;
+  *) echo "PHASE2_SPARK_PROFILE_MODE must be none, cpu, cpu-all, or alloc" >&2; exit 64 ;;
 esac
-if [[ "$spark_profile_mode" != none && "$scenario" != block-direct-write ]]; then
-  echo "Spark profiling is currently isolated to block-direct-write" >&2
+if [[ "$spark_profile_mode" == cpu-all && \
+      "$scenario" != block-active && "$scenario" != block-direct-write ]]; then
+  echo "Spark cpu-all profiling is isolated to block-active or block-direct-write" >&2
+  exit 64
+fi
+if [[ "$spark_profile_mode" != none && "$spark_profile_mode" != cpu-all && \
+      "$scenario" != block-direct-write ]]; then
+  echo "Spark cpu/alloc profiling is isolated to block-direct-write" >&2
   exit 64
 fi
 [[ -f "$plugin_jar" && -f "$paper_jar" ]] \
@@ -637,6 +643,12 @@ if [[ "$spark_profile_mode" != none ]]; then
       spark_profile_interval="1"
       spark_profile_interval_unit="milliseconds"
       spark_profile_only_ticks_over_ms="40"
+      ;;
+    cpu-all)
+      spark_profile_start_command="spark profiler start --interval 1"
+      spark_profile_interval="1"
+      spark_profile_interval_unit="milliseconds"
+      spark_profile_only_ticks_over_ms=""
       ;;
     alloc)
       spark_profile_start_command="spark profiler start --alloc --interval 32768"

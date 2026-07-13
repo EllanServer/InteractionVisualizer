@@ -38,11 +38,11 @@ on:
         default: "180"
         type: string
       spark_profile_mode:
-        description: "Optional 4-run Spark diagnostic for block-direct-write"
+        description: "Optional 4-run Spark diagnostic (cpu=slow ticks, cpu-all=steady-state)"
         required: true
         default: "none"
         type: choice
-        options: ["none", "cpu", "alloc"]
+        options: ["none", "cpu", "cpu-all", "alloc"]
 
 permissions:
   contents: read
@@ -139,9 +139,15 @@ jobs:
           [[ "$WARMUP_SECONDS" =~ ^[0-9]+$ ]] && (( WARMUP_SECONDS >= 10 ))
           [[ "$SETTLE_SECONDS" =~ ^[0-9]+$ ]] && (( SETTLE_SECONDS >= 5 ))
           [[ "$MEASURE_SECONDS" =~ ^[0-9]+$ ]] && (( MEASURE_SECONDS >= 10 ))
-          [[ "$SPARK_PROFILE_MODE" =~ ^(none|cpu|alloc)$ ]]
-          if [[ "$SPARK_PROFILE_MODE" != none && "$SCENARIO" != block-direct-write ]]; then
-            echo "Spark profiling is currently isolated to block-direct-write" >&2
+          [[ "$SPARK_PROFILE_MODE" =~ ^(none|cpu|cpu-all|alloc)$ ]]
+          if [[ "$SPARK_PROFILE_MODE" == cpu-all && \
+                "$SCENARIO" != block-active && "$SCENARIO" != block-direct-write ]]; then
+            echo "Spark cpu-all profiling is isolated to block-active or block-direct-write" >&2
+            exit 64
+          fi
+          if [[ "$SPARK_PROFILE_MODE" != none && "$SPARK_PROFILE_MODE" != cpu-all && \
+                "$SCENARIO" != block-direct-write ]]; then
+            echo "Spark cpu/alloc profiling is isolated to block-direct-write" >&2
             exit 64
           fi
           if [[ "$SPARK_PROFILE_MODE" != none && "$RUNS" != 4 ]]; then
