@@ -34,6 +34,9 @@ measure_seconds="${PHASE2_MEASURE_SECONDS:-180}"
 capture_enabled="${PHASE2_CAPTURE_ENABLED:-0}"
 capture_snaplen="${PHASE2_CAPTURE_SNAPLEN:-128}"
 
+[[ "$run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+  || { echo "PHASE2_RUN_ID contains unsafe characters" >&2; exit 64; }
+
 case "$variant" in
   A|B) ;;
   *) echo "PHASE2_VARIANT must be A or B" >&2; exit 64 ;;
@@ -141,6 +144,7 @@ difficulty=peaceful
 level-name=phase2-world
 level-seed=interactionvisualizer-phase2-fixed
 level-type=minecraft:flat
+generator-settings={"layers":[{"block":"minecraft:bedrock","height":1},{"block":"minecraft:dirt","height":2},{"block":"minecraft:grass_block","height":1}],"biome":"minecraft:plains"}
 max-players=1
 max-tick-time=-1
 motd=InteractionVisualizer Phase 2
@@ -168,6 +172,24 @@ client_pid=""
 capture_pid=""
 console_open=0
 cleanup_complete=0
+
+prune_runtime_payload() {
+  # Evidence lives in the root logs/state/JSON/pcap files. Paper's downloaded
+  # runtime, remapped plugin copy and disposable worlds are reproducible inputs
+  # or test state and otherwise inflate every artifact by hundreds of MB.
+  rm -rf -- \
+    "$run_directory/cache" \
+    "$run_directory/libraries" \
+    "$run_directory/logs" \
+    "$run_directory/versions" \
+    "$run_directory/phase2-world" \
+    "$run_directory/phase2-world_nether" \
+    "$run_directory/phase2-world_the_end" \
+    "$run_directory/plugins/.paper-remapped"
+  rm -f -- \
+    "$run_directory/server.jar" \
+    "$run_directory/plugins/InteractionVisualizer.jar"
+}
 
 stop_capture() {
   if [[ -n "$capture_pid" ]] && kill -0 "$capture_pid" 2>/dev/null; then
@@ -205,6 +227,7 @@ cleanup() {
     console_open=0
   fi
   rm -f -- "$console_fifo"
+  prune_runtime_payload
   return "$exit_status"
 }
 trap cleanup EXIT
@@ -283,17 +306,25 @@ server_pid=$!
 
 wait_for_log "[InteractionVisualizer] Enabled for Paper 26.1.2!" 240
 wait_for_log "Done (" 240
+if grep -Fq -- "No key layers in MapLike" "$server_log"; then
+  echo "Paper rejected the flat-world generator settings" >&2
+  exit 1
+fi
 
 send_console "difficulty peaceful"
-send_console "gamerule doMobSpawning false"
-send_console "gamerule doWeatherCycle false"
-send_console "gamerule doDaylightCycle false"
-send_console "gamerule randomTickSpeed 0"
-send_console "gamerule spawnRadius 0"
-send_console "setworldspawn 0 4 0"
+send_console "gamerule minecraft:do_mob_spawning false"
+send_console "gamerule minecraft:do_weather_cycle false"
+send_console "gamerule minecraft:do_daylight_cycle false"
+send_console "gamerule minecraft:random_tick_speed 0"
+send_console "gamerule minecraft:spawn_radius 0"
+send_console "setworldspawn 0 -60 0"
 send_console "weather clear"
 send_console "time set day"
 sleep 1
+if grep -Fq -- "Incorrect argument for command" "$server_log"; then
+  echo "Paper rejected one of the deterministic-world commands" >&2
+  exit 1
+fi
 
 PHASE2_MC_PROTOCOL_MODULE="$client_root/node-minecraft-protocol" \
 PHASE2_SERVER_HOST=127.0.0.1 \

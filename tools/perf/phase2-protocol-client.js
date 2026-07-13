@@ -169,7 +169,11 @@ function markReadyIfComplete () {
 }
 
 function sendPlayerLoadedIfReady () {
-  if (playerLoadedSent || client.state !== 'play' || !positionSeen || !chunkSeen || !chunkBatchSeen) return
+  // Paper sends the first chunks before client-loaded, but does not close the
+  // first adaptive batch until that acknowledgement arrives. A renderless
+  // peer therefore uses receipt of the first chunk as its level-ready proxy;
+  // waiting for chunk_batch_finished here creates a protocol wait cycle.
+  if (playerLoadedSent || client.state !== 'play' || !positionSeen || !chunkSeen) return
   client.write('player_loaded', {})
   playerLoadedSent = true
 }

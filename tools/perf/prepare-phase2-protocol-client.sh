@@ -151,8 +151,19 @@ cat > "$output_directory/client-build-manifest.json" <<EOF
 }
 EOF
 
-PHASE2_MC_PROTOCOL_MODULE="$output_directory/node-minecraft-protocol" \
-  node -e 'const mc = require(process.env.PHASE2_MC_PROTOCOL_MODULE); if (!mc.supportedVersions.includes("26.1.2")) process.exit(1)'
+PHASE2_MC_PROTOCOL_MODULE="$output_directory/node-minecraft-protocol" node <<'NODE'
+const path = require('path')
+const protocolRoot = process.env.PHASE2_MC_PROTOCOL_MODULE
+const protocol = require(protocolRoot)
+if (!protocol.supportedVersions.includes('26.1.2')) {
+  throw new Error('node-minecraft-protocol does not advertise 26.1.2')
+}
+const dataEntry = require.resolve('minecraft-data', { paths: [protocolRoot] })
+const data = require(dataEntry)('26.1.2')
+if (data == null || data.version == null || data.version.minecraftVersion !== '26.1.2') {
+  throw new Error(`minecraft-data did not load 26.1.2 from ${path.dirname(dataEntry)}`)
+}
+NODE
 
 (
   cd "$output_directory"
