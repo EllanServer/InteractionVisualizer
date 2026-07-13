@@ -73,6 +73,10 @@ jobs:
         run: |
           java -Xms2G -Xmx2G -XX:+UseG1GC -jar server.jar --nogui | tee benchmark-server.log
           test -f plugins/InteractionVisualizerBenchmark/benchmark-results.jsonl
+          test -f plugins/InteractionVisualizerBenchmark/benchmark-complete.txt
+          EXPECTED_RESULTS=$(cat plugins/InteractionVisualizerBenchmark/benchmark-complete.txt)
+          ACTUAL_RESULTS=$(wc -l < plugins/InteractionVisualizerBenchmark/benchmark-results.jsonl)
+          test "$ACTUAL_RESULTS" -eq "$EXPECTED_RESULTS"
 
       - name: Publish benchmark results
         if: always()
@@ -81,6 +85,7 @@ jobs:
           name: interactionvisualizer-ab-${{ github.sha }}
           path: |
             benchmark-server/plugins/InteractionVisualizerBenchmark/benchmark-results.jsonl
+            benchmark-server/plugins/InteractionVisualizerBenchmark/benchmark-complete.txt
             benchmark-server/benchmark-server.log
           if-no-files-found: warn
           retention-days: 30

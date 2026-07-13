@@ -22,8 +22,10 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.util.Vector;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -50,6 +52,8 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
     private static volatile long blackhole;
 
     private final List<String> results = new ArrayList<>();
+    private Path resultsOutput;
+    private Path completionOutput;
 
     @Override
     public void onEnable() {
@@ -69,6 +73,11 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         World world = Bukkit.getWorlds().getFirst();
         world.setAutoSave(false);
         world.getEntitiesByClass(Item.class).forEach(Item::remove);
+        Files.createDirectories(getDataFolder().toPath());
+        resultsOutput = getDataFolder().toPath().resolve("benchmark-results.jsonl");
+        completionOutput = getDataFolder().toPath().resolve("benchmark-complete.txt");
+        Files.writeString(resultsOutput, "");
+        Files.deleteIfExists(completionOutput);
 
         for (int itemCount : List.of(250, 1000, 2500)) {
             benchmarkCramping(world, itemCount, false);
@@ -87,10 +96,8 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
             reportTokenBucket(pending, 128, 32);
         }
 
-        Files.createDirectories(getDataFolder().toPath());
-        Path output = getDataFolder().toPath().resolve("benchmark-results.jsonl");
-        Files.write(output, results);
-        getLogger().info("Wrote " + results.size() + " A/B results to " + output.toAbsolutePath());
+        Files.writeString(completionOutput, Integer.toString(results.size()));
+        getLogger().info("Wrote " + results.size() + " A/B results to " + resultsOutput.toAbsolutePath());
     }
 
     private void benchmarkCramping(World world, int itemCount, boolean clustered) {
@@ -198,20 +205,11 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
             throw new IllegalStateException("Visibility A/B mismatch: linear=" + expectedLabels
                     + ", legacy=" + legacyLabels + ", candidate=" + candidateLabels);
         }
-        Comparison productionComparison;
-        Comparison referenceComparison;
-        if (((itemCount + viewerCount + seed) & 1) == 0) {
-            productionComparison = compare(legacyProduction, candidate);
-            referenceComparison = compare(linearReference, candidate);
-        } else {
-            referenceComparison = compare(linearReference, candidate);
-            productionComparison = compare(legacyProduction, candidate);
-        }
+        boolean baselineStarts = ((itemCount * 31L + viewerCount * 17L + seed) & 1L) == 0L;
+        Comparison productionComparison = compare(legacyProduction, candidate, baselineStarts);
         double reduction = itemCount == 0 ? 0.0D : 100.0D * (itemCount - expectedLabels) / itemCount;
         reportVisibilityComparison("visibility-production-ab", "legacy-production-viewer-grid", true,
                 distribution, seed, itemCount, viewerCount, productionComparison, expectedLabels, reduction);
-        reportVisibilityComparison("visibility-linear-reference", "linear-viewer-snapshot-any", false,
-                distribution, seed, itemCount, viewerCount, referenceComparison, expectedLabels, reduction);
     }
 
     private void reportVisibilityComparison(String benchmark, String baseline, boolean baselineUsesGrid,
@@ -224,16 +222,35 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                         "\"candidate\":\"production-primitive-viewer-index\"," +
                         "\"candidateStorage\":\"primitive-soa\"," +
                         "\"indexRebuiltPerOperation\":true,\"candidateUsesGrid\":false," +
-                        "\"sampleTargetNs\":%d,\"measurementRounds\":%d," +
+                        "\"sampleTargetNs\":%d,\"warmupRounds\":%d,\"measurementRounds\":%d," +
+                        "\"roundOrder\":\"%s\"," +
                         "\"baselineMedianNs\":%d,\"baselineP95Ns\":%d," +
                         "\"candidateMedianNs\":%d,\"candidateP95Ns\":%d,\"speedup\":%.3f," +
+                        "\"baselineFirstBaselineMedianNs\":%d," +
+                        "\"baselineFirstCandidateMedianNs\":%d," +
+                        "\"baselineFirstBaselineP95Ns\":%d," +
+                        "\"baselineFirstCandidateP95Ns\":%d," +
+                        "\"baselineFirstSpeedup\":%.3f," +
+                        "\"candidateFirstBaselineMedianNs\":%d," +
+                        "\"candidateFirstCandidateMedianNs\":%d," +
+                        "\"candidateFirstBaselineP95Ns\":%d," +
+                        "\"candidateFirstCandidateP95Ns\":%d," +
+                        "\"candidateFirstSpeedup\":%.3f," +
                         "\"baselineRoundsNs\":%s,\"candidateRoundsNs\":%s," +
                         "\"allLabels\":%d,\"activeLabels\":%d," +
                         "\"labelReductionPct\":%.3f}",
                 benchmark, distribution, seed, itemCount, viewerCount, VIEW_DISTANCE, baseline, baselineUsesGrid,
-                SAMPLE_TARGET_NANOS, MEASUREMENT_ROUNDS,
+                SAMPLE_TARGET_NANOS, WARMUP_ROUNDS, MEASUREMENT_ROUNDS, comparison.roundOrder(),
                 comparison.baseline().median(), comparison.baseline().p95(),
                 comparison.candidate().median(), comparison.candidate().p95(), comparison.speedup(),
+                comparison.baselineFirst().baseline().median(),
+                comparison.baselineFirst().candidate().median(),
+                comparison.baselineFirst().baseline().p95(), comparison.baselineFirst().candidate().p95(),
+                comparison.baselineFirst().speedup(),
+                comparison.candidateFirst().baseline().median(),
+                comparison.candidateFirst().candidate().median(),
+                comparison.candidateFirst().baseline().p95(), comparison.candidateFirst().candidate().p95(),
+                comparison.candidateFirst().speedup(),
                 Arrays.toString(comparison.baselineRoundsNs()), Arrays.toString(comparison.candidateRoundsNs()),
                 itemCount, activeLabels, reduction);
         report(result);
@@ -315,8 +332,13 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
     }
 
     private static Comparison compare(LongSupplier baseline, LongSupplier candidate) {
+        return compare(baseline, candidate, true);
+    }
+
+    private static Comparison compare(LongSupplier baseline, LongSupplier candidate, boolean baselineStarts) {
         for (int round = 0; round < WARMUP_ROUNDS; round++) {
-            if ((round & 1) == 0) {
+            boolean baselineFirst = ((round & 1) == 0) == baselineStarts;
+            if (baselineFirst) {
                 time(baseline);
                 time(candidate);
             } else {
@@ -326,8 +348,11 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         }
         long[] baselineTimes = new long[MEASUREMENT_ROUNDS];
         long[] candidateTimes = new long[MEASUREMENT_ROUNDS];
+        boolean[] baselineFirstRounds = new boolean[MEASUREMENT_ROUNDS];
         for (int round = 0; round < MEASUREMENT_ROUNDS; round++) {
-            if ((round & 1) == 0) {
+            boolean baselineFirst = ((round & 1) == 0) == baselineStarts;
+            baselineFirstRounds[round] = baselineFirst;
+            if (baselineFirst) {
                 baselineTimes[round] = time(baseline);
                 candidateTimes[round] = time(candidate);
             } else {
@@ -337,7 +362,10 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         }
         Samples baselineSamples = Samples.of(baselineTimes);
         Samples candidateSamples = Samples.of(candidateTimes);
-        return new Comparison(baselineSamples, candidateSamples, baselineTimes, candidateTimes,
+        return new Comparison(baselineSamples, candidateSamples,
+                OrderStratum.of(baselineTimes, candidateTimes, baselineFirstRounds, true),
+                OrderStratum.of(baselineTimes, candidateTimes, baselineFirstRounds, false),
+                baselineStarts ? "ABBA" : "BAAB", baselineTimes, candidateTimes,
                 (double) baselineSamples.median() / Math.max(1L, candidateSamples.median()));
     }
 
@@ -355,6 +383,11 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
 
     private void report(String result) {
         results.add(result);
+        try {
+            Files.writeString(resultsOutput, result + System.lineSeparator(), StandardOpenOption.APPEND);
+        } catch (IOException exception) {
+            throw new UncheckedIOException("Unable to append benchmark result", exception);
+        }
         getLogger().info("IV_BENCH_RESULT " + result);
     }
 
@@ -367,7 +400,35 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         }
     }
 
-    private record Comparison(Samples baseline, Samples candidate, long[] baselineRoundsNs,
+    private record OrderStratum(Samples baseline, Samples candidate, double speedup) {
+
+        private static OrderStratum of(long[] baselineTimes, long[] candidateTimes,
+                                       boolean[] baselineFirstRounds, boolean baselineFirst) {
+            int size = 0;
+            for (boolean value : baselineFirstRounds) {
+                if (value == baselineFirst) {
+                    size++;
+                }
+            }
+            long[] baseline = new long[size];
+            long[] candidate = new long[size];
+            int output = 0;
+            for (int index = 0; index < baselineFirstRounds.length; index++) {
+                if (baselineFirstRounds[index] == baselineFirst) {
+                    baseline[output] = baselineTimes[index];
+                    candidate[output] = candidateTimes[index];
+                    output++;
+                }
+            }
+            Samples baselineSamples = Samples.of(baseline);
+            Samples candidateSamples = Samples.of(candidate);
+            return new OrderStratum(baselineSamples, candidateSamples,
+                    (double) baselineSamples.median() / Math.max(1L, candidateSamples.median()));
+        }
+    }
+
+    private record Comparison(Samples baseline, Samples candidate, OrderStratum baselineFirst,
+                              OrderStratum candidateFirst, String roundOrder, long[] baselineRoundsNs,
                               long[] candidateRoundsNs, double speedup) {
     }
 
