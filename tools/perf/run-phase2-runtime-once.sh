@@ -828,6 +828,10 @@ if scenario == "block-direct-write":
     mutation_start_tick = int(mutate["fields"]["mutationStartBukkitTick"])
     mutation_end_tick = int(mutate["fields"]["mutationEndBukkitTick"])
     mutation_elapsed_ms = float(mutate["fields"]["mutationElapsedMs"])
+    mutation_write_ms = float(mutate["fields"]["mutationWriteMs"])
+    mutation_inspection_ms = float(mutate["fields"]["mutationInspectionMs"])
+    mutation_preflight_ms = float(mutate["fields"]["mutationPreflightMs"])
+    mutation_command_ms = float(mutate["fields"]["mutationCommandMs"])
     if mutation_start_tick < 0 or mutation_end_tick != mutation_start_tick:
         raise SystemExit(
             f"direct-write mutation did not complete synchronously in one Bukkit tick: "
@@ -835,7 +839,26 @@ if scenario == "block-direct-write":
         )
     if not math.isfinite(mutation_elapsed_ms) or mutation_elapsed_ms <= 0:
         raise SystemExit(f"invalid direct-write mutationElapsedMs={mutation_elapsed_ms!r}")
-    for field in ("mutationStartBukkitTick", "mutationEndBukkitTick", "mutationElapsedMs"):
+    if (not math.isfinite(mutation_write_ms) or mutation_write_ms <= 0
+            or mutation_write_ms > mutation_elapsed_ms):
+        raise SystemExit(f"invalid direct-write mutationWriteMs={mutation_write_ms!r}")
+    if (not math.isfinite(mutation_inspection_ms) or mutation_inspection_ms <= 0
+            or mutation_inspection_ms > mutation_elapsed_ms):
+        raise SystemExit(f"invalid direct-write mutationInspectionMs={mutation_inspection_ms!r}")
+    if (not math.isfinite(mutation_command_ms) or mutation_command_ms <= 0
+            or mutation_elapsed_ms > mutation_command_ms):
+        raise SystemExit(f"invalid direct-write mutationCommandMs={mutation_command_ms!r}")
+    if (not math.isfinite(mutation_preflight_ms) or mutation_preflight_ms <= 0
+            or mutation_preflight_ms > mutation_command_ms):
+        raise SystemExit(f"invalid direct-write mutationPreflightMs={mutation_preflight_ms!r}")
+    timing_fields = (
+        "mutationStartBukkitTick",
+        "mutationEndBukkitTick",
+        "mutationElapsedMs",
+        "mutationWriteMs",
+        "mutationInspectionMs",
+    )
+    for field in timing_fields:
         if clear["fields"].get(field) != mutate["fields"].get(field):
             raise SystemExit(f"clear record did not preserve direct-write timing field {field}")
     slowest_tick = int(metrics["msptMaxBukkitTick"])
@@ -843,11 +866,30 @@ if scenario == "block-direct-write":
     slowest_block_checks = int(metrics["msptMaxBlockUpdateChecks"])
     slowest_block_ms = float(metrics["msptMaxBlockUpdateMs"])
     slowest_ms = float(metrics["msptMax"])
+    if not math.isfinite(slowest_ms) or slowest_ms <= 0:
+        raise SystemExit(f"invalid direct-write msptMax={slowest_ms!r}")
+    if mutation_command_ms > slowest_ms:
+        raise SystemExit(
+            f"direct-write command duration exceeds its completed tick: "
+            f"command={mutation_command_ms!r} tick={slowest_ms!r}"
+        )
+    mutation_unattributed_ms = max(
+        0.0, mutation_elapsed_ms - mutation_write_ms - mutation_inspection_ms
+    )
+    mutation_command_unattributed_ms = max(
+        0.0, mutation_command_ms - mutation_preflight_ms - mutation_elapsed_ms
+    )
     direct_write_diagnostics = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "mutationStartBukkitTick": mutation_start_tick,
         "mutationEndBukkitTick": mutation_end_tick,
         "mutationElapsedMs": mutation_elapsed_ms,
+        "mutationWriteMs": mutation_write_ms,
+        "mutationInspectionMs": mutation_inspection_ms,
+        "mutationUnattributedMs": mutation_unattributed_ms,
+        "mutationPreflightMs": mutation_preflight_ms,
+        "mutationCommandMs": mutation_command_ms,
+        "mutationCommandUnattributedMs": mutation_command_unattributed_ms,
         "slowestBukkitTick": slowest_tick,
         "slowestTickEndEpochMillis": slowest_epoch_ms,
         "slowestTickMs": slowest_ms,
@@ -856,6 +898,18 @@ if scenario == "block-direct-write":
         "slowestTickWithinMutation": mutation_start_tick <= slowest_tick <= mutation_end_tick,
         "mutationFractionOfSlowestTick": (
             mutation_elapsed_ms / slowest_ms if slowest_ms > 0 else None
+        ),
+        "mutationWriteFractionOfSlowestTick": (
+            mutation_write_ms / slowest_ms if slowest_ms > 0 else None
+        ),
+        "mutationInspectionFractionOfSlowestTick": (
+            mutation_inspection_ms / slowest_ms if slowest_ms > 0 else None
+        ),
+        "mutationPreflightFractionOfSlowestTick": (
+            mutation_preflight_ms / slowest_ms if slowest_ms > 0 else None
+        ),
+        "mutationCommandFractionOfSlowestTick": (
+            mutation_command_ms / slowest_ms if slowest_ms > 0 else None
         ),
         "blockUpdateFractionOfSlowestTick": (
             slowest_block_ms / slowest_ms if slowest_ms > 0 else None
@@ -869,7 +923,7 @@ elif clear_revision != create_revision:
     )
 
 evidence = {
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "scenario": scenario,
     "formalEvidenceReady": True,
     "records": {"create": create, "mutate": mutate, "clear": clear},

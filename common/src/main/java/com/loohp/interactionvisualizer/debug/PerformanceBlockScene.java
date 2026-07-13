@@ -127,6 +127,8 @@ public final class PerformanceBlockScene {
             long lastMutationStartBukkitTick,
             long lastMutationEndBukkitTick,
             long lastMutationElapsedNanos,
+            long lastMutationWriteElapsedNanos,
+            long lastMutationInspectionElapsedNanos,
             int restoredCount,
             int skippedExternalCount,
             int restoreFailureCount,
@@ -156,6 +158,8 @@ public final class PerformanceBlockScene {
                     + " mutationStartBukkitTick=" + lastMutationStartBukkitTick
                     + " mutationEndBukkitTick=" + lastMutationEndBukkitTick
                     + " mutationElapsedMs=" + String.format(Locale.ROOT, "%.6f", lastMutationElapsedNanos / 1_000_000.0D)
+                    + " mutationWriteMs=" + String.format(Locale.ROOT, "%.6f", lastMutationWriteElapsedNanos / 1_000_000.0D)
+                    + " mutationInspectionMs=" + String.format(Locale.ROOT, "%.6f", lastMutationInspectionElapsedNanos / 1_000_000.0D)
                     + " restored=" + restoredCount
                     + " skippedExternal=" + skippedExternalCount
                     + " restoreFailures=" + restoreFailureCount
@@ -482,6 +486,10 @@ public final class PerformanceBlockScene {
                 applied++;
             }
         }
+        // Keep the synchronous write loop separate from the ownership/PDC
+        // verification performed by snapshot(). Total mutation time still
+        // includes the small bookkeeping gap between both phases.
+        long writeEndNanos = System.nanoTime();
         session.lastMutationRequested = operations;
         session.lastMutationApplied = applied;
         session.skippedExternalCount = skipped;
@@ -492,7 +500,7 @@ public final class PerformanceBlockScene {
                 mode == Mode.ACTIVE ? "vanilla_furnace_events_primed"
                         : mode == Mode.DIRECT_WRITE ? "eventless_direct_write"
                         : "idle_normalized",
-                true, startTick, startNanos);
+                true, startTick, startNanos, writeEndNanos);
     }
 
     private static List<Entry> plan(Player owner, int count) {
@@ -762,14 +770,16 @@ public final class PerformanceBlockScene {
     }
 
     private static Snapshot snapshot(Session session, SceneState state, String detail) {
-        return snapshot(session, state, detail, false, NO_MUTATION_TICK, 0L);
+        return snapshot(session, state, detail, false, NO_MUTATION_TICK, 0L, 0L);
     }
 
     private static Snapshot snapshot(Session session, SceneState state, String detail,
                                      boolean captureMutationTiming,
-                                     long mutationStartBukkitTick, long mutationStartNanos) {
+                                     long mutationStartBukkitTick, long mutationStartNanos,
+                                     long mutationWriteEndNanos) {
         int owned = 0;
         int unloaded = 0;
+        long inspectionStartNanos = captureMutationTiming ? System.nanoTime() : 0L;
         try {
             for (Entry entry : session.entries) {
                 if (!isLoaded(entry)) {
@@ -780,9 +790,12 @@ public final class PerformanceBlockScene {
             }
         } finally {
             if (captureMutationTiming) {
+                long endNanos = System.nanoTime();
                 session.lastMutationStartBukkitTick = mutationStartBukkitTick;
                 session.lastMutationEndBukkitTick = Bukkit.getCurrentTick();
-                session.lastMutationElapsedNanos = Math.max(0L, System.nanoTime() - mutationStartNanos);
+                session.lastMutationElapsedNanos = Math.max(0L, endNanos - mutationStartNanos);
+                session.lastMutationWriteElapsedNanos = Math.max(0L, mutationWriteEndNanos - mutationStartNanos);
+                session.lastMutationInspectionElapsedNanos = Math.max(0L, endNanos - inspectionStartNanos);
             }
         }
         Counts counts = session.counts;
@@ -791,14 +804,15 @@ public final class PerformanceBlockScene {
                 owned, unloaded, counts.furnace, counts.blastFurnace, counts.smoker,
                 counts.beeHive, counts.beeNest, session.revision, session.lastMutationRequested,
                 session.lastMutationApplied, session.lastMutationStartBukkitTick, session.lastMutationEndBukkitTick,
-                session.lastMutationElapsedNanos, session.restoredCount, session.skippedExternalCount,
+                session.lastMutationElapsedNanos, session.lastMutationWriteElapsedNanos,
+                session.lastMutationInspectionElapsedNanos, session.restoredCount, session.skippedExternalCount,
                 session.restoreFailureCount, session.inspectionFailureCount, detail);
     }
 
     private static Snapshot absent(UUID ownerId, String detail) {
         return new Snapshot(ownerId, SceneState.ABSENT, null, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 0, 0, 0L, 0, 0, NO_MUTATION_TICK, NO_MUTATION_TICK,
-                0L, 0, 0, 0, 0, detail);
+                0L, 0L, 0L, 0, 0, 0, 0, detail);
     }
 
     private static Session requireSession(UUID ownerId) {
@@ -877,6 +891,8 @@ public final class PerformanceBlockScene {
         private long lastMutationStartBukkitTick;
         private long lastMutationEndBukkitTick;
         private long lastMutationElapsedNanos;
+        private long lastMutationWriteElapsedNanos;
+        private long lastMutationInspectionElapsedNanos;
         private int restoredCount;
         private int skippedExternalCount;
         private int restoreFailureCount;

@@ -24,28 +24,37 @@ class PerformanceBlockSceneSnapshotTest {
 
     @Test
     void summaryPublishesLastMutationTickWindowAndElapsedNanos() {
-        PerformanceBlockScene.Snapshot snapshot = snapshot(410L, 411L, 12_345_678L);
+        PerformanceBlockScene.Snapshot snapshot = snapshot(
+                410L, 411L, 12_345_678L, 8_000_000L, 3_000_000L);
 
         assertEquals(410L, snapshot.lastMutationStartBukkitTick());
         assertEquals(411L, snapshot.lastMutationEndBukkitTick());
         assertEquals(12_345_678L, snapshot.lastMutationElapsedNanos());
+        assertEquals(8_000_000L, snapshot.lastMutationWriteElapsedNanos());
+        assertEquals(3_000_000L, snapshot.lastMutationInspectionElapsedNanos());
 
         Map<String, String> fields = summaryFields(snapshot);
         assertEquals("410", fields.get("mutationStartBukkitTick"));
         assertEquals("411", fields.get("mutationEndBukkitTick"));
         assertEquals("12.345678", fields.get("mutationElapsedMs"));
+        assertEquals("8.000000", fields.get("mutationWriteMs"));
+        assertEquals("3.000000", fields.get("mutationInspectionMs"));
     }
 
     @Test
     void summaryKeepsNoMutationSentinelsObservable() {
-        Map<String, String> fields = summaryFields(snapshot(-1L, -1L, 0L));
+        Map<String, String> fields = summaryFields(snapshot(-1L, -1L, 0L, 0L, 0L));
 
         assertEquals("-1", fields.get("mutationStartBukkitTick"));
         assertEquals("-1", fields.get("mutationEndBukkitTick"));
         assertEquals("0.000000", fields.get("mutationElapsedMs"));
+        assertEquals("0.000000", fields.get("mutationWriteMs"));
+        assertEquals("0.000000", fields.get("mutationInspectionMs"));
     }
 
-    private static PerformanceBlockScene.Snapshot snapshot(long startTick, long endTick, long elapsedNanos) {
+    private static PerformanceBlockScene.Snapshot snapshot(long startTick, long endTick, long elapsedNanos,
+                                                           long writeElapsedNanos,
+                                                           long inspectionElapsedNanos) {
         return new PerformanceBlockScene.Snapshot(
                 UUID.fromString("11111111-2222-3333-4444-555555555555"),
                 PerformanceBlockScene.SceneState.READY,
@@ -53,7 +62,7 @@ class PerformanceBlockSceneSnapshotTest {
                 5, 5, 5, 0, 5, 0,
                 1, 1, 1, 1, 1,
                 7L, 5, 5,
-                startTick, endTick, elapsedNanos,
+                startTick, endTick, elapsedNanos, writeElapsedNanos, inspectionElapsedNanos,
                 0, 0, 0, 0,
                 "eventless_direct_write");
     }

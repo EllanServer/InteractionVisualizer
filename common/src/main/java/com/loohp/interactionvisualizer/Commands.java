@@ -46,6 +46,7 @@ import org.bukkit.entity.Player;
 
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 public class Commands implements CommandExecutor, TabCompleter {
@@ -474,7 +475,10 @@ public class Commands implements CommandExecutor, TabCompleter {
                     "state=invalid reason=online_player_or_owner_uuid_required");
             return;
         }
+        long mutationCommandStartNanos = System.nanoTime();
         PerformanceBlockScene.Snapshot current = PerformanceBlockScene.snapshot(owner.ownerId());
+        long mutationPreflightElapsedNanos = Math.max(
+                0L, System.nanoTime() - mutationCommandStartNanos);
         if (current.state() == PerformanceBlockScene.SceneState.ABSENT) {
             sendBlockSceneRecordForOwner(sender, "mutate", owner.displayName(), current.summary());
             return;
@@ -495,7 +499,14 @@ public class Commands implements CommandExecutor, TabCompleter {
             snapshot = PerformanceBlockScene.mutate(owner.ownerId(),
                     count == null ? current.placedCount() : count);
         }
-        sendBlockSceneRecordForOwner(sender, "mutate", owner.displayName(), snapshot.summary());
+        long mutationCommandElapsedNanos = Math.max(
+                0L, System.nanoTime() - mutationCommandStartNanos);
+        String commandTiming = " mutationPreflightMs="
+                + String.format(Locale.ROOT, "%.6f", mutationPreflightElapsedNanos / 1_000_000.0D)
+                + " mutationCommandMs="
+                + String.format(Locale.ROOT, "%.6f", mutationCommandElapsedNanos / 1_000_000.0D);
+        sendBlockSceneRecordForOwner(sender, "mutate", owner.displayName(),
+                snapshot.summary() + commandTiming);
     }
 
     private static void inspectPerformanceBlockScene(CommandSender sender, String[] args, boolean clear) {
