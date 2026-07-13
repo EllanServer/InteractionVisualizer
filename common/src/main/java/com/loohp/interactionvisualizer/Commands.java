@@ -302,12 +302,31 @@ public class Commands implements CommandExecutor, TabCompleter {
                 }
             }
             case "scene" -> {
-                if (!(sender instanceof Player player)) {
-                    sender.sendMessage(Component.text("[InteractionVisualizer] The scene command must be run by a player."));
+                if (args.length < 4) {
+                    sender.sendMessage(Component.text(
+                            "Usage: /iv perf scene <static|motion> <count> [lifetimeTicks] [player]"));
                     return true;
                 }
-                if (args.length < 4) {
-                    sender.sendMessage(Component.text("Usage: /iv perf scene <static|motion> <count> [lifetimeTicks]"));
+                long defaultLifetime = args[2].equalsIgnoreCase("motion") ? 80L : 200L;
+                long lifetime = defaultLifetime;
+                String requestedPlayer = args.length >= 6 ? args[5] : null;
+                if (args.length >= 5) {
+                    try {
+                        lifetime = Long.parseLong(args[4]);
+                    } catch (NumberFormatException ignored) {
+                        if (args.length == 5) {
+                            requestedPlayer = args[4];
+                        } else {
+                            sender.sendMessage(Component.text(
+                                    "[InteractionVisualizer] lifetimeTicks must be an integer."));
+                            return true;
+                        }
+                    }
+                }
+                Player player = performanceScenePlayer(sender, requestedPlayer);
+                if (player == null) {
+                    sender.sendMessage(Component.text(
+                            "[InteractionVisualizer] Specify an online player for the benchmark scene."));
                     return true;
                 }
                 boolean moving = args[2].equalsIgnoreCase("motion");
@@ -316,35 +335,36 @@ public class Commands implements CommandExecutor, TabCompleter {
                     return true;
                 }
                 int count = parseInteger(args[3], 1);
-                long lifetime = args.length >= 5 ? parseLong(args[4], moving ? 80L : 200L) : moving ? 80L : 200L;
                 int spawned = PerformanceScene.spawn(player, moving, count, lifetime);
                 sender.sendMessage(Component.text("[InteractionVisualizer] Spawned " + spawned + " "
                         + (moving ? "moving" : "static") + " benchmark items for " + lifetime + " ticks."));
             }
             case "clear" -> {
-                if (sender instanceof Player player) {
-                    PerformanceScene.clear(player);
-                    sender.sendMessage(Component.text("[InteractionVisualizer] Cleared your benchmark scene."));
-                } else {
-                    sender.sendMessage(Component.text("[InteractionVisualizer] The clear command must be run by a player."));
+                Player player = performanceScenePlayer(sender, args.length >= 3 ? args[2] : null);
+                if (player == null) {
+                    sender.sendMessage(Component.text(
+                            "[InteractionVisualizer] Specify an online player when clearing a scene from console."));
+                    return true;
                 }
+                PerformanceScene.clear(player);
+                sender.sendMessage(Component.text("[InteractionVisualizer] Cleared the benchmark scene for "
+                        + player.getName() + "."));
             }
             default -> sender.sendMessage(Component.text("Usage: /iv perf <start|stop|status|scene|clear>"));
         }
         return true;
     }
 
+    private static Player performanceScenePlayer(CommandSender sender, String requestedName) {
+        if (requestedName != null && !requestedName.isBlank()) {
+            return Bukkit.getPlayerExact(requestedName);
+        }
+        return sender instanceof Player player ? player : null;
+    }
+
     private static int parseInteger(String value, int defaultValue) {
         try {
             return Integer.parseInt(value);
-        } catch (NumberFormatException ignored) {
-            return defaultValue;
-        }
-    }
-
-    private static long parseLong(String value, long defaultValue) {
-        try {
-            return Long.parseLong(value);
         } catch (NumberFormatException ignored) {
             return defaultValue;
         }

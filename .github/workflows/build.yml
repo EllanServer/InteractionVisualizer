@@ -75,6 +75,13 @@ jobs:
             throw 'Phase 2 pcap analyzer self-test did not report passed=true.'
           }
 
+      - name: Validate runtime harness syntax
+        shell: bash
+        run: |
+          bash -n tools/perf/prepare-phase2-protocol-client.sh
+          bash -n tools/perf/run-phase2-runtime-once.sh
+          node --check tools/perf/phase2-protocol-client.js
+
       - name: Run checks and build production jar
         run: ./gradlew clean check shadowJar --no-daemon --no-build-cache --rerun-tasks
 

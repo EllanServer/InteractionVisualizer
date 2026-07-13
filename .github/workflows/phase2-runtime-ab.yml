@@ -1,0 +1,174 @@
+name: Phase 2 Clean Runtime A-B
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "Restart-isolated runs (4, 8, or formal 12)"
+        required: true
+        default: "12"
+        type: choice
+        options: ["4", "8", "12"]
+      items:
+        description: "Static logical items"
+        required: true
+        default: "4096"
+        type: string
+      warmup_seconds:
+        description: "Warmup after the real TCP client is ready"
+        required: true
+        default: "120"
+        type: string
+      settle_seconds:
+        description: "Scene settling time before sampling"
+        required: true
+        default: "20"
+        type: string
+      measure_seconds:
+        description: "Clean MSPT/TPS sampling window"
+        required: true
+        default: "180"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  clean-runtime-ab:
+    name: Paper 26.1.2 clean TPS-MSPT ABBA
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+
+    steps:
+      - name: Check out immutable test source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Node 24 for the isolated protocol peer
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Validate harness source
+        run: |
+          bash -n tools/perf/prepare-phase2-protocol-client.sh
+          bash -n tools/perf/run-phase2-runtime-once.sh
+          node --check tools/perf/phase2-protocol-client.js
+          pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 -SelfTest
+          pwsh -NoProfile -File tools/perf/analyze-phase2-pcap.ps1 -SelfTest
+
+      - name: Build and test the production plugin
+        run: ./gradlew clean check shadowJar --no-daemon --no-build-cache --rerun-tasks
+
+      - name: Download stable Paper 26.1.2
+        env:
+          PAPER_USER_AGENT: InteractionVisualizer-Phase2/1.0 (https://github.com/EllanServer/InteractionVisualizer)
+        run: |
+          mkdir -p phase2-dependencies
+          BUILDS=$(curl --fail --silent --show-error \
+            -H "User-Agent: $PAPER_USER_AGENT" \
+            https://fill.papermc.io/v3/projects/paper/versions/26.1.2/builds)
+          PAPER_URL=$(echo "$BUILDS" | jq -r 'first(.[] | select(.channel == "STABLE") | .downloads."server:default".url) // empty')
+          test -n "$PAPER_URL"
+          curl --fail --location --show-error \
+            -H "User-Agent: $PAPER_USER_AGENT" \
+            --output phase2-dependencies/paper.jar "$PAPER_URL"
+
+      - name: Prepare immutable protocol client artifact
+        run: bash tools/perf/prepare-phase2-protocol-client.sh phase2-dependencies/protocol-client
+
+      - name: Run restart-isolated clean ABBA campaign
+        env:
+          RUNS: ${{ inputs.runs }}
+          ITEMS: ${{ inputs.items }}
+          WARMUP_SECONDS: ${{ inputs.warmup_seconds }}
+          SETTLE_SECONDS: ${{ inputs.settle_seconds }}
+          MEASURE_SECONDS: ${{ inputs.measure_seconds }}
+        run: |
+          set -euo pipefail
+          [[ "$RUNS" =~ ^(4|8|12)$ ]]
+          [[ "$ITEMS" =~ ^[0-9]+$ ]] && (( ITEMS >= 1 && ITEMS <= 8192 ))
+          [[ "$WARMUP_SECONDS" =~ ^[0-9]+$ ]] && (( WARMUP_SECONDS >= 10 ))
+          [[ "$SETTLE_SECONDS" =~ ^[0-9]+$ ]] && (( SETTLE_SECONDS >= 5 ))
+          [[ "$MEASURE_SECONDS" =~ ^[0-9]+$ ]] && (( MEASURE_SECONDS >= 10 ))
+
+          PLUGIN_JAR=$(find build/libs -maxdepth 1 -type f -name 'InteractionVisualizer-*.jar' ! -name '*-sources.jar' ! -name '*-benchmark.jar' -print -quit)
+          test -n "$PLUGIN_JAR"
+          mkdir -p phase2-results/clean
+          MANIFEST=phase2-results/clean/abba-manifest.csv
+          printf 'Scenario,Block,Position,Variant,RunId,StackSha256,ArtifactSha256,CaptureMethod,SourcePath\n' > "$MANIFEST"
+          ARTIFACT_SHA=$(sha256sum "$PLUGIN_JAR" | awk '{print $1}')
+          STACK_SHA=$(
+            {
+              sha256sum phase2-dependencies/paper.jar
+              sha256sum phase2-dependencies/protocol-client/client-build-manifest.json
+              java -version 2>&1
+              printf '%s\n' 'java=-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch' 'scenario=static-steady'
+            } | sha256sum | awk '{print $1}'
+          )
+
+          for run_number in $(seq 1 "$RUNS"); do
+            block=$(( (run_number - 1) / 4 + 1 ))
+            position=$(( (run_number - 1) % 4 + 1 ))
+            if (( block % 2 == 1 )); then pattern=ABBA; else pattern=BAAB; fi
+            variant=${pattern:$((position - 1)):1}
+            run_id=$(printf 'static_steady_%s_%02d' "$variant" "$run_number")
+
+            PHASE2_PLUGIN_JAR="$PLUGIN_JAR" \
+            PHASE2_PAPER_JAR=phase2-dependencies/paper.jar \
+            PHASE2_CLIENT_ROOT=phase2-dependencies/protocol-client \
+            PHASE2_OUTPUT_ROOT=phase2-results/clean \
+            PHASE2_RUN_ID="$run_id" \
+            PHASE2_SCENARIO=static-steady \
+            PHASE2_VARIANT="$variant" \
+            PHASE2_ITEM_COUNT="$ITEMS" \
+            PHASE2_WARMUP_SECONDS="$WARMUP_SECONDS" \
+            PHASE2_SETTLE_SECONDS="$SETTLE_SECONDS" \
+            PHASE2_MEASURE_SECONDS="$MEASURE_SECONDS" \
+            PHASE2_CAPTURE_ENABLED=0 \
+            bash tools/perf/run-phase2-runtime-once.sh
+
+            printf 'static-steady,%d,%d,%s,%s,%s,%s,none,%s/iv-perf.json\n' \
+              "$block" "$position" "$variant" "$run_id" "$STACK_SHA" "$ARTIFACT_SHA" "$run_id" \
+              >> "$MANIFEST"
+          done
+
+          minimum_seconds=$(( MEASURE_SECONDS - 2 ))
+          incomplete=()
+          if [[ "$RUNS" != 12 ]]; then incomplete=(-AllowIncomplete); fi
+          for metric in msptP95 msptP99 msptMean; do
+            pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$MANIFEST" \
+              -Scenario static-steady -Metric "$metric" -Direction LowerIsBetter \
+              -MinimumSeconds "$minimum_seconds" "${incomplete[@]}" \
+              -OutputJson "phase2-results/clean/$metric.analysis.json" -Overwrite
+          done
+          # At a healthy 20 TPS cap this is only an overload/non-regression
+          # diagnostic. MSPT remains the optimization effect-size metric.
+          pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$MANIFEST" \
+            -Scenario static-steady -Metric observedTps -Direction HigherIsBetter \
+            -MinimumSeconds "$minimum_seconds" "${incomplete[@]}" \
+            -OutputJson phase2-results/clean/observedTps.analysis.json -Overwrite
+
+      - name: Publish clean runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2-clean-runtime-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            phase2-results/clean
+            phase2-dependencies/protocol-client/client-build-manifest.json
+            phase2-dependencies/protocol-client/client-files.sha256
+            phase2-dependencies/protocol-client/node-minecraft-protocol/package-lock.json
+            phase2-dependencies/protocol-client/node-minecraft-protocol/dependency-tree.json
+          if-no-files-found: warn
+          retention-days: 30

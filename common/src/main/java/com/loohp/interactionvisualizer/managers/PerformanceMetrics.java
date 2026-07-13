@@ -347,6 +347,12 @@ public final class PerformanceMetrics implements Listener {
             return elapsedNanos / 1_000_000_000.0D;
         }
 
+        /** Wall-clock completed server ticks per second over this exact sample window. */
+        public double observedTps() {
+            double seconds = seconds();
+            return seconds <= 0.0D ? 0.0D : (tickSamples + droppedTickSamples) / seconds;
+        }
+
         /** Sparrow outer packets are exact; Bukkit operations remain separately reported. */
         public long knownVirtualPackets() {
             return virtualSpawnBundles + virtualMotionBundles + virtualTeleportBundles
@@ -355,10 +361,10 @@ public final class PerformanceMetrics implements Listener {
 
         public String summary() {
             return String.format(Locale.ROOT,
-                    "label=%s modes=%s/%s/%s/%s samples=%d p50/p95/p99=%.3f/%.3f/%.3fms virtualPackets=%d anchors=%d/%d/%d",
+                    "label=%s modes=%s/%s/%s/%s samples=%d tps=%.3f p50/p95/p99=%.3f/%.3f/%.3fms virtualPackets=%d anchors=%d/%d/%d",
                     label, staticAnchorDuringAnimation, packetOnlyStatic, visibilityRateLimit,
                     eventDrivenBlockUpdates,
-                    tickSamples, msptP50, msptP95, msptP99, knownVirtualPackets(),
+                    tickSamples, observedTps(), msptP50, msptP95, msptP99, knownVirtualPackets(),
                     bukkitEntitySpawns, bukkitEntityTeleports, bukkitEntityRemoves);
         }
 
@@ -368,7 +374,7 @@ public final class PerformanceMetrics implements Listener {
                             "\"packetOnlyStatic\":%b,\"visibilityRateLimit\":%b," +
                             "\"visibilityBucketSize\":%d,\"visibilityRestorePerTick\":%d," +
                             "\"eventDrivenBlockUpdates\":%b,\"blockUpdateMaxDirtyPerTick\":%d," +
-                            "\"seconds\":%.3f,\"tickSamples\":%d," +
+                            "\"seconds\":%.3f,\"tickSamples\":%d,\"observedTps\":%.6f," +
                             "\"droppedTickSamples\":%d,\"msptP50\":%.6f,\"msptP95\":%.6f," +
                             "\"msptP99\":%.6f,\"msptP999\":%.6f,\"msptMax\":%.6f," +
                             "\"msptMean\":%.6f,\"ticksOver50ms\":%d," +
@@ -384,7 +390,8 @@ public final class PerformanceMetrics implements Listener {
                             "\"blockUpdateChecks\":%d,\"blockUpdateMs\":%.6f}",
                     label, staticAnchorDuringAnimation, packetOnlyStatic, visibilityRateLimit,
                     visibilityBucketSize, visibilityRestorePerTick, eventDrivenBlockUpdates,
-                    blockUpdateMaxDirtyPerTick, seconds(), tickSamples, droppedTickSamples, msptP50, msptP95, msptP99,
+                    blockUpdateMaxDirtyPerTick, seconds(), tickSamples, observedTps(), droppedTickSamples,
+                    msptP50, msptP95, msptP99,
                     msptP999, msptMax, msptMean, ticksOver50ms, virtualSpawnBundles,
                     virtualMotionBundles, virtualTeleportBundles, virtualRemovePackets, virtualPickupPackets,
                     knownVirtualPackets(), bukkitEntitySpawns, bukkitEntityRemoves, bukkitEntityTeleports,
