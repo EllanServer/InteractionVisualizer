@@ -5,6 +5,10 @@ set -euo pipefail
 # invoke this script sequentially in the desired ABBA order; it deliberately
 # owns only one JVM/run so cleanup failures cannot leak state into the next one.
 
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+protocol_client_source="$script_directory/phase2-protocol-client.js"
+protocol_trace_analyzer_source="$script_directory/analyze-phase2-protocol-trace.js"
+
 required_variable() {
   local name="$1"
   if [[ -z "${!name:-}" ]]; then
@@ -33,6 +37,7 @@ settle_seconds="${PHASE2_SETTLE_SECONDS:-20}"
 measure_seconds="${PHASE2_MEASURE_SECONDS:-180}"
 capture_enabled="${PHASE2_CAPTURE_ENABLED:-0}"
 capture_snaplen="${PHASE2_CAPTURE_SNAPLEN:-128}"
+protocol_trace_enabled="${PHASE2_PROTOCOL_TRACE_ENABLED:-$capture_enabled}"
 
 [[ "$run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
   || { echo "PHASE2_RUN_ID contains unsafe characters" >&2; exit 64; }
@@ -42,7 +47,7 @@ case "$variant" in
   *) echo "PHASE2_VARIANT must be A or B" >&2; exit 64 ;;
 esac
 case "$scenario" in
-  static-steady|static-spawn|visibility-return) ;;
+  static-steady|static-spawn|visibility-return|visibility-itemdisplay-return|visibility-textdisplay-return|block-idle|block-active|block-direct-write) ;;
   *) echo "Unsupported PHASE2_SCENARIO: $scenario" >&2; exit 64 ;;
 esac
 for value in "$server_port" "$item_count" "$warmup_seconds" "$settle_seconds" \
@@ -51,24 +56,46 @@ for value in "$server_port" "$item_count" "$warmup_seconds" "$settle_seconds" \
 done
 (( server_port >= 1 && server_port <= 65535 )) \
   || { echo "PHASE2_SERVER_PORT is outside 1..65535" >&2; exit 64; }
-(( item_count >= 1 && item_count <= 8192 )) \
-  || { echo "PHASE2_ITEM_COUNT is outside 1..8192" >&2; exit 64; }
+maximum_item_count=8192
+if [[ "$scenario" == block-* ]]; then
+  maximum_item_count=4096
+fi
+(( item_count >= 1 && item_count <= maximum_item_count )) \
+  || { echo "PHASE2_ITEM_COUNT is outside 1..$maximum_item_count for $scenario" >&2; exit 64; }
 (( warmup_seconds >= 10 && settle_seconds >= 5 && measure_seconds >= 5 )) \
   || { echo "Warmup/settle/measure windows are too short" >&2; exit 64; }
 (( warmup_seconds + settle_seconds + measure_seconds + 120 <= 600 )) \
-  || { echo "Requested window exceeds the benchmark scene lifetime cap" >&2; exit 64; }
-if [[ "$scenario" == visibility-return ]] && (( measure_seconds < 10 )); then
-  echo "visibility-return requires at least a 10-second fixed window" >&2
+  || { echo "Requested window exceeds the benchmark runtime cap" >&2; exit 64; }
+if [[ "$scenario" == visibility-* ]] && (( measure_seconds < 10 )); then
+  echo "$scenario requires at least a 10-second fixed window" >&2
   exit 64
+fi
+if [[ "$scenario" == block-direct-write ]]; then
+  direct_write_minimum_seconds=45
+  if (( item_count > 1024 )); then
+    direct_write_minimum_seconds=55
+  fi
+  if (( measure_seconds < direct_write_minimum_seconds )); then
+    echo "block-direct-write with $item_count blocks requires at least $direct_write_minimum_seconds seconds for a complete safety-audit pass" >&2
+    exit 64
+  fi
 fi
 [[ "$capture_enabled" == 0 || "$capture_enabled" == 1 ]] \
   || { echo "PHASE2_CAPTURE_ENABLED must be 0 or 1" >&2; exit 64; }
+[[ "$protocol_trace_enabled" == 0 || "$protocol_trace_enabled" == 1 ]] \
+  || { echo "PHASE2_PROTOCOL_TRACE_ENABLED must be 0 or 1" >&2; exit 64; }
 [[ -f "$plugin_jar" && -f "$paper_jar" ]] \
   || { echo "Plugin or Paper JAR is missing" >&2; exit 66; }
 [[ -f "$client_root/client-build-manifest.json" ]] \
   || { echo "Prepared protocol client manifest is missing" >&2; exit 66; }
 [[ -d "$client_root/node-minecraft-protocol" ]] \
   || { echo "Prepared node-minecraft-protocol directory is missing" >&2; exit 66; }
+[[ -f "$protocol_client_source" ]] \
+  || { echo "Protocol client source is missing" >&2; exit 66; }
+if [[ "$protocol_trace_enabled" == 1 && ! -f "$protocol_trace_analyzer_source" ]]; then
+  echo "Semantic protocol trace analyzer source is missing" >&2
+  exit 66
+fi
 
 run_directory="$output_root/$run_id"
 if [[ -e "$run_directory" ]]; then
@@ -83,6 +110,8 @@ client_state="$run_directory/protocol-client-state.json"
 console_fifo="$run_directory/console.pipe"
 capture_path="$run_directory/$run_id.pcap"
 capture_log="$run_directory/tcpdump.log"
+protocol_trace_path="$run_directory/$run_id.protocol-trace.json"
+protocol_trace_analysis_path="$run_directory/$run_id.protocol-trace-analysis.json"
 
 cp "$paper_jar" "$run_directory/server.jar"
 cp "$plugin_jar" "$run_directory/plugins/InteractionVisualizer.jar"
@@ -104,14 +133,18 @@ def replace_once(old: str, new: str) -> None:
         raise SystemExit(f"Expected one config token {old!r}, found {count}")
     text = text.replace(old, new, 1)
 
-packet_only = scenario == "visibility-return" or variant == "B"
-visibility_limit = scenario == "visibility-return" and variant == "B"
+packet_only = scenario == "visibility-return" or (
+    scenario in {"static-steady", "static-spawn"} and variant == "B"
+)
+visibility_limit = scenario.startswith("visibility-") and variant == "B"
+event_driven = scenario.startswith("block-") and variant == "B"
 replace_once("      PacketOnlyStatic: false",
              f"      PacketOnlyStatic: {str(packet_only).lower()}")
 replace_once("      Enabled: false\n      BucketSize: 128\n      RestorePerTick: 32",
              f"      Enabled: {str(visibility_limit).lower()}\n"
              "      BucketSize: 128\n      RestorePerTick: 32")
-replace_once("      EventDriven: false", "      EventDriven: false")
+replace_once("      EventDriven: false",
+             f"      EventDriven: {str(event_driven).lower()}")
 replace_once("  Updater: true", "  Updater: false")
 replace_once("  DownloadLanguageFiles: true", "  DownloadLanguageFiles: false")
 path.write_text(text, encoding="utf-8", newline="\n")
@@ -166,6 +199,11 @@ plugin_sha="$(sha256sum "$plugin_jar" | awk '{print $1}')"
 paper_sha="$(sha256sum "$paper_jar" | awk '{print $1}')"
 client_manifest_sha="$(sha256sum "$client_root/client-build-manifest.json" | awk '{print $1}')"
 config_sha="$(sha256sum "$run_directory/plugins/InteractionVisualizer/config.yml" | awk '{print $1}')"
+protocol_client_sha="$(sha256sum "$protocol_client_source" | awk '{print $1}')"
+protocol_trace_analyzer_sha=""
+if [[ "$protocol_trace_enabled" == 1 ]]; then
+  protocol_trace_analyzer_sha="$(sha256sum "$protocol_trace_analyzer_source" | awk '{print $1}')"
+fi
 
 server_pid=""
 client_pid=""
@@ -294,12 +332,147 @@ send_console() {
   printf '%s\n' "$1" >&3
 }
 
+capture_block_scene_record() {
+  local expected_prefix="$1"
+  local output_file="$2"
+  local timeout_seconds="$3"
+  local action_owner_prefix="${expected_prefix%% state=*}"
+  local failure_line
+  local line
+  local record
+  for _ in $(seq 1 "$timeout_seconds"); do
+    if grep -Fq -- "$expected_prefix" "$server_log" 2>/dev/null; then
+      break
+    fi
+    failure_line="$(grep -F -- "$action_owner_prefix state=" "$server_log" 2>/dev/null \
+      | tail -n 1 || true)"
+    if [[ -n "$failure_line" ]]; then
+      echo "Block scene command returned an unexpected record: ${failure_line#*IV_BLOCK_SCENE }" >&2
+      exit 1
+    fi
+    if [[ -n "$server_pid" ]] && ! kill -0 "$server_pid" 2>/dev/null; then
+      echo "Paper exited while waiting for block scene record: $expected_prefix" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  if ! grep -Fq -- "$expected_prefix" "$server_log" 2>/dev/null; then
+    echo "Timed out waiting for block scene record: $expected_prefix" >&2
+    tail -n 200 "$server_log" >&2 || true
+    exit 1
+  fi
+  line="$(grep -F -- "$expected_prefix" "$server_log" | tail -n 1)"
+  record="IV_BLOCK_SCENE ${line#*IV_BLOCK_SCENE }"
+  if [[ "$record" == "IV_BLOCK_SCENE $line" || "$record" != "$expected_prefix"* ]]; then
+    echo "Unable to extract exact block scene record: $expected_prefix" >&2
+    exit 1
+  fi
+  printf '%s\n' "$record" > "$output_file"
+}
+
+validate_block_scene_record() {
+  local record_file="$1"
+  local phase="$2"
+  local expected_mode="$3"
+  local expected_count="$4"
+  python3 - "$record_file" "$phase" "$expected_mode" "$expected_count" <<'PY'
+from pathlib import Path
+import sys
+
+record_path, phase, expected_mode, expected_count_text = sys.argv[1:]
+expected_count = int(expected_count_text)
+record = Path(record_path).read_text(encoding="utf-8").strip()
+parts = record.split()
+if not parts or parts[0] != "IV_BLOCK_SCENE":
+    raise SystemExit(f"invalid block scene record marker: {record!r}")
+
+fields = {}
+for token in parts[1:]:
+    if "=" not in token:
+        raise SystemExit(f"invalid block scene record token: {token!r}")
+    key, value = token.split("=", 1)
+    if key in fields:
+        raise SystemExit(f"duplicate block scene record field: {key}")
+    fields[key] = value
+
+def require(name, expected):
+    actual = fields.get(name)
+    if actual != str(expected):
+        raise SystemExit(f"{phase} record {name}={actual!r}, expected {expected!r}")
+
+def integer(name):
+    value = fields.get(name)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise SystemExit(f"{phase} record {name} is not an integer: {value!r}")
+
+require("action", phase)
+require("owner", "IVBench")
+require("mode", expected_mode)
+require("requested", expected_count)
+require("placed", expected_count)
+require("skippedExternal", 0)
+require("restoreFailures", 0)
+require("unloaded", 0)
+require("inspectionFailures", 0)
+
+material_fields = ["furnace", "blastFurnace", "smoker", "beeHive", "beeNest"]
+base, remainder = divmod(expected_count, len(material_fields))
+expected_material_counts = {
+    name: base + (1 if index < remainder else 0)
+    for index, name in enumerate(material_fields)
+}
+for name, expected in expected_material_counts.items():
+    require(name, expected)
+require(
+    "eventEligibleFurnaces",
+    sum(expected_material_counts[name] for name in material_fields[:3]),
+)
+if integer("revision") < 1:
+    raise SystemExit(f"{phase} record revision must be positive")
+
+if phase == "create":
+    require("state", "ready")
+    require("owned", expected_count)
+    require("remaining", expected_count)
+    require("unresolved", 0)
+    require("mutationRequested", 0)
+    require("mutationApplied", 0)
+    require("restored", 0)
+    require("detail", "created")
+elif phase == "mutate":
+    require("state", "ready")
+    require("mode", "direct_write")
+    require("owned", expected_count)
+    require("remaining", expected_count)
+    require("unresolved", 0)
+    require("mutationRequested", expected_count)
+    require("mutationApplied", expected_count)
+    require("restored", 0)
+    require("detail", "eventless_direct_write")
+elif phase == "clear":
+    require("state", "cleared")
+    require("owned", 0)
+    require("remaining", 0)
+    require("unresolved", 0)
+    expected_mutations = expected_count if expected_mode == "direct_write" else 0
+    require("mutationRequested", expected_mutations)
+    require("mutationApplied", expected_mutations)
+    require("restored", expected_count)
+    require("detail", "cleared")
+else:
+    raise SystemExit(f"unknown block scene record phase: {phase}")
+PY
+}
+
 mkfifo "$console_fifo"
 exec 3<>"$console_fifo"
 console_open=1
 (
   cd "$run_directory"
   exec java -Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch \
+    -Dinteractionvisualizer.performance.allowBlockScene=true \
     -Dfile.encoding=UTF-8 -jar server.jar --nogui < console.pipe
 ) > "$server_log" 2>&1 &
 server_pid=$!
@@ -326,14 +499,20 @@ if grep -Fq -- "Incorrect argument for command" "$server_log"; then
   exit 1
 fi
 
-PHASE2_MC_PROTOCOL_MODULE="$client_root/node-minecraft-protocol" \
-PHASE2_SERVER_HOST=127.0.0.1 \
-PHASE2_SERVER_PORT="$server_port" \
-PHASE2_CLIENT_USERNAME=IVBench \
-PHASE2_CLIENT_VERSION=26.1.2 \
-PHASE2_CLIENT_READY_FILE="$client_ready" \
-PHASE2_CLIENT_STATE_FILE="$client_state" \
-node "$(dirname "$0")/phase2-protocol-client.js" > "$client_log" 2>&1 &
+protocol_trace_environment=("PHASE2_PROTOCOL_TRACE_FILE=")
+if [[ "$protocol_trace_enabled" == 1 ]]; then
+  protocol_trace_environment=("PHASE2_PROTOCOL_TRACE_FILE=$protocol_trace_path")
+fi
+env \
+  "PHASE2_MC_PROTOCOL_MODULE=$client_root/node-minecraft-protocol" \
+  PHASE2_SERVER_HOST=127.0.0.1 \
+  "PHASE2_SERVER_PORT=$server_port" \
+  PHASE2_CLIENT_USERNAME=IVBench \
+  PHASE2_CLIENT_VERSION=26.1.2 \
+  "PHASE2_CLIENT_READY_FILE=$client_ready" \
+  "PHASE2_CLIENT_STATE_FILE=$client_state" \
+  "${protocol_trace_environment[@]}" \
+  node "$protocol_client_source" > "$client_log" 2>&1 &
 client_pid=$!
 wait_for_file "$client_ready" 180
 wait_for_log "IVBench joined the game" 60
@@ -350,9 +529,54 @@ PY
 )"
 read -r initial_x initial_y initial_z <<< "$initial_coordinates"
 lifetime_ticks=$(( (warmup_seconds + settle_seconds + measure_seconds + 120) * 20 ))
+block_scene_enabled=0
+block_scene_mode=""
+block_scene_record_mode=""
+block_scene_create_record="$run_directory/blockscene-create.record.txt"
+block_scene_mutate_record="$run_directory/blockscene-mutate.record.txt"
+block_scene_clear_record="$run_directory/blockscene-clear.record.txt"
+block_scene_records_json="$run_directory/blockscene-records.json"
+case "$scenario" in
+  block-idle)
+    block_scene_enabled=1
+    block_scene_mode=idle
+    block_scene_record_mode=idle
+    ;;
+  block-active)
+    block_scene_enabled=1
+    block_scene_mode=active
+    block_scene_record_mode=active
+    ;;
+  block-direct-write)
+    block_scene_enabled=1
+    block_scene_mode=direct-write
+    block_scene_record_mode=direct_write
+    ;;
+esac
 
-send_console "iv perf scene static $item_count $lifetime_ticks IVBench"
-wait_for_log "Spawned $item_count static benchmark items" 60
+if [[ "$block_scene_enabled" == 1 ]]; then
+  block_create_prefix="IV_BLOCK_SCENE action=create owner=IVBench state=ready mode=$block_scene_record_mode requested=$item_count placed=$item_count owned=$item_count"
+  send_console "iv perf blockscene create $block_scene_mode $item_count IVBench"
+  capture_block_scene_record "$block_create_prefix" "$block_scene_create_record" 180
+  validate_block_scene_record "$block_scene_create_record" create "$block_scene_record_mode" "$item_count"
+else
+  scene_type=static
+  scene_entity_label=items
+  case "$scenario" in
+  visibility-itemdisplay-return)
+    scene_type=itemdisplay
+    scene_entity_label=entities
+    ;;
+  visibility-textdisplay-return)
+    scene_type=textdisplay
+    scene_entity_label=entities
+    ;;
+  esac
+  scene_spawn_log="Spawned $item_count $scene_type benchmark $scene_entity_label"
+
+  send_console "iv perf scene $scene_type $item_count $lifetime_ticks IVBench"
+  wait_for_log "$scene_spawn_log" 60
+fi
 sleep "$warmup_seconds"
 
 if [[ "$scenario" == static-spawn ]]; then
@@ -366,7 +590,7 @@ else
   sleep "$settle_seconds"
 fi
 
-if [[ "$scenario" == visibility-return ]]; then
+if [[ "$scenario" == visibility-* ]]; then
   far_x="$(python3 -c 'import sys; print(float(sys.argv[1]) + 512.0)' "$initial_x")"
   teleport_count="$(grep -Fc -- "Teleported IVBench" "$server_log" 2>/dev/null || true)"
   send_console "tp IVBench $far_x $initial_y $initial_z"
@@ -391,13 +615,18 @@ window_deadline="$(python3 -c 'import sys; print(f"{float(sys.argv[1]) + float(s
   "$window_start" "$measure_seconds")"
 
 if [[ "$scenario" == static-spawn ]]; then
-  spawn_count="$(grep -Fc -- "Spawned $item_count static benchmark items" "$server_log" 2>/dev/null || true)"
+  spawn_count="$(grep -Fc -- "$scene_spawn_log" "$server_log" 2>/dev/null || true)"
   send_console "iv perf scene static $item_count $lifetime_ticks IVBench"
-  wait_for_log_count "Spawned $item_count static benchmark items" "$((spawn_count + 1))" 60
-elif [[ "$scenario" == visibility-return ]]; then
+  wait_for_log_count "$scene_spawn_log" "$((spawn_count + 1))" 60
+elif [[ "$scenario" == visibility-* ]]; then
   teleport_count="$(grep -Fc -- "Teleported IVBench" "$server_log" 2>/dev/null || true)"
   send_console "tp IVBench $initial_x $initial_y $initial_z"
   wait_for_log_count "Teleported IVBench" "$((teleport_count + 1))" 30
+elif [[ "$scenario" == block-direct-write ]]; then
+  block_mutate_prefix="IV_BLOCK_SCENE action=mutate owner=IVBench state=ready mode=direct_write requested=$item_count placed=$item_count owned=$item_count"
+  send_console "iv perf blockscene mutate $item_count direct-write IVBench"
+  capture_block_scene_record "$block_mutate_prefix" "$block_scene_mutate_record" 120
+  validate_block_scene_record "$block_scene_mutate_record" mutate direct_write "$item_count"
 fi
 
 python3 - "$window_deadline" <<'PY'
@@ -420,7 +649,7 @@ if [[ "$capture_enabled" == 1 ]]; then
   dropped_packets="$(sed -nE 's/^([0-9]+) packets dropped by kernel$/\1/p' "$capture_log" | tail -n 1)"
   [[ -n "$dropped_packets" ]] || { echo "tcpdump did not report kernel drop statistics" >&2; exit 1; }
   [[ "$dropped_packets" == 0 ]] || { echo "tcpdump dropped $dropped_packets packets" >&2; exit 1; }
-  pwsh -NoProfile -File "$(dirname "$0")/analyze-phase2-pcap.ps1" "$capture_path" \
+  pwsh -NoProfile -File "$script_directory/analyze-phase2-pcap.ps1" "$capture_path" \
     -ServerPort "$server_port" \
     -WindowStartEpochSeconds "$window_start" \
     -WindowEndEpochSeconds "$window_end" \
@@ -438,7 +667,9 @@ PY
 fi
 
 python3 - "$server_log" "$run_id" "$run_directory/iv-perf.json" "$scenario" "$variant" "$item_count" <<'PY'
-import json, sys
+import json
+import math
+import sys
 log_path, run_id, output_path, scenario, variant, item_count_text = sys.argv[1:]
 item_count = int(item_count_text)
 matches = []
@@ -457,42 +688,204 @@ if metrics.get("droppedTickSamples") != 0:
     raise SystemExit(f"droppedTickSamples={metrics.get('droppedTickSamples')}")
 if metrics.get("tickSamples", 0) <= 0 or metrics.get("seconds", 0) <= 0:
     raise SystemExit("IV_PERF sampling window is empty")
-expected_packet_only = scenario == "visibility-return" or variant == "B"
-expected_limiter = scenario == "visibility-return" and variant == "B"
+visibility_scenario = scenario.startswith("visibility-")
+block_scenario = scenario.startswith("block-")
+expected_packet_only = scenario == "visibility-return" or (
+    scenario in {"static-steady", "static-spawn"} and variant == "B"
+)
+expected_limiter = visibility_scenario and variant == "B"
+expected_event_driven = block_scenario and variant == "B"
 if metrics.get("packetOnlyStatic") is not expected_packet_only:
     raise SystemExit(f"packetOnlyStatic does not match {scenario}/{variant}")
 if metrics.get("visibilityRateLimit") is not expected_limiter:
     raise SystemExit(f"visibilityRateLimit does not match {scenario}/{variant}")
+if metrics.get("eventDrivenBlockUpdates") is not expected_event_driven:
+    raise SystemExit(f"eventDrivenBlockUpdates does not match {scenario}/{variant}")
+if block_scenario:
+    block_checks = metrics.get("blockUpdateChecks")
+    block_ms = metrics.get("blockUpdateMs")
+    if isinstance(block_checks, bool) or not isinstance(block_checks, int) or block_checks < 0:
+        raise SystemExit(f"invalid blockUpdateChecks={block_checks!r}")
+    if (isinstance(block_ms, bool) or not isinstance(block_ms, (int, float))
+            or not math.isfinite(block_ms) or block_ms < 0):
+        raise SystemExit(f"invalid blockUpdateMs={block_ms!r}")
+    if variant == "A" and block_checks <= 0:
+        raise SystemExit("legacy block updater performed no checks")
+    if scenario == "block-active" and variant == "B" and block_checks <= 0:
+        raise SystemExit("event-driven active block workload performed no checks")
+    if scenario == "block-direct-write" and variant == "B" and block_checks < item_count:
+        raise SystemExit(
+            f"direct-write safety audit checked only {block_checks} of {item_count} applied mutations"
+        )
+    if block_checks > 0 and block_ms <= 0:
+        raise SystemExit(f"block updater recorded {block_checks} checks but no elapsed time")
 if scenario == "static-spawn":
     if variant == "B":
         if metrics.get("packetOnlyItemSyncs") != item_count or metrics.get("bukkitEntitySpawns") != 0:
             raise SystemExit("candidate did not exercise the pure packet-only spawn path")
     elif metrics.get("packetOnlyItemSyncs") != 0 or metrics.get("bukkitEntitySpawns") != item_count:
         raise SystemExit("baseline did not exercise one Bukkit tracker anchor per logical item")
-if scenario == "visibility-return":
-    if metrics.get("virtualSpawnBundles") != item_count:
-        raise SystemExit("visibility return did not respawn every virtual item within the window")
+if visibility_scenario:
     queued = metrics.get("visibilityShowsQueued")
     drained = metrics.get("visibilityShowsDrained")
     if variant == "B" and (queued != item_count or drained != item_count):
-        raise SystemExit(f"limiter did not queue/drain every item: queued={queued} drained={drained}")
+        raise SystemExit(f"limiter did not queue/drain every entity: queued={queued} drained={drained}")
     if variant == "A" and (queued != 0 or drained != 0):
         raise SystemExit(f"unlimited baseline unexpectedly used the visibility queue: queued={queued} drained={drained}")
+if scenario == "visibility-return":
+    if metrics.get("virtualSpawnBundles") != item_count:
+        raise SystemExit("visibility return did not respawn every virtual item within the window")
+elif scenario in {"visibility-itemdisplay-return", "visibility-textdisplay-return"}:
+    if metrics.get("packetOnlyItemSyncs") != 0 or metrics.get("virtualSpawnBundles") != 0:
+        raise SystemExit("generic display visibility scenario leaked into the virtual-item branch")
+    if metrics.get("bukkitShowCalls") != item_count:
+        raise SystemExit(f"generic display visibility restored {metrics.get('bukkitShowCalls')} of {item_count} entities")
 with open(output_path, "w", encoding="utf-8", newline="\n") as stream:
     json.dump(metrics, stream, ensure_ascii=False, indent=2)
     stream.write("\n")
 PY
 
+block_scene_manifest_enabled=false
+block_scene_manifest_mode=null
+block_scene_manifest_records_path=null
+block_scene_manifest_records_sha=null
+if [[ "$block_scene_enabled" == 1 ]]; then
+  block_clear_prefix="IV_BLOCK_SCENE action=clear owner=IVBench state=cleared mode=$block_scene_record_mode requested=$item_count placed=$item_count owned=0"
+  send_console "iv perf blockscene clear IVBench"
+  capture_block_scene_record "$block_clear_prefix" "$block_scene_clear_record" 180
+  validate_block_scene_record "$block_scene_clear_record" clear "$block_scene_record_mode" "$item_count"
+  python3 - "$scenario" "$block_scene_create_record" "$block_scene_mutate_record" \
+    "$block_scene_clear_record" "$block_scene_records_json" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+scenario, create_path_text, mutate_path_text, clear_path_text, output_path_text = sys.argv[1:]
+
+def parse_record(path_text):
+    path = Path(path_text)
+    raw = path.read_text(encoding="utf-8").strip()
+    fields = {}
+    for token in raw.split()[1:]:
+        key, value = token.split("=", 1)
+        fields[key] = value
+    return {"path": path.name, "raw": raw, "fields": fields}
+
+create = parse_record(create_path_text)
+clear = parse_record(clear_path_text)
+mutate_path = Path(mutate_path_text)
+mutate = parse_record(mutate_path_text) if mutate_path.is_file() else None
+create_revision = int(create["fields"]["revision"])
+clear_revision = int(clear["fields"]["revision"])
+if scenario == "block-direct-write":
+    if mutate is None:
+        raise SystemExit("direct-write block scene is missing its mutate machine record")
+    mutate_revision = int(mutate["fields"]["revision"])
+    if mutate_revision != create_revision + 1 or clear_revision != mutate_revision:
+        raise SystemExit(
+            f"unexpected direct-write revisions: create={create_revision} "
+            f"mutate={mutate_revision} clear={clear_revision}"
+        )
+elif mutate is not None:
+    raise SystemExit(f"{scenario} unexpectedly produced a mutate machine record")
+elif clear_revision != create_revision:
+    raise SystemExit(
+        f"unexpected block scene revisions: create={create_revision} clear={clear_revision}"
+    )
+
+evidence = {
+    "schemaVersion": 1,
+    "scenario": scenario,
+    "formalEvidenceReady": True,
+    "records": {"create": create, "mutate": mutate, "clear": clear},
+}
+Path(output_path_text).write_text(
+    json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+  block_scene_records_sha="$(sha256sum "$block_scene_records_json" | awk '{print $1}')"
+  block_scene_manifest_enabled=true
+  block_scene_manifest_mode="\"$block_scene_record_mode\""
+  block_scene_manifest_records_path="\"blockscene-records.json\""
+  block_scene_manifest_records_sha="\"$block_scene_records_sha\""
+else
+  send_console "iv perf clear IVBench"
+fi
+sleep 2
+if ! kill -0 "$client_pid" 2>/dev/null; then
+  echo "Protocol client exited before semantic trace finalization" >&2
+  tail -n 200 "$client_log" >&2 || true
+  wait "$client_pid" 2>/dev/null || true
+  exit 1
+fi
+kill -TERM "$client_pid"
+wait "$client_pid"
+client_pid=""
+
+protocol_trace_manifest_enabled=false
+protocol_trace_manifest_path=null
+protocol_trace_manifest_analysis_path=null
+protocol_trace_manifest_formal_ready=null
+protocol_trace_manifest_trace_sha=null
+protocol_trace_manifest_analysis_sha=null
+protocol_trace_manifest_analyzer_sha=null
+if [[ "$protocol_trace_enabled" == 1 ]]; then
+  test -s "$protocol_trace_path"
+  node "$protocol_trace_analyzer_source" \
+    --trace "$protocol_trace_path" \
+    --window-start-epoch-seconds "$window_start" \
+    --window-end-epoch-seconds "$window_end" \
+    --output "$protocol_trace_analysis_path" \
+    --overwrite > "$run_directory/protocol-trace-analysis.stdout.json"
+  python3 - "$protocol_trace_analysis_path" "$scenario" "$item_count" <<'PY'
+import json
+import sys
+
+analysis_path, scenario, item_count_text = sys.argv[1:]
+with open(analysis_path, encoding="utf-8") as stream:
+    analysis = json.load(stream)
+status = analysis.get("status", {})
+if status.get("formalEvidenceReady") is not True:
+    raise SystemExit("protocol trace analyzer did not produce complete explicit-window evidence")
+if analysis.get("traceCoverage", {}).get("windowEventCount", 0) <= 0:
+    raise SystemExit("protocol trace explicit window contains no lifecycle events")
+spawn_observations = analysis.get("identity", {}).get("spawn", {}).get("observations", 0)
+entity_lifecycle_scenarios = {
+    "static-spawn",
+    "visibility-return",
+    "visibility-itemdisplay-return",
+    "visibility-textdisplay-return",
+}
+if scenario in entity_lifecycle_scenarios and spawn_observations < int(item_count_text):
+    raise SystemExit(
+        f"protocol trace observed only {spawn_observations} spawn identities; "
+        f"expected at least {item_count_text}"
+    )
+PY
+  protocol_trace_sha="$(sha256sum "$protocol_trace_path" | awk '{print $1}')"
+  protocol_trace_analysis_sha="$(sha256sum "$protocol_trace_analysis_path" | awk '{print $1}')"
+  protocol_trace_manifest_enabled=true
+  protocol_trace_manifest_path="\"$run_id.protocol-trace.json\""
+  protocol_trace_manifest_analysis_path="\"$run_id.protocol-trace-analysis.json\""
+  protocol_trace_manifest_formal_ready=true
+  protocol_trace_manifest_trace_sha="\"$protocol_trace_sha\""
+  protocol_trace_manifest_analysis_sha="\"$protocol_trace_analysis_sha\""
+  protocol_trace_manifest_analyzer_sha="\"$protocol_trace_analyzer_sha\""
+fi
+
 cat > "$run_directory/run-manifest.json" <<EOF
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "runId": "$run_id",
   "scenario": "$scenario",
   "variant": "$variant",
+  "blockSceneMutationOptIn": true,
   "captureEnabled": $([[ "$capture_enabled" == 1 ]] && echo true || echo false),
   "captureSnaplen": $capture_snaplen,
   "serverPort": $server_port,
   "itemCount": $item_count,
+  "workloadCount": $item_count,
   "warmupSeconds": $warmup_seconds,
   "settleSeconds": $settle_seconds,
   "measureSeconds": $measure_seconds,
@@ -501,15 +894,26 @@ cat > "$run_directory/run-manifest.json" <<EOF
   "pluginSha256": "$plugin_sha",
   "paperSha256": "$paper_sha",
   "clientManifestSha256": "$client_manifest_sha",
-  "configSha256": "$config_sha"
+  "configSha256": "$config_sha",
+  "protocolTrace": {
+    "enabled": $protocol_trace_manifest_enabled,
+    "path": $protocol_trace_manifest_path,
+    "analysisPath": $protocol_trace_manifest_analysis_path,
+    "formalEvidenceReady": $protocol_trace_manifest_formal_ready,
+    "traceSha256": $protocol_trace_manifest_trace_sha,
+    "analysisSha256": $protocol_trace_manifest_analysis_sha,
+    "protocolClientSha256": "$protocol_client_sha",
+    "analyzerSha256": $protocol_trace_manifest_analyzer_sha
+  },
+  "blockScene": {
+    "enabled": $block_scene_manifest_enabled,
+    "mode": $block_scene_manifest_mode,
+    "recordsPath": $block_scene_manifest_records_path,
+    "recordsSha256": $block_scene_manifest_records_sha
+  }
 }
 EOF
 
-send_console "iv perf clear IVBench"
-sleep 2
-kill -TERM "$client_pid"
-wait "$client_pid"
-client_pid=""
 send_console "stop"
 for _ in $(seq 1 90); do
   kill -0 "$server_pid" 2>/dev/null || break

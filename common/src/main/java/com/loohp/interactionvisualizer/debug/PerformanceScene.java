@@ -12,9 +12,12 @@
 package com.loohp.interactionvisualizer.debug;
 
 import com.loohp.interactionvisualizer.InteractionVisualizer;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
+import com.loohp.interactionvisualizer.entityholders.VisualizerEntity;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
+import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -36,7 +39,7 @@ public final class PerformanceScene {
 
     private static final int MAX_ITEMS = 8_192;
     private static final long MAX_LIFETIME_TICKS = 12_000L;
-    private static final Map<UUID, Set<Item>> scenes = new HashMap<>();
+    private static final Map<UUID, Set<VisualizerEntity>> scenes = new HashMap<>();
 
     private PerformanceScene() {
     }
@@ -49,7 +52,7 @@ public final class PerformanceScene {
         Collection<Player> viewers = new ArrayList<>(Bukkit.getOnlinePlayers());
         Location center = owner.getLocation().add(0.0D, 1.5D, 0.0D);
         int width = (int) Math.ceil(Math.sqrt(count));
-        Set<Item> items = new HashSet<>(count);
+        Set<VisualizerEntity> items = new HashSet<>(count);
 
         for (int index = 0; index < count; index++) {
             int xIndex = index % width;
@@ -71,22 +74,87 @@ public final class PerformanceScene {
             DisplayManager.sendItemSpawn(viewers, item);
         }
 
-        scenes.put(owner.getUniqueId(), items);
-        Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> remove(items), lifetimeTicks, owner.getLocation());
+        UUID ownerId = owner.getUniqueId();
+        scenes.put(ownerId, items);
+        Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> expire(ownerId, items),
+                lifetimeTicks, owner.getLocation());
+        return count;
+    }
+
+    /**
+     * Creates a Paper-owned display workload so the generic visibility queue is
+     * measured independently from Sparrow's packet-only item branch.
+     */
+    public static int spawnDisplay(Player owner, boolean text, int requestedCount,
+                                   long requestedLifetimeTicks) {
+        int count = Math.max(1, Math.min(MAX_ITEMS, requestedCount));
+        long lifetimeTicks = Math.max(1L, Math.min(MAX_LIFETIME_TICKS, requestedLifetimeTicks));
+        clear(owner);
+
+        Collection<Player> viewers = new ArrayList<>(Bukkit.getOnlinePlayers());
+        Location center = owner.getLocation().add(0.0D, 1.5D, 0.0D);
+        int width = (int) Math.ceil(Math.sqrt(count));
+        Set<VisualizerEntity> displays = new HashSet<>(count);
+
+        for (int index = 0; index < count; index++) {
+            int xIndex = index % width;
+            int zIndex = index / width;
+            Location location = center.clone().add(
+                    (xIndex - (width - 1) / 2.0D) * 0.36D,
+                    (index % 5) * 0.05D,
+                    (zIndex - (width - 1) / 2.0D) * 0.36D);
+            DisplayEntity display = new DisplayEntity(location);
+            if (text) {
+                display.setCustomName(Component.text("IV"));
+                display.setCustomNameVisible(true);
+            } else {
+                display.setItemInMainHand(new ItemStack(Material.STONE));
+            }
+            displays.add(display);
+            DisplayManager.spawnDisplay(viewers, display);
+        }
+
+        UUID ownerId = owner.getUniqueId();
+        scenes.put(ownerId, displays);
+        Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> expire(ownerId, displays),
+                lifetimeTicks, owner.getLocation());
         return count;
     }
 
     public static void clear(Player owner) {
-        Set<Item> previous = scenes.remove(owner.getUniqueId());
+        clear(owner.getUniqueId());
+    }
+
+    /** Removes a scene even when its owner has disconnected. */
+    public static void clear(UUID ownerId) {
+        Set<VisualizerEntity> previous = scenes.remove(ownerId);
         if (previous != null) {
-            remove(previous);
+            removeEntities(previous);
         }
     }
 
-    private static void remove(Set<Item> items) {
-        for (Item item : items) {
-            DisplayManager.removeItem(null, item, true, false);
+    /** Deterministically removes every disposable benchmark scene. */
+    public static void shutdown() {
+        List<Set<VisualizerEntity>> remaining = new ArrayList<>(scenes.values());
+        scenes.clear();
+        for (Set<VisualizerEntity> entities : remaining) {
+            removeEntities(entities);
         }
-        scenes.values().removeIf(current -> current == items);
+    }
+
+    private static void expire(UUID ownerId, Set<VisualizerEntity> entities) {
+        if (scenes.remove(ownerId, entities)) {
+            removeEntities(entities);
+        }
+    }
+
+    private static void removeEntities(Set<VisualizerEntity> entities) {
+        for (VisualizerEntity entity : entities) {
+            if (entity instanceof Item item) {
+                DisplayManager.removeItem(null, item, true, false);
+            } else if (entity instanceof DisplayEntity display) {
+                DisplayManager.removeDisplay(null, display, true, false);
+            }
+        }
     }
 }

@@ -10,7 +10,7 @@ on:
         required: true
         default: "static-spawn"
         type: choice
-        options: ["static-spawn", "visibility-return"]
+        options: ["static-spawn", "visibility-return", "visibility-itemdisplay-return", "visibility-textdisplay-return"]
       runs:
         description: "Restart-isolated runs (4, 8, or formal 12)"
         required: true
@@ -53,17 +53,22 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.action != 'labeled' ||
+      github.event.label.name == 'phase2-packet-visibility-smoke' ||
       github.event.label.name == 'phase2-packet-static-formal' ||
-      github.event.label.name == 'phase2-packet-visibility-formal'
+      github.event.label.name == 'phase2-packet-visibility-formal' ||
+      github.event.label.name == 'phase2-packet-visibility-itemdisplay-smoke' ||
+      github.event.label.name == 'phase2-packet-visibility-itemdisplay-formal' ||
+      github.event.label.name == 'phase2-packet-visibility-textdisplay-smoke' ||
+      github.event.label.name == 'phase2-packet-visibility-textdisplay-formal'
     runs-on: ubuntu-latest
     timeout-minutes: 100
     env:
-      CAMPAIGN_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario || github.event.label.name == 'phase2-packet-visibility-formal' && 'visibility-return' || 'static-spawn' }}
-      CAMPAIGN_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || github.event.action == 'labeled' && '12' || '4' }}
-      CAMPAIGN_ITEMS: ${{ github.event_name == 'workflow_dispatch' && inputs.items || github.event.action == 'labeled' && '4096' || '1024' }}
-      CAMPAIGN_WARMUP_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.warmup_seconds || github.event.action == 'labeled' && '60' || '10' }}
-      CAMPAIGN_SETTLE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.settle_seconds || github.event.action == 'labeled' && '10' || '5' }}
-      CAMPAIGN_MEASURE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_seconds || github.event.action == 'labeled' && '10' || '5' }}
+      CAMPAIGN_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario || contains(github.event.label.name, 'visibility-itemdisplay') && 'visibility-itemdisplay-return' || contains(github.event.label.name, 'visibility-textdisplay') && 'visibility-textdisplay-return' || contains(github.event.label.name, 'visibility') && 'visibility-return' || 'static-spawn' }}
+      CAMPAIGN_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || contains(github.event.label.name, '-formal') && '12' || '4' }}
+      CAMPAIGN_ITEMS: ${{ github.event_name == 'workflow_dispatch' && inputs.items || contains(github.event.label.name, '-formal') && '4096' || '1024' }}
+      CAMPAIGN_WARMUP_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.warmup_seconds || contains(github.event.label.name, '-formal') && '60' || '10' }}
+      CAMPAIGN_SETTLE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.settle_seconds || contains(github.event.label.name, '-formal') && '10' || '5' }}
+      CAMPAIGN_MEASURE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_seconds || contains(github.event.label.name, '-formal') && '10' || contains(github.event.label.name, 'visibility') && '10' || '5' }}
       CAMPAIGN_SNAPLEN: ${{ github.event_name == 'workflow_dispatch' && inputs.snaplen || '128' }}
 
     steps:
@@ -100,6 +105,8 @@ jobs:
           bash -n tools/perf/prepare-phase2-protocol-client.sh
           bash -n tools/perf/run-phase2-runtime-once.sh
           node --check tools/perf/phase2-protocol-client.js
+          node --check tools/perf/analyze-phase2-protocol-trace.js
+          node tools/perf/analyze-phase2-protocol-trace.js --self-test
           pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 -SelfTest
           pwsh -NoProfile -File tools/perf/analyze-phase2-pcap.ps1 -SelfTest
 
@@ -124,6 +131,7 @@ jobs:
         run: bash tools/perf/prepare-phase2-protocol-client.sh phase2-dependencies/protocol-client
 
       - name: Run restart-isolated packet ABBA campaign
+        id: packet_campaign
         env:
           SCENARIO: ${{ env.CAMPAIGN_SCENARIO }}
           RUNS: ${{ env.CAMPAIGN_RUNS }}
@@ -134,14 +142,15 @@ jobs:
           SNAPLEN: ${{ env.CAMPAIGN_SNAPLEN }}
         run: |
           set -euo pipefail
-          [[ "$SCENARIO" == static-spawn || "$SCENARIO" == visibility-return ]]
+          [[ "$SCENARIO" == static-spawn || "$SCENARIO" == visibility-return || \
+             "$SCENARIO" == visibility-itemdisplay-return || "$SCENARIO" == visibility-textdisplay-return ]]
           [[ "$RUNS" =~ ^(4|8|12)$ ]]
           [[ "$ITEMS" =~ ^[0-9]+$ ]] && (( ITEMS >= 1 && ITEMS <= 8192 ))
           [[ "$WARMUP_SECONDS" =~ ^[0-9]+$ ]] && (( WARMUP_SECONDS >= 10 ))
           [[ "$SETTLE_SECONDS" =~ ^[0-9]+$ ]] && (( SETTLE_SECONDS >= 5 ))
           [[ "$MEASURE_SECONDS" =~ ^[0-9]+$ ]] && (( MEASURE_SECONDS >= 5 ))
           [[ "$SNAPLEN" == 0 || "$SNAPLEN" == 128 ]]
-          if [[ "$SCENARIO" == visibility-return ]]; then
+          if [[ "$SCENARIO" == visibility-* ]]; then
             (( MEASURE_SECONDS >= 10 ))
           fi
 
@@ -149,14 +158,23 @@ jobs:
           test -n "$PLUGIN_JAR"
           mkdir -p phase2-results/packet
           MANIFEST=phase2-results/packet/abba-manifest.csv
+          PROTOCOL_MANIFEST=phase2-results/packet/protocol-trace-abba-manifest.csv
           printf 'Scenario,Block,Position,Variant,RunId,StackSha256,ArtifactSha256,CaptureMethod,SourcePath\n' > "$MANIFEST"
+          printf 'Scenario,Block,Position,Variant,RunId,StackSha256,ArtifactSha256,CaptureMethod,SourcePath\n' > "$PROTOCOL_MANIFEST"
           ARTIFACT_SHA=$(sha256sum "$PLUGIN_JAR" | awk '{print $1}')
           STACK_SHA=$(
             {
               sha256sum phase2-dependencies/paper.jar
               sha256sum phase2-dependencies/protocol-client/client-build-manifest.json
+              sha256sum tools/perf/phase2-protocol-client.js
+              sha256sum tools/perf/analyze-phase2-protocol-trace.js
+              sha256sum tools/perf/analyze-phase2-pcap.ps1
+              sha256sum tools/perf/analyze-phase2-abba.ps1
+              sha256sum tools/perf/run-phase2-runtime-once.sh
               java -version 2>&1
-              printf '%s\n' 'java=-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch' "scenario=$SCENARIO" "snaplen=$SNAPLEN"
+              printf '%s\n' \
+                'java=-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch -Dinteractionvisualizer.performance.allowBlockScene=true' \
+                "scenario=$SCENARIO" "snaplen=$SNAPLEN" 'protocolTrace=semantic-lifecycle-v1'
             } | sha256sum | awk '{print $1}'
           )
 
@@ -180,11 +198,15 @@ jobs:
             PHASE2_MEASURE_SECONDS="$MEASURE_SECONDS" \
             PHASE2_CAPTURE_ENABLED=1 \
             PHASE2_CAPTURE_SNAPLEN="$SNAPLEN" \
+            PHASE2_PROTOCOL_TRACE_ENABLED=1 \
             bash tools/perf/run-phase2-runtime-once.sh
 
             printf '%s,%d,%d,%s,%s,%s,%s,tcpdump-lo-s%s,%s/%s.pcap-analysis.json\n' \
               "$SCENARIO" "$block" "$position" "$variant" "$run_id" "$STACK_SHA" "$ARTIFACT_SHA" \
               "$SNAPLEN" "$run_id" "$run_id" >> "$MANIFEST"
+            printf '%s,%d,%d,%s,%s,%s,%s,protocol-client-memory,%s/%s.protocol-trace-analysis.json\n' \
+              "$SCENARIO" "$block" "$position" "$variant" "$run_id" "$STACK_SHA" "$ARTIFACT_SHA" \
+              "$run_id" "$run_id" >> "$PROTOCOL_MANIFEST"
           done
 
           minimum_seconds=$(( MEASURE_SECONDS - 1 ))
@@ -201,11 +223,132 @@ jobs:
               -OutputJson "phase2-results/packet/$safe_metric.analysis.json" -Overwrite
           done
 
+          # These semantic lifecycle counts are generated from the same
+          # explicit half-open window as the pcap evidence. They supplement,
+          # and never replace, the transport-level byte and retransmit gates.
+          for metric in traceCoverage.windowEventCount identity.spawn.observations spawnPeaks.epochAligned50ms.spawnedEntityIdCount spawnPeaks.epochAligned1s.spawnedEntityIdCount; do
+            safe_metric=${metric//./_}
+            pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$PROTOCOL_MANIFEST" \
+              -Scenario "$SCENARIO" -Metric "$metric" -Direction LowerIsBetter \
+              "${incomplete[@]}" \
+              -OutputJson "phase2-results/packet/protocol_$safe_metric.analysis.json" -Overwrite
+          done
+
+      - name: Summarize semantic protocol evidence
+        if: always()
+        env:
+          SCENARIO: ${{ env.CAMPAIGN_SCENARIO }}
+          EXPECTED_RUNS: ${{ env.CAMPAIGN_RUNS }}
+          CAMPAIGN_OUTCOME: ${{ steps.packet_campaign.outcome }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          results_root = Path("phase2-results/packet")
+          results_root.mkdir(parents=True, exist_ok=True)
+          suffix = ".protocol-trace-analysis.json"
+          records = []
+          errors = []
+          for analysis_path in sorted(results_root.glob(f"*/*{suffix}")):
+              run_id = analysis_path.name[:-len(suffix)]
+              variant_match = re.search(r"_([AB])_[0-9]+$", run_id)
+              try:
+                  analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+                  status = analysis.get("status", {})
+                  identity = analysis.get("identity", {})
+                  spawn = identity.get("spawn", {})
+                  destroy = identity.get("destroy", {})
+                  peaks = analysis.get("spawnPeaks", {})
+                  records.append({
+                      "runId": run_id,
+                      "variant": variant_match.group(1) if variant_match else None,
+                      "sourcePath": analysis_path.as_posix(),
+                      "formalEvidenceReady": status.get("formalEvidenceReady") is True,
+                      "windowCovered": status.get("windowCovered") is True,
+                      "windowDurationMs": analysis.get("window", {}).get("durationMs"),
+                      "windowEventCount": analysis.get("traceCoverage", {}).get("windowEventCount"),
+                      "spawnObservations": spawn.get("observations"),
+                      "uniqueSpawnIds": spawn.get("uniqueIdCount"),
+                      "destroyObservations": destroy.get("observations"),
+                      "peak50msSpawnIds": peaks.get("epochAligned50ms", {}).get("spawnedEntityIdCount"),
+                      "peak1sSpawnIds": peaks.get("epochAligned1s", {}).get("spawnedEntityIdCount"),
+                      "duplicateLiveSpawnObservations": identity.get("duplicateLiveSpawnObservations"),
+                      "destroyWithoutKnownLiveObservations": identity.get("destroyWithoutKnownLiveObservations"),
+                  })
+              except Exception as error:
+                  errors.append({"sourcePath": analysis_path.as_posix(), "error": str(error)})
+
+          expected_runs = int(os.environ["EXPECTED_RUNS"])
+          run_ids = [record["runId"] for record in records]
+          unique_run_ids = len(run_ids) == len(set(run_ids))
+          complete_run_set = len(records) == expected_runs and unique_run_ids and not errors
+          formal_evidence_ready = complete_run_set and all(
+              record["formalEvidenceReady"] for record in records
+          )
+          summary = {
+              "schemaVersion": 1,
+              "scenario": os.environ["SCENARIO"],
+              "campaignOutcome": os.environ.get("CAMPAIGN_OUTCOME", "unknown"),
+              "requestedRuns": expected_runs,
+              "observedRuns": len(records),
+              "formalEvidenceReady": formal_evidence_ready,
+              "formalCampaignReady": (
+                  formal_evidence_ready
+                  and expected_runs == 12
+                  and os.environ.get("CAMPAIGN_OUTCOME") == "success"
+              ),
+              "errors": errors,
+              "runs": records,
+          }
+          summary_path = results_root / "protocol-trace-summary.json"
+          summary_path.write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if step_summary:
+              lines = [
+                  "### Phase 2 semantic protocol trace",
+                  "",
+                  f"- Scenario: `{summary['scenario']}`",
+                  f"- Explicit-window runs: `{summary['observedRuns']}/{summary['requestedRuns']}`",
+                  f"- Per-run `formalEvidenceReady`: `{'ready' if formal_evidence_ready else 'not-ready'}`",
+                  f"- Formal 12-run ABBA campaign: `{'ready' if summary['formalCampaignReady'] else 'incomplete'}`",
+                  "",
+                  "| Run | Variant | Ready | Window events | Spawn IDs | Unique IDs | Peak 50 ms | Peak 1 s |",
+                  "|---|---:|---:|---:|---:|---:|---:|---:|",
+              ]
+              for record in records:
+                  lines.append(
+                      "| {runId} | {variant} | {ready} | {events} | {spawn} | {unique} | {peak50} | {peak1s} |".format(
+                          runId=record["runId"],
+                          variant=record["variant"] or "?",
+                          ready="yes" if record["formalEvidenceReady"] else "no",
+                          events=record["windowEventCount"],
+                          spawn=record["spawnObservations"],
+                          unique=record["uniqueSpawnIds"],
+                          peak50=record["peak50msSpawnIds"],
+                          peak1s=record["peak1sSpawnIds"],
+                      )
+                  )
+              if errors:
+                  lines.extend(["", f"Trace summary errors: `{len(errors)}`"])
+              with open(step_summary, "a", encoding="utf-8", newline="\n") as stream:
+                  stream.write("\n".join(lines) + "\n")
+
+          if summary["campaignOutcome"] == "success" and not formal_evidence_ready:
+              raise SystemExit("successful campaign is missing complete formal-ready protocol trace evidence")
+          PY
+
       - name: Publish packet evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase2-packet-${{ inputs.scenario }}-${{ github.sha }}-${{ github.run_id }}
+          name: phase2-packet-${{ env.CAMPAIGN_SCENARIO }}-${{ github.sha }}-${{ github.run_id }}
           path: |
             phase2-results/packet
             phase2-dependencies/protocol-client/client-build-manifest.json

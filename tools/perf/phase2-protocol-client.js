@@ -18,6 +18,13 @@ const username = process.env.PHASE2_CLIENT_USERNAME || 'IVBench'
 const version = process.env.PHASE2_CLIENT_VERSION || '26.1.2'
 const readyFile = requiredPath('PHASE2_CLIENT_READY_FILE')
 const stateFile = requiredPath('PHASE2_CLIENT_STATE_FILE')
+// Optional. When present, clientbound entity lifecycle packets are retained in
+// memory and written once, atomically, when the peer exits.
+const protocolTraceFile = optionalPath('PHASE2_PROTOCOL_TRACE_FILE')
+const protocolTraceMaxEvents = parsePositiveInteger(
+  process.env.PHASE2_PROTOCOL_TRACE_MAX_EVENTS,
+  100000
+)
 const readyTimeoutMs = parseInteger(process.env.PHASE2_CLIENT_READY_TIMEOUT_MS, 120000)
 
 let ending = false
@@ -32,11 +39,31 @@ let readyWritten = false
 let chunkLoadCount = 0
 let chunkUnloadCount = 0
 let currentPosition = { x: 0, y: 0, z: 0, yaw: 0, pitch: 0 }
+const protocolTraceStartedEpochMs = Date.now()
+const protocolTraceEvents = []
+const protocolTraceParseErrors = []
+const protocolTraceWriteErrors = []
+let protocolTraceParseErrorCount = 0
+let protocolTraceDroppedEvents = 0
+let protocolTraceObservedEvents = 0
+let protocolTraceWritten = false
+let bundleDelimiterCount = 0
+let bundleOpen = false
+let bundleDrainTimeout = null
+let stopFinalized = false
 
 ensureParent(readyFile)
 ensureParent(stateFile)
 fs.rmSync(readyFile, { force: true })
 fs.rmSync(stateFile, { force: true })
+if (protocolTraceFile) {
+  ensureParent(protocolTraceFile)
+  fs.rmSync(protocolTraceFile, { force: true })
+}
+
+process.on('exit', code => {
+  if (!flushProtocolTrace('process-exit', code)) process.exitCode = 1
+})
 
 const client = minecraftProtocol.createClient({
   host,
@@ -47,6 +74,10 @@ const client = minecraftProtocol.createClient({
   keepAlive: true,
   checkTimeoutInterval: 120000,
   hideErrors: false
+})
+
+client.on('packet', (packet, metadata) => {
+  captureProtocolPacket(packet, metadata)
 })
 
 client.on('state', state => {
@@ -153,7 +184,7 @@ client.on('end', reason => {
     reason: safeJson(reason),
     ...(failureMessage == null ? {} : { message: failureMessage })
   })
-  process.exit(ending ? exitCode : 1)
+  exitAfterTrace(ending ? exitCode : 1, 'client-end')
 })
 
 process.on('SIGINT', stop)
@@ -182,8 +213,25 @@ function stop () {
   if (ending) return
   ending = true
   cleanupTimers()
+  if (protocolTraceFile && bundleOpen) {
+    // A signal can land between a bundle's two delimiter packets. Give the
+    // already-open clientbound bundle a bounded chance to close so trace
+    // completeness is deterministic instead of timing-dependent.
+    bundleDrainTimeout = setTimeout(finishStop, 1000)
+    return
+  }
+  finishStop()
+}
+
+function finishStop () {
+  if (stopFinalized) return
+  stopFinalized = true
+  if (bundleDrainTimeout != null) {
+    clearTimeout(bundleDrainTimeout)
+    bundleDrainTimeout = null
+  }
   client.end('phase2 validation complete')
-  setTimeout(() => process.exit(0), 2000).unref()
+  setTimeout(() => exitAfterTrace(0, 'stop-timeout'), 2000).unref()
 }
 
 function fail (message) {
@@ -200,13 +248,264 @@ function fail (message) {
   } catch (_) {
     // The original failure is the useful evidence.
   }
-  setTimeout(() => process.exit(1), 100).unref()
+  setTimeout(() => exitAfterTrace(1, 'failure-timeout'), 100).unref()
+}
+
+function captureProtocolPacket (packet, metadata) {
+  if (!protocolTraceFile) return
+
+  try {
+    const packetName = packetNameFromMetadata(metadata)
+    const kind = classifyProtocolPacket(packetName)
+    if (kind == null) return
+
+    const entityIds = extractEntityIds(packet)
+    const entityType = kind === 'spawn' ? extractEntityType(packetName, packet) : null
+    const event = {
+      epochMs: Date.now(),
+      packetName,
+      protocolState: metadata && metadata.state != null
+        ? summarizePrimitive(metadata.state)
+        : client.state,
+      kind,
+      entityIds,
+      entityType,
+      bundleDelimiter: null,
+      parseStatus: lifecycleParseStatus(kind, entityIds, entityType),
+      rawSummary: summarizePacket(packet)
+    }
+
+    if (kind === 'bundle-delimiter') {
+      bundleDelimiterCount++
+      event.bundleDelimiter = {
+        ordinal: bundleDelimiterCount,
+        boundary: bundleOpen ? 'end' : 'start'
+      }
+      bundleOpen = !bundleOpen
+      if (ending && exitCode === 0 && !bundleOpen) finishStop()
+    }
+
+    protocolTraceObservedEvents++
+    if (protocolTraceEvents.length >= protocolTraceMaxEvents) {
+      protocolTraceDroppedEvents++
+      return
+    }
+    protocolTraceEvents.push(event)
+  } catch (error) {
+    protocolTraceParseErrorCount++
+    if (protocolTraceParseErrors.length < 32) {
+      protocolTraceParseErrors.push({
+        epochMs: Date.now(),
+        packetName: packetNameFromMetadata(metadata),
+        message: String(error && (error.stack || error.message) || error)
+      })
+    }
+  }
+}
+
+function packetNameFromMetadata (metadata) {
+  return metadata && typeof metadata.name === 'string' && metadata.name.length > 0
+    ? metadata.name
+    : '<unknown>'
+}
+
+function classifyProtocolPacket (packetName) {
+  const normalized = String(packetName).toLowerCase()
+  if (normalized === 'bundle_delimiter' || normalized === 'bundle-delimiter') {
+    return 'bundle-delimiter'
+  }
+  if (/^(?:spawn_(?:entity|entity_living|living_entity|mob|player|painting|weather|global_entity|entity_experience_orb|experience_orb)|named_entity_spawn|add_(?:entity|mob|player))$/.test(normalized)) {
+    return 'spawn'
+  }
+  if (/^(?:entity_destroy|destroy_(?:entity|entities)|remove_(?:entity|entities))$/.test(normalized)) {
+    return 'destroy'
+  }
+  if (/^(?:tile_entity_data|block_entity_data|open_sign_entity)$/.test(normalized)) return null
+  if (/(?:^|_)(?:entity|entities)(?:_|$)/.test(normalized) ||
+      /^(?:set_passengers|attach_entity|collect|rel_entity_move|entity_move_look)$/.test(normalized)) {
+    return 'entity'
+  }
+  return null
+}
+
+function lifecycleParseStatus (kind, entityIds, entityType) {
+  if (kind === 'bundle-delimiter') return 'ok'
+  if (kind === 'spawn') {
+    if (entityIds.length === 0 || entityType == null) return 'partial'
+    return 'ok'
+  }
+  if (kind === 'destroy') return entityIds.length === 0 ? 'partial' : 'ok'
+  return entityIds.length === 0 ? 'raw-fallback' : 'ok'
+}
+
+function extractEntityIds (packet) {
+  if (packet == null || typeof packet !== 'object') return []
+  const values = []
+  const singularNames = new Set([
+    'id',
+    'entityid',
+    'vehicleid',
+    'passengerid',
+    'collectedentityid',
+    'collectorentityid',
+    'targetentityid',
+    'sourceentityid',
+    'playerid'
+  ])
+  const pluralNames = new Set([
+    'ids',
+    'entityids',
+    'entities',
+    'passengers'
+  ])
+
+  for (const [key, value] of Object.entries(packet)) {
+    const normalizedKey = key.replace(/[^a-z0-9]/gi, '').toLowerCase()
+    if (singularNames.has(normalizedKey) || normalizedKey.endsWith('entityid')) {
+      appendEntityId(values, value)
+    } else if (pluralNames.has(normalizedKey)) {
+      if (Array.isArray(value) || (ArrayBuffer.isView(value) && !Buffer.isBuffer(value))) {
+        for (const nested of value) appendEntityId(values, nested)
+      } else {
+        appendEntityId(values, value)
+      }
+    }
+  }
+
+  return [...new Map(values.map(value => [String(value), value])).values()]
+}
+
+function appendEntityId (target, value) {
+  if (typeof value === 'number' && Number.isSafeInteger(value)) {
+    target.push(value)
+    return
+  }
+  if (typeof value === 'bigint') {
+    const numeric = Number(value)
+    target.push(Number.isSafeInteger(numeric) ? numeric : value.toString())
+    return
+  }
+  if (typeof value === 'string' && /^-?\d+$/.test(value)) {
+    const numeric = Number(value)
+    target.push(Number.isSafeInteger(numeric) ? numeric : value)
+  }
+}
+
+function extractEntityType (packetName, packet) {
+  if (packet && typeof packet === 'object') {
+    const typeFieldNames = new Set(['entitytype', 'type', 'mobtype', 'objecttype', 'entitytypeid', 'typeid'])
+    for (const [key, value] of Object.entries(packet)) {
+      const normalizedKey = key.replace(/[^a-z0-9]/gi, '').toLowerCase()
+      if (typeFieldNames.has(normalizedKey) && value != null) return summarizeValue(value, 0)
+    }
+  }
+
+  const normalized = String(packetName).toLowerCase()
+  if (normalized.includes('player') || normalized === 'named_entity_spawn') return 'player'
+  if (normalized.includes('experience_orb')) return 'experience_orb'
+  if (normalized.includes('painting')) return 'painting'
+  if (normalized.includes('weather')) return 'weather'
+  return null
+}
+
+function summarizePacket (packet) {
+  if (packet == null || typeof packet !== 'object') return summarizeValue(packet, 0)
+  const result = {}
+  const entries = Object.entries(packet)
+  for (const [key, value] of entries.slice(0, 32)) result[key] = summarizeValue(value, 0)
+  if (entries.length > 32) result['<truncatedKeys>'] = entries.length - 32
+  return result
+}
+
+function summarizeValue (value, depth) {
+  if (value == null || typeof value === 'boolean' || typeof value === 'number') return value
+  if (typeof value === 'bigint') return value.toString()
+  if (typeof value === 'string') return value.length <= 256 ? value : `${value.slice(0, 256)}<truncated>`
+  if (Buffer.isBuffer(value)) {
+    return { kind: 'buffer', length: value.length, hexPrefix: value.subarray(0, 16).toString('hex') }
+  }
+  if (Array.isArray(value)) {
+    return {
+      kind: 'array',
+      length: value.length,
+      sample: value.slice(0, 8).map(nested => summarizeValue(nested, depth + 1))
+    }
+  }
+  if (typeof value === 'object') {
+    const keys = Object.keys(value)
+    if (depth >= 2) return { kind: 'object', keys: keys.slice(0, 16), truncatedKeys: Math.max(0, keys.length - 16) }
+    const preview = {}
+    for (const key of keys.slice(0, 16)) preview[key] = summarizeValue(value[key], depth + 1)
+    if (keys.length > 16) preview['<truncatedKeys>'] = keys.length - 16
+    return preview
+  }
+  return String(value)
+}
+
+function summarizePrimitive (value) {
+  const summarized = summarizeValue(value, 0)
+  return summarized != null && typeof summarized === 'object' ? safeJson(summarized) : summarized
+}
+
+function flushProtocolTrace (reason, requestedExitCode) {
+  if (!protocolTraceFile || protocolTraceWritten) return true
+
+  const trace = {
+    schemaVersion: 1,
+    producer: 'phase2-protocol-client',
+    direction: 'clientbound',
+    clientVersion: version,
+    server: { host, port },
+    startedEpochMs: protocolTraceStartedEpochMs,
+    endedEpochMs: Date.now(),
+    status: {
+      complete: true,
+      finalizationReason: reason,
+      requestedExitCode,
+      observedEvents: protocolTraceObservedEvents,
+      capturedEvents: protocolTraceEvents.length,
+      maxBufferedEvents: protocolTraceMaxEvents,
+      memoryBuffered: true,
+      droppedEvents: protocolTraceDroppedEvents,
+      parseErrorCount: protocolTraceParseErrorCount,
+      parseErrors: protocolTraceParseErrors,
+      writeErrorsBeforeSuccess: protocolTraceWriteErrors,
+      bundleDelimiterCount,
+      openBundleAtEnd: bundleOpen
+    },
+    events: protocolTraceEvents
+  }
+  const temporaryPath = `${protocolTraceFile}.tmp-${process.pid}-${Date.now()}`
+
+  try {
+    fs.writeFileSync(temporaryPath, `${JSON.stringify(trace)}\n`, 'utf8')
+    fs.renameSync(temporaryPath, protocolTraceFile)
+    protocolTraceWritten = true
+    return true
+  } catch (error) {
+    protocolTraceWriteErrors.push(String(error && (error.stack || error.message) || error))
+    try {
+      fs.rmSync(temporaryPath, { force: true })
+    } catch (_) {
+      // The original trace write failure is the useful diagnostic.
+    }
+    console.error(`protocol trace write failed: ${protocolTraceWriteErrors[protocolTraceWriteErrors.length - 1]}`)
+    return false
+  }
+}
+
+function exitAfterTrace (code, reason) {
+  process.exit(flushProtocolTrace(reason, code) ? code : 1)
 }
 
 function cleanupTimers () {
   clearTimeout(readyTimeout)
   clearInterval(tickEndInterval)
   clearInterval(movementInterval)
+  if (stopFinalized && bundleDrainTimeout != null) {
+    clearTimeout(bundleDrainTimeout)
+    bundleDrainTimeout = null
+  }
 }
 
 function writeState (phase, extra = {}) {
@@ -252,6 +551,11 @@ function requiredPath (name) {
   return path.resolve(value)
 }
 
+function optionalPath (name) {
+  const value = process.env[name]
+  return value ? path.resolve(value) : null
+}
+
 function ensureParent (file) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
 }
@@ -259,6 +563,14 @@ function ensureParent (file) {
 function parseInteger (value, fallback) {
   const parsed = Number.parseInt(value, 10)
   return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function parsePositiveInteger (value, fallback) {
+  const parsed = parseInteger(value, fallback)
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`expected a positive integer but received: ${value}`)
+  }
+  return parsed
 }
 
 function safeJson (value) {

@@ -23,6 +23,8 @@ package com.loohp.interactionvisualizer;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.config.Config;
 import com.loohp.interactionvisualizer.database.Database;
+import com.loohp.interactionvisualizer.debug.PerformanceBlockScene;
+import com.loohp.interactionvisualizer.debug.PerformanceScene;
 import com.loohp.interactionvisualizer.integration.CustomContentManager;
 import com.loohp.interactionvisualizer.managers.AsyncExecutorManager;
 import com.loohp.interactionvisualizer.managers.LangManager;
@@ -63,6 +65,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public class InteractionVisualizer extends JavaPlugin {
@@ -247,6 +250,7 @@ public class InteractionVisualizer extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        shutdownPerformanceScenes();
         CustomContentManager.shutdown();
         if (preferenceManager != null) {
             preferenceManager.close();
@@ -257,6 +261,33 @@ public class InteractionVisualizer extends JavaPlugin {
         }
         getServer().getConsoleSender().sendMessage(Component.text(
                 "[InteractionVisualizer] Disabled; all display entities removed.", NamedTextColor.RED));
+    }
+
+    private void shutdownPerformanceScenes() {
+        try {
+            PerformanceBlockScene.ShutdownReport report = PerformanceBlockScene.shutdown();
+            if (report.unresolvedCount() != 0) {
+                getLogger().severe("Performance block-scene cleanup left blocks unresolved during disable: "
+                        + report.summary() + "; unloaded or externally modified blocks were left untouched");
+            }
+        } catch (Throwable throwable) {
+            logPerformanceCleanupFailure("Performance block-scene cleanup failed; core disable will continue",
+                    throwable);
+        }
+        try {
+            PerformanceScene.shutdown();
+        } catch (Throwable throwable) {
+            logPerformanceCleanupFailure("Performance display-scene cleanup failed; core disable will continue",
+                    throwable);
+        }
+    }
+
+    private void logPerformanceCleanupFailure(String message, Throwable throwable) {
+        try {
+            getLogger().log(Level.SEVERE, message, throwable);
+        } catch (Throwable ignored) {
+            // Diagnostic logging must never prevent the plugin's core shutdown.
+        }
     }
 
     public SparrowConfiguration getConfiguration() {

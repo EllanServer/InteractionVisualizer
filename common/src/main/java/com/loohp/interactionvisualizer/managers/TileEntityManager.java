@@ -119,6 +119,28 @@ public class TileEntityManager implements Listener {
         return set != null ? set : new LinkedHashSet<>();
     }
 
+    /**
+     * Reconciles loaded chunks after an explicit bulk block mutation performed
+     * through the Bukkit block API. Those writes do not emit BlockPlaceEvent or
+     * BlockBreakEvent, so waiting for the normal event surface would leave both
+     * the legacy and event-driven registries stale.
+     *
+     * <p>This is an internal main-thread hook for controlled plugin-owned
+     * mutations. It never loads a chunk.</p>
+     */
+    public static void refreshExplicitBlockChanges(Collection<Block> blocks) {
+        if (!Bukkit.isPrimaryThread()) {
+            throw new IllegalStateException("Tile-entity reconciliation must run on the Bukkit primary thread");
+        }
+        Set<ChunkPosition> chunks = new LinkedHashSet<>();
+        for (Block block : blocks) {
+            if (block != null) {
+                chunks.add(getChunk(block.getLocation()));
+            }
+        }
+        addTileEntities(chunks);
+    }
+
     private static Set<ChunkPosition> getAllChunks(Location location) {
         Set<ChunkPosition> chunks = new LinkedHashSet<>();
         World world = location.getWorld();

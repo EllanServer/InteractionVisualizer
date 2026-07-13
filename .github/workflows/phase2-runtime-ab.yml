@@ -5,6 +5,12 @@ on:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
+      scenario:
+        description: "Clean runtime workload"
+        required: true
+        default: "static-steady"
+        type: choice
+        options: ["static-steady", "block-idle", "block-active", "block-direct-write"]
       runs:
         description: "Restart-isolated runs (4, 8, or formal 12)"
         required: true
@@ -12,9 +18,9 @@ on:
         type: choice
         options: ["4", "8", "12"]
       items:
-        description: "Static logical items"
+        description: "Logical items (max 8192) or fully tracked workload blocks (max 1024)"
         required: true
-        default: "4096"
+        default: "1024"
         type: string
       warmup_seconds:
         description: "Warmup after the real TCP client is ready"
@@ -45,6 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 130
     env:
+      CAMPAIGN_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario || 'static-steady' }}
       CAMPAIGN_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || github.event.action == 'labeled' && '12' || '4' }}
       CAMPAIGN_ITEMS: ${{ github.event_name == 'workflow_dispatch' && inputs.items || github.event.action == 'labeled' && '4096' || '1024' }}
       CAMPAIGN_WARMUP_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.warmup_seconds || github.event.action == 'labeled' && '120' || '10' }}
@@ -101,6 +108,7 @@ jobs:
 
       - name: Run restart-isolated clean ABBA campaign
         env:
+          SCENARIO: ${{ env.CAMPAIGN_SCENARIO }}
           RUNS: ${{ env.CAMPAIGN_RUNS }}
           ITEMS: ${{ env.CAMPAIGN_ITEMS }}
           WARMUP_SECONDS: ${{ env.CAMPAIGN_WARMUP_SECONDS }}
@@ -108,11 +116,27 @@ jobs:
           MEASURE_SECONDS: ${{ env.CAMPAIGN_MEASURE_SECONDS }}
         run: |
           set -euo pipefail
+          [[ "$SCENARIO" == static-steady || "$SCENARIO" == block-idle || \
+             "$SCENARIO" == block-active || "$SCENARIO" == block-direct-write ]]
           [[ "$RUNS" =~ ^(4|8|12)$ ]]
-          [[ "$ITEMS" =~ ^[0-9]+$ ]] && (( ITEMS >= 1 && ITEMS <= 8192 ))
+          [[ "$ITEMS" =~ ^[0-9]+$ ]]
+          if [[ "$SCENARIO" == block-* ]]; then
+            # TileEntityUpdate.CheckingRange=1 covers the centered 32x32
+            # block footprint completely; larger command scenes are valid but
+            # are not full-workload clean ABBA evidence.
+            (( ITEMS >= 1 && ITEMS <= 1024 ))
+          else
+            (( ITEMS >= 1 && ITEMS <= 8192 ))
+          fi
           [[ "$WARMUP_SECONDS" =~ ^[0-9]+$ ]] && (( WARMUP_SECONDS >= 10 ))
           [[ "$SETTLE_SECONDS" =~ ^[0-9]+$ ]] && (( SETTLE_SECONDS >= 5 ))
           [[ "$MEASURE_SECONDS" =~ ^[0-9]+$ ]] && (( MEASURE_SECONDS >= 10 ))
+          if [[ "$SCENARIO" == block-direct-write ]]; then
+            # Direct BlockState writes intentionally emit no Bukkit event.
+            # Allow the 600-tick audit to begin plus enough ticks for every
+            # per-display iterator to cover the <=1024-block scene.
+            (( MEASURE_SECONDS >= 45 ))
+          fi
 
           PLUGIN_JAR=$(find build/libs -maxdepth 1 -type f -name 'InteractionVisualizer-*.jar' ! -name '*-sources.jar' ! -name '*-benchmark.jar' -print -quit)
           test -n "$PLUGIN_JAR"
@@ -124,8 +148,11 @@ jobs:
             {
               sha256sum phase2-dependencies/paper.jar
               sha256sum phase2-dependencies/protocol-client/client-build-manifest.json
+              sha256sum tools/perf/run-phase2-runtime-once.sh
               java -version 2>&1
-              printf '%s\n' 'java=-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch' 'scenario=static-steady'
+              printf '%s\n' \
+                'java=-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch -Dinteractionvisualizer.performance.allowBlockScene=true' \
+                "scenario=$SCENARIO"
             } | sha256sum | awk '{print $1}'
           )
 
@@ -134,24 +161,25 @@ jobs:
             position=$(( (run_number - 1) % 4 + 1 ))
             if (( block % 2 == 1 )); then pattern=ABBA; else pattern=BAAB; fi
             variant=${pattern:$((position - 1)):1}
-            run_id=$(printf 'static_steady_%s_%02d' "$variant" "$run_number")
+            run_id=$(printf '%s_%s_%02d' "${SCENARIO//-/_}" "$variant" "$run_number")
 
             PHASE2_PLUGIN_JAR="$PLUGIN_JAR" \
             PHASE2_PAPER_JAR=phase2-dependencies/paper.jar \
             PHASE2_CLIENT_ROOT=phase2-dependencies/protocol-client \
             PHASE2_OUTPUT_ROOT=phase2-results/clean \
             PHASE2_RUN_ID="$run_id" \
-            PHASE2_SCENARIO=static-steady \
+            PHASE2_SCENARIO="$SCENARIO" \
             PHASE2_VARIANT="$variant" \
             PHASE2_ITEM_COUNT="$ITEMS" \
             PHASE2_WARMUP_SECONDS="$WARMUP_SECONDS" \
             PHASE2_SETTLE_SECONDS="$SETTLE_SECONDS" \
             PHASE2_MEASURE_SECONDS="$MEASURE_SECONDS" \
             PHASE2_CAPTURE_ENABLED=0 \
+            PHASE2_PROTOCOL_TRACE_ENABLED=0 \
             bash tools/perf/run-phase2-runtime-once.sh
 
-            printf 'static-steady,%d,%d,%s,%s,%s,%s,none,%s/iv-perf.json\n' \
-              "$block" "$position" "$variant" "$run_id" "$STACK_SHA" "$ARTIFACT_SHA" "$run_id" \
+            printf '%s,%d,%d,%s,%s,%s,%s,none,%s/iv-perf.json\n' \
+              "$SCENARIO" "$block" "$position" "$variant" "$run_id" "$STACK_SHA" "$ARTIFACT_SHA" "$run_id" \
               >> "$MANIFEST"
           done
 
@@ -160,22 +188,145 @@ jobs:
           if [[ "$RUNS" != 12 ]]; then incomplete=(-AllowIncomplete); fi
           for metric in msptP95 msptP99 msptMean; do
             pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$MANIFEST" \
-              -Scenario static-steady -Metric "$metric" -Direction LowerIsBetter \
+              -Scenario "$SCENARIO" -Metric "$metric" -Direction LowerIsBetter \
               -MinimumSeconds "$minimum_seconds" "${incomplete[@]}" \
               -OutputJson "phase2-results/clean/$metric.analysis.json" -Overwrite
           done
           # At a healthy 20 TPS cap this is only an overload/non-regression
           # diagnostic. MSPT remains the optimization effect-size metric.
           pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$MANIFEST" \
-            -Scenario static-steady -Metric observedTps -Direction HigherIsBetter \
+            -Scenario "$SCENARIO" -Metric observedTps -Direction HigherIsBetter \
             -MinimumSeconds "$minimum_seconds" "${incomplete[@]}" \
             -OutputJson phase2-results/clean/observedTps.analysis.json -Overwrite
+
+          if [[ "$SCENARIO" == block-* ]]; then
+            # Active/direct-write CPU time has a meaningful LowerIsBetter
+            # direction after lifecycle/config assertions pass. An idle
+            # candidate can legitimately perform zero checks in a short
+            # window, so it stays diagnostic instead of entering log ratios.
+            # Raw check counts never carry a universal performance direction.
+            if [[ "$SCENARIO" != block-idle ]]; then
+              pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$MANIFEST" \
+                -Scenario "$SCENARIO" -Metric blockUpdateMs -Direction LowerIsBetter \
+                -MinimumSeconds "$minimum_seconds" "${incomplete[@]}" \
+                -OutputJson phase2-results/clean/blockUpdateMs.analysis.json -Overwrite
+            fi
+
+            python3 - "$MANIFEST" "$SCENARIO" "$RUNS" \
+              phase2-results/clean/blockUpdateChecks.evidence.json <<'PY'
+          from pathlib import Path
+          import csv
+          import json
+          import math
+          import os
+          import statistics
+          import sys
+
+          manifest_path = Path(sys.argv[1])
+          scenario = sys.argv[2]
+          expected_runs = int(sys.argv[3])
+          output_path = Path(sys.argv[4])
+          records = []
+          with manifest_path.open(encoding="utf-8", newline="") as stream:
+              rows = list(csv.DictReader(stream))
+          if len(rows) != expected_runs:
+              raise SystemExit(f"block evidence expected {expected_runs} runs, found {len(rows)}")
+
+          for row in rows:
+              if row["Scenario"] != scenario:
+                  raise SystemExit(f"manifest scenario drift: {row['Scenario']} != {scenario}")
+              source_path = manifest_path.parent / row["SourcePath"]
+              metrics = json.loads(source_path.read_text(encoding="utf-8"))
+              run_id = row["RunId"]
+              if metrics.get("label") != run_id:
+                  raise SystemExit(f"metrics label mismatch for {run_id}")
+              checks = metrics.get("blockUpdateChecks")
+              elapsed_ms = metrics.get("blockUpdateMs")
+              if isinstance(checks, bool) or not isinstance(checks, int) or checks < 0:
+                  raise SystemExit(f"invalid blockUpdateChecks for {run_id}: {checks!r}")
+              if (isinstance(elapsed_ms, bool) or not isinstance(elapsed_ms, (int, float))
+                      or not math.isfinite(elapsed_ms) or elapsed_ms < 0):
+                  raise SystemExit(f"invalid blockUpdateMs for {run_id}: {elapsed_ms!r}")
+              if checks > 0 and elapsed_ms <= 0:
+                  raise SystemExit(f"{run_id} recorded {checks} checks but no elapsed time")
+              expected_event_driven = row["Variant"] == "B"
+              if metrics.get("eventDrivenBlockUpdates") is not expected_event_driven:
+                  raise SystemExit(f"event-driven config mismatch for {run_id}")
+              records.append({
+                  "block": int(row["Block"]),
+                  "position": int(row["Position"]),
+                  "variant": row["Variant"],
+                  "runId": run_id,
+                  "blockUpdateChecks": checks,
+                  "blockUpdateMs": elapsed_ms,
+                  "msPerCheck": elapsed_ms / checks if checks else None,
+                  "sourcePath": source_path.as_posix(),
+              })
+
+          def summarize(variant):
+              selected = [record for record in records if record["variant"] == variant]
+              checks = [record["blockUpdateChecks"] for record in selected]
+              times = [record["blockUpdateMs"] for record in selected]
+              return {
+                  "runCount": len(selected),
+                  "blockUpdateChecks": {
+                      "values": checks,
+                      "median": statistics.median(checks),
+                      "mean": statistics.fmean(checks),
+                  },
+                  "blockUpdateMs": {
+                      "values": times,
+                      "median": statistics.median(times),
+                      "mean": statistics.fmean(times),
+                  },
+              }
+
+          evidence = {
+              "schemaVersion": 1,
+              "analysisType": "diagnostic-work-evidence",
+              "scenario": scenario,
+              "requestedRuns": expected_runs,
+              "formalComplete": expected_runs == 12,
+              "blockUpdateChecksDirection": None,
+              "blockUpdateMsDirection": None if scenario == "block-idle" else "LowerIsBetter",
+              "interpretation": (
+                  "blockUpdateChecks is workload evidence, not a standalone optimization objective; "
+                  "fewer checks can mean either effective event-driven scheduling or missing work. "
+                  "For block-idle, zero candidate checks/time in a short window is valid and blockUpdateMs "
+                  "has no ratio analysis. Interpret all scenarios with machine-validated scene actions, "
+                  "blockUpdateMs, MSPT and TPS."
+              ),
+              "byVariant": {"A": summarize("A"), "B": summarize("B")},
+              "runs": records,
+          }
+          output_path.write_text(
+              json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if step_summary:
+              with open(step_summary, "a", encoding="utf-8", newline="\n") as stream:
+                  stream.write(f"### {scenario} block update evidence\n\n")
+                  stream.write("`blockUpdateChecks` is diagnostic work evidence (no universal direction).\n\n")
+                  stream.write("| Run | Variant | Checks | Update ms | ms/check |\n")
+                  stream.write("|---|---:|---:|---:|---:|\n")
+                  for record in records:
+                      per_check = record["msPerCheck"]
+                      per_check_text = "n/a" if per_check is None else f"{per_check:.9f}"
+                      stream.write(
+                          f"| {record['runId']} | {record['variant']} | "
+                          f"{record['blockUpdateChecks']} | {record['blockUpdateMs']:.6f} | "
+                          f"{per_check_text} |\n"
+                      )
+          PY
+          fi
 
       - name: Publish clean runtime evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase2-clean-runtime-${{ github.sha }}-${{ github.run_id }}
+          name: phase2-clean-runtime-${{ env.CAMPAIGN_SCENARIO }}-${{ github.sha }}-${{ github.run_id }}
           path: |
             phase2-results/clean
             phase2-dependencies/protocol-client/client-build-manifest.json
