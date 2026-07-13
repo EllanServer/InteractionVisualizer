@@ -13,15 +13,10 @@ package com.loohp.interactionvisualizer.entityholders;
 
 import com.loohp.interactionvisualizer.utils.LegacyTextComponentCache;
 import net.kyori.adventure.text.Component;
-import org.bukkit.Location;
-import org.bukkit.World;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.ResourceLock;
-
-import java.lang.reflect.Proxy;
-import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -44,8 +39,9 @@ class EntityCustomNameRawStateTest {
     }
 
     @Test
-    void itemSkipsEqualRawTextAndInvalidatesTheSentinelForComponentAndNullSetters() {
-        Item item = new Item(location());
+    void itemSkipsEqualRawTextAndInvalidatesTheSentinelForComponentAndNullSetters()
+            throws ReflectiveOperationException {
+        Item item = EntityHolderTestFactory.allocate(Item.class);
         String raw = "§aReady";
 
         assertTrue(item.updateCustomName(raw));
@@ -67,8 +63,9 @@ class EntityCustomNameRawStateTest {
     }
 
     @Test
-    void displaySkipsEqualRawTextAndInvalidatesTheSentinelForComponentAndNullSetters() {
-        DisplayEntity display = new DisplayEntity(location());
+    void displaySkipsEqualRawTextAndInvalidatesTheSentinelForComponentAndNullSetters()
+            throws ReflectiveOperationException {
+        DisplayEntity display = EntityHolderTestFactory.allocate(DisplayEntity.class);
         String raw = "§bWorking";
 
         assertTrue(display.updateCustomName(raw, true));
@@ -91,8 +88,9 @@ class EntityCustomNameRawStateTest {
     }
 
     @Test
-    void displayTreatsEqualPlainTextWithDifferentLegacyColorsAsARealChange() {
-        DisplayEntity display = new DisplayEntity(location());
+    void displayTreatsEqualPlainTextWithDifferentLegacyColorsAsARealChange()
+            throws ReflectiveOperationException {
+        DisplayEntity display = EntityHolderTestFactory.allocate(DisplayEntity.class);
         assertTrue(display.updateCustomName("§a||||", true));
         int greenRevision = display.cacheCode();
 
@@ -101,8 +99,9 @@ class EntityCustomNameRawStateTest {
     }
 
     @Test
-    void displayTreatsEqualPlainTextWithDifferentFontsAsARealChange() {
-        DisplayEntity display = new DisplayEntity(location());
+    void displayTreatsEqualPlainTextWithDifferentFontsAsARealChange()
+            throws ReflectiveOperationException {
+        DisplayEntity display = EntityHolderTestFactory.allocate(DisplayEntity.class);
         assertTrue(display.updateCustomName("[font=minecraft:default]same", true));
         int defaultFontRevision = display.cacheCode();
 
@@ -110,18 +109,4 @@ class EntityCustomNameRawStateTest {
         assertEquals(defaultFontRevision + 1, display.cacheCode());
     }
 
-    private static Location location() {
-        UUID id = UUID.randomUUID();
-        World world = (World) Proxy.newProxyInstance(
-                World.class.getClassLoader(), new Class<?>[]{World.class}, (proxy, method, arguments) -> {
-                    return switch (method.getName()) {
-                        case "getUID" -> id;
-                        case "toString" -> "World[" + id + "]";
-                        case "hashCode" -> System.identityHashCode(proxy);
-                        case "equals" -> proxy == arguments[0];
-                        default -> throw new UnsupportedOperationException(method.getName());
-                    };
-                });
-        return new Location(world, 0.0D, 64.0D, 0.0D);
-    }
 }

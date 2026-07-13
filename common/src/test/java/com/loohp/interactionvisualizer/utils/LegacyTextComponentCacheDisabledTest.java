@@ -12,14 +12,10 @@
 package com.loohp.interactionvisualizer.utils;
 
 import com.loohp.interactionvisualizer.entityholders.Item;
-import org.bukkit.Location;
-import org.bukkit.World;
+import com.loohp.interactionvisualizer.entityholders.EntityHolderTestFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
-import java.lang.reflect.Proxy;
-import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -56,8 +52,9 @@ class LegacyTextComponentCacheDisabledTest {
     }
 
     @Test
-    void disablePropertyAlsoBypassesThePerEntityRawFastPath() {
-        Item item = new Item(location());
+    void disablePropertyAlsoBypassesThePerEntityRawFastPath()
+            throws ReflectiveOperationException {
+        Item item = EntityHolderTestFactory.allocate(Item.class);
         LegacyTextComponentCache.startMeasurement();
 
         assertTrue(item.updateCustomName("§buncached"));
@@ -71,18 +68,4 @@ class LegacyTextComponentCacheDisabledTest {
         assertEquals(0L, metrics.sameRawFastPaths());
     }
 
-    private static Location location() {
-        UUID id = UUID.randomUUID();
-        World world = (World) Proxy.newProxyInstance(
-                World.class.getClassLoader(), new Class<?>[]{World.class}, (proxy, method, arguments) -> {
-                    return switch (method.getName()) {
-                        case "getUID" -> id;
-                        case "toString" -> "World[" + id + "]";
-                        case "hashCode" -> System.identityHashCode(proxy);
-                        case "equals" -> proxy == arguments[0];
-                        default -> throw new UnsupportedOperationException(method.getName());
-                    };
-                });
-        return new Location(world, 0.0D, 64.0D, 0.0D);
-    }
 }
