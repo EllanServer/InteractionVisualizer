@@ -174,7 +174,8 @@ jobs:
               java -version 2>&1
               printf '%s\n' \
                 'java=-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch -Dinteractionvisualizer.performance.allowBlockScene=true -Xlog:gc*=info,safepoint=info:file=jvm-gc-safepoint.log:time,uptime,level,tags:filecount=0 -Dfile.encoding=UTF-8' \
-                "scenario=$SCENARIO" "snaplen=$SNAPLEN" 'protocolTrace=semantic-lifecycle-v1'
+                "scenario=$SCENARIO" "snaplen=$SNAPLEN" 'protocolTrace=semantic-lifecycle-v1' \
+                'sparkProfile=none'
             } | sha256sum | awk '{print $1}'
           )
 
@@ -199,6 +200,7 @@ jobs:
             PHASE2_CAPTURE_ENABLED=1 \
             PHASE2_CAPTURE_SNAPLEN="$SNAPLEN" \
             PHASE2_PROTOCOL_TRACE_ENABLED=1 \
+            PHASE2_SPARK_PROFILE_MODE=none \
             bash tools/perf/run-phase2-runtime-once.sh
 
             printf '%s,%d,%d,%s,%s,%s,%s,tcpdump-lo-s%s,%s/%s.pcap-analysis.json\n' \

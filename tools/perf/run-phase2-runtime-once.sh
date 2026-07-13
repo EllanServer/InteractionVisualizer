@@ -38,6 +38,7 @@ measure_seconds="${PHASE2_MEASURE_SECONDS:-180}"
 capture_enabled="${PHASE2_CAPTURE_ENABLED:-0}"
 capture_snaplen="${PHASE2_CAPTURE_SNAPLEN:-128}"
 protocol_trace_enabled="${PHASE2_PROTOCOL_TRACE_ENABLED:-$capture_enabled}"
+spark_profile_mode="${PHASE2_SPARK_PROFILE_MODE:-none}"
 
 [[ "$run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
   || { echo "PHASE2_RUN_ID contains unsafe characters" >&2; exit 64; }
@@ -84,6 +85,14 @@ fi
   || { echo "PHASE2_CAPTURE_ENABLED must be 0 or 1" >&2; exit 64; }
 [[ "$protocol_trace_enabled" == 0 || "$protocol_trace_enabled" == 1 ]] \
   || { echo "PHASE2_PROTOCOL_TRACE_ENABLED must be 0 or 1" >&2; exit 64; }
+case "$spark_profile_mode" in
+  none|cpu|alloc) ;;
+  *) echo "PHASE2_SPARK_PROFILE_MODE must be none, cpu, or alloc" >&2; exit 64 ;;
+esac
+if [[ "$spark_profile_mode" != none && "$scenario" != block-direct-write ]]; then
+  echo "Spark profiling is currently isolated to block-direct-write" >&2
+  exit 64
+fi
 [[ -f "$plugin_jar" && -f "$paper_jar" ]] \
   || { echo "Plugin or Paper JAR is missing" >&2; exit 66; }
 [[ -f "$client_root/client-build-manifest.json" ]] \
@@ -115,6 +124,8 @@ protocol_trace_analysis_path="$run_directory/$run_id.protocol-trace-analysis.jso
 jvm_gc_safepoint_log_name="jvm-gc-safepoint.log"
 jvm_gc_safepoint_log="$run_directory/$jvm_gc_safepoint_log_name"
 jvm_diagnostics_metadata="$run_directory/jvm-diagnostics.json"
+spark_profile_output="$run_directory/$run_id.spark-$spark_profile_mode.sparkprofile"
+spark_profile_metadata="$run_directory/spark-profile.json"
 jvm_gc_safepoint_xlog="-Xlog:gc*=info,safepoint=info:file=$jvm_gc_safepoint_log_name:time,uptime,level,tags:filecount=0"
 jvm_arguments_fingerprint="-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch -Dinteractionvisualizer.performance.allowBlockScene=true $jvm_gc_safepoint_xlog -Dfile.encoding=UTF-8"
 
@@ -614,6 +625,37 @@ if [[ "$capture_enabled" == 1 ]]; then
   kill -0 "$capture_pid"
 fi
 
+spark_profile_start_command=""
+spark_profile_interval=""
+spark_profile_interval_unit=""
+spark_profile_only_ticks_over_ms=""
+if [[ "$spark_profile_mode" != none ]]; then
+  spark_start_pattern="Profiler is now running!"
+  case "$spark_profile_mode" in
+    cpu)
+      spark_profile_start_command="spark profiler start --interval 1 --only-ticks-over 40"
+      spark_profile_interval="1"
+      spark_profile_interval_unit="milliseconds"
+      spark_profile_only_ticks_over_ms="40"
+      ;;
+    alloc)
+      spark_profile_start_command="spark profiler start --alloc --interval 32768"
+      spark_profile_interval="32768"
+      spark_profile_interval_unit="bytes"
+      spark_profile_only_ticks_over_ms=""
+      spark_start_pattern="Allocation Profiler is now running!"
+      ;;
+  esac
+  spark_start_count="$(grep -Fc -- "$spark_start_pattern" "$server_log" 2>/dev/null || true)"
+  send_console "$spark_profile_start_command"
+  wait_for_log_count "$spark_start_pattern" "$((spark_start_count + 1))" 60
+  spark_start_record="$(grep -F -- "$spark_start_pattern" "$server_log" | tail -n 1)"
+  if [[ "$spark_start_record" != *"(async)"* ]]; then
+    echo "Spark did not start the async-profiler engine: $spark_start_record" >&2
+    exit 1
+  fi
+fi
+
 send_console "iv perf start $run_id"
 wait_for_log "Performance sampling started: $run_id" 30
 window_start="$(python3 -c 'import time; print(f"{time.time():.6f}")')"
@@ -648,6 +690,78 @@ PY
 window_end="$(python3 -c 'import time; print(f"{time.time():.6f}")')"
 send_console "iv perf stop"
 wait_for_log "IV_PERF {\"label\":\"$run_id\"" 60
+
+if [[ "$spark_profile_mode" != none ]]; then
+  spark_stop_pattern="Profiler stopped & save complete!"
+  spark_stop_count="$(grep -Fc -- "$spark_stop_pattern" "$server_log" 2>/dev/null || true)"
+  spark_profile_stop_command="spark profiler stop --save-to-file --comment phase2-$run_id-$spark_profile_mode"
+  send_console "$spark_profile_stop_command"
+  wait_for_log_count "$spark_stop_pattern" "$((spark_stop_count + 1))" 120
+  mapfile -t spark_profile_candidates < <(
+    find "$run_directory/plugins" -type f -name '*.sparkprofile' -print
+  )
+  if [[ "${#spark_profile_candidates[@]}" != 1 ]]; then
+    echo "Expected exactly one saved Spark profile, found ${#spark_profile_candidates[@]}" >&2
+    printf '%s\n' "${spark_profile_candidates[@]}" >&2
+    exit 1
+  fi
+  mv -- "${spark_profile_candidates[0]}" "$spark_profile_output"
+  test -s "$spark_profile_output"
+  spark_profile_sha="$(sha256sum "$spark_profile_output" | awk '{print $1}')"
+  spark_profile_size="$(stat -c '%s' "$spark_profile_output")"
+  python3 - \
+    "$spark_profile_metadata" \
+    "$spark_profile_mode" \
+    "$(basename "$spark_profile_output")" \
+    "$spark_profile_sha" \
+    "$spark_profile_size" \
+    "$spark_profile_start_command" \
+    "$spark_profile_stop_command" \
+    "$spark_profile_interval" \
+    "$spark_profile_interval_unit" \
+    "$spark_profile_only_ticks_over_ms" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+(
+    output_path,
+    mode,
+    profile_name,
+    profile_sha,
+    profile_size,
+    start_command,
+    stop_command,
+    interval,
+    interval_unit,
+    only_ticks_over_ms,
+) = sys.argv[1:]
+
+metadata = {
+    "schemaVersion": 1,
+    "profileEvidenceReady": True,
+    "performanceEvidenceReady": False,
+    "mode": mode,
+    "engine": "async-profiler",
+    "startCommand": start_command,
+    "stopCommand": stop_command,
+    "sampling": {
+        "interval": float(interval),
+        "intervalUnit": interval_unit,
+        "onlyTicksOverMs": int(only_ticks_over_ms) if only_ticks_over_ms else None,
+    },
+    "profile": {
+        "path": profile_name,
+        "sha256": profile_sha,
+        "sizeBytes": int(profile_size),
+    },
+}
+Path(output_path).write_text(
+    json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+fi
 
 if [[ "$capture_enabled" == 1 ]]; then
   stop_capture
@@ -1163,10 +1277,61 @@ metadata["metadataSha256"] = metadata_sha
 print(json.dumps(metadata, ensure_ascii=False, separators=(",", ":")))
 PY
 )"
+spark_profile_manifest_json="$(python3 - \
+  "$spark_profile_mode" \
+  "$spark_profile_metadata" \
+  "$spark_profile_output" <<'PY'
+from pathlib import Path
+import hashlib
+import json
+import sys
+
+mode = sys.argv[1]
+metadata_path = Path(sys.argv[2])
+profile_path = Path(sys.argv[3])
+if mode == "none":
+    if metadata_path.exists() or profile_path.exists():
+        raise SystemExit("disabled Spark profiling unexpectedly produced evidence")
+    print(json.dumps({
+        "enabled": False,
+        "mode": "none",
+        "profileEvidenceReady": None,
+        "performanceEvidenceReady": True,
+        "metadataPath": None,
+        "metadataSha256": None,
+    }, separators=(",", ":")))
+    raise SystemExit(0)
+
+if not metadata_path.is_file() or not profile_path.is_file():
+    raise SystemExit("enabled Spark profiling did not produce complete evidence")
+with metadata_path.open(encoding="utf-8") as stream:
+    metadata = json.load(stream)
+raw_profile = profile_path.read_bytes()
+if not raw_profile:
+    raise SystemExit("saved Spark profile is empty")
+profile = metadata.get("profile", {})
+if metadata.get("profileEvidenceReady") is not True:
+    raise SystemExit("Spark profile metadata is not profile-evidence ready")
+if metadata.get("performanceEvidenceReady") is not False:
+    raise SystemExit("instrumented Spark evidence must not claim clean performance readiness")
+if metadata.get("mode") != mode or metadata.get("engine") != "async-profiler":
+    raise SystemExit("Spark profile metadata mode/engine mismatch")
+if profile.get("path") != profile_path.name:
+    raise SystemExit("Spark profile metadata path mismatch")
+if profile.get("sha256") != hashlib.sha256(raw_profile).hexdigest():
+    raise SystemExit("Spark profile metadata SHA mismatch")
+if profile.get("sizeBytes") != len(raw_profile):
+    raise SystemExit("Spark profile metadata size mismatch")
+metadata["enabled"] = True
+metadata["metadataPath"] = metadata_path.name
+metadata["metadataSha256"] = hashlib.sha256(metadata_path.read_bytes()).hexdigest()
+print(json.dumps(metadata, ensure_ascii=False, separators=(",", ":")))
+PY
+)"
 
 cat > "$run_directory/run-manifest.json" <<EOF
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "runId": "$run_id",
   "scenario": "$scenario",
   "variant": "$variant",
@@ -1201,7 +1366,8 @@ cat > "$run_directory/run-manifest.json" <<EOF
     "recordsPath": $block_scene_manifest_records_path,
     "recordsSha256": $block_scene_manifest_records_sha
   },
-  "jvmDiagnostics": $jvm_diagnostics_manifest_json
+  "jvmDiagnostics": $jvm_diagnostics_manifest_json,
+  "sparkProfile": $spark_profile_manifest_json
 }
 EOF
 
@@ -1209,7 +1375,10 @@ python3 - \
   "$run_directory/run-manifest.json" \
   "$jvm_diagnostics_metadata" \
   "$jvm_diagnostics_metadata_sha" \
-  "$jvm_gc_safepoint_sha" <<'PY'
+  "$jvm_gc_safepoint_sha" \
+  "$spark_profile_mode" \
+  "$spark_profile_metadata" \
+  "$spark_profile_output" <<'PY'
 from pathlib import Path
 import hashlib
 import json
@@ -1219,6 +1388,9 @@ manifest_path = Path(sys.argv[1])
 metadata_path = Path(sys.argv[2])
 expected_metadata_sha = sys.argv[3]
 expected_log_sha = sys.argv[4]
+spark_mode = sys.argv[5]
+spark_metadata_path = Path(sys.argv[6])
+spark_profile_path = Path(sys.argv[7])
 with manifest_path.open(encoding="utf-8") as stream:
     manifest = json.load(stream)
 with metadata_path.open(encoding="utf-8") as stream:
@@ -1241,6 +1413,37 @@ if embedded_metadata != metadata:
     raise SystemExit("run manifest JVM diagnostics do not match jvm-diagnostics.json")
 if embedded.get("gcSafepointLog", {}).get("sha256") != expected_log_sha:
     raise SystemExit("run manifest has the wrong finalized JVM diagnostic log SHA")
+
+embedded_spark = manifest.get("sparkProfile")
+if not isinstance(embedded_spark, dict):
+    raise SystemExit("run manifest has no Spark profile state")
+if spark_mode == "none":
+    if (embedded_spark.get("enabled") is not False
+            or embedded_spark.get("mode") != "none"
+            or embedded_spark.get("performanceEvidenceReady") is not True):
+        raise SystemExit("run manifest incorrectly enables Spark profiling")
+else:
+    if embedded_spark.get("enabled") is not True or embedded_spark.get("mode") != spark_mode:
+        raise SystemExit("run manifest Spark profile mode mismatch")
+    if (embedded_spark.get("profileEvidenceReady") is not True
+            or embedded_spark.get("performanceEvidenceReady") is not False):
+        raise SystemExit("run manifest Spark evidence-readiness mismatch")
+    with spark_metadata_path.open(encoding="utf-8") as stream:
+        spark_metadata = json.load(stream)
+    spark_metadata_sha = hashlib.sha256(spark_metadata_path.read_bytes()).hexdigest()
+    if embedded_spark.get("metadataPath") != spark_metadata_path.name:
+        raise SystemExit("run manifest Spark metadata path mismatch")
+    if embedded_spark.get("metadataSha256") != spark_metadata_sha:
+        raise SystemExit("run manifest Spark metadata SHA mismatch")
+    embedded_spark_metadata = dict(embedded_spark)
+    embedded_spark_metadata.pop("enabled")
+    embedded_spark_metadata.pop("metadataPath")
+    embedded_spark_metadata.pop("metadataSha256")
+    if embedded_spark_metadata != spark_metadata:
+        raise SystemExit("run manifest Spark metadata does not match spark-profile.json")
+    raw_spark_profile = spark_profile_path.read_bytes()
+    if embedded_spark.get("profile", {}).get("sha256") != hashlib.sha256(raw_spark_profile).hexdigest():
+        raise SystemExit("run manifest Spark profile SHA mismatch")
 PY
 
 echo "Completed Phase 2 runtime sample $run_id"

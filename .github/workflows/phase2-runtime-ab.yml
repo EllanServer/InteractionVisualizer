@@ -37,6 +37,12 @@ on:
         required: true
         default: "180"
         type: string
+      spark_profile_mode:
+        description: "Optional 4-run Spark diagnostic for block-direct-write"
+        required: true
+        default: "none"
+        type: choice
+        options: ["none", "cpu", "alloc"]
 
 permissions:
   contents: read
@@ -57,6 +63,7 @@ jobs:
       CAMPAIGN_WARMUP_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.warmup_seconds || github.event.action == 'labeled' && '120' || '10' }}
       CAMPAIGN_SETTLE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.settle_seconds || github.event.action == 'labeled' && '20' || '5' }}
       CAMPAIGN_MEASURE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_seconds || github.event.action == 'labeled' && '180' || '10' }}
+      CAMPAIGN_SPARK_PROFILE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.spark_profile_mode || 'none' }}
 
     steps:
       - name: Check out immutable test source
@@ -114,6 +121,7 @@ jobs:
           WARMUP_SECONDS: ${{ env.CAMPAIGN_WARMUP_SECONDS }}
           SETTLE_SECONDS: ${{ env.CAMPAIGN_SETTLE_SECONDS }}
           MEASURE_SECONDS: ${{ env.CAMPAIGN_MEASURE_SECONDS }}
+          SPARK_PROFILE_MODE: ${{ env.CAMPAIGN_SPARK_PROFILE_MODE }}
         run: |
           set -euo pipefail
           [[ "$SCENARIO" == static-steady || "$SCENARIO" == block-idle || \
@@ -131,6 +139,15 @@ jobs:
           [[ "$WARMUP_SECONDS" =~ ^[0-9]+$ ]] && (( WARMUP_SECONDS >= 10 ))
           [[ "$SETTLE_SECONDS" =~ ^[0-9]+$ ]] && (( SETTLE_SECONDS >= 5 ))
           [[ "$MEASURE_SECONDS" =~ ^[0-9]+$ ]] && (( MEASURE_SECONDS >= 10 ))
+          [[ "$SPARK_PROFILE_MODE" =~ ^(none|cpu|alloc)$ ]]
+          if [[ "$SPARK_PROFILE_MODE" != none && "$SCENARIO" != block-direct-write ]]; then
+            echo "Spark profiling is currently isolated to block-direct-write" >&2
+            exit 64
+          fi
+          if [[ "$SPARK_PROFILE_MODE" != none && "$RUNS" != 4 ]]; then
+            echo "Spark profiling is diagnostic-only and requires runs=4" >&2
+            exit 64
+          fi
           if [[ "$SCENARIO" == block-direct-write ]]; then
             # Direct BlockState writes intentionally emit no Bukkit event.
             # Allow the 600-tick audit to begin plus enough ticks for every
@@ -152,7 +169,7 @@ jobs:
               java -version 2>&1
               printf '%s\n' \
                 'java=-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch -Dinteractionvisualizer.performance.allowBlockScene=true -Xlog:gc*=info,safepoint=info:file=jvm-gc-safepoint.log:time,uptime,level,tags:filecount=0 -Dfile.encoding=UTF-8' \
-                "scenario=$SCENARIO"
+                "scenario=$SCENARIO" "sparkProfile=$SPARK_PROFILE_MODE"
             } | sha256sum | awk '{print $1}'
           )
 
@@ -176,6 +193,7 @@ jobs:
             PHASE2_MEASURE_SECONDS="$MEASURE_SECONDS" \
             PHASE2_CAPTURE_ENABLED=0 \
             PHASE2_PROTOCOL_TRACE_ENABLED=0 \
+            PHASE2_SPARK_PROFILE_MODE="$SPARK_PROFILE_MODE" \
             bash tools/perf/run-phase2-runtime-once.sh
 
             printf '%s,%d,%d,%s,%s,%s,%s,none,%s/iv-perf.json\n' \
