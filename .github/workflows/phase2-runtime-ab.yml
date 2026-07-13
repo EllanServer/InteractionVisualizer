@@ -1,6 +1,8 @@
 name: Phase 2 Clean Runtime A-B
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       runs:
@@ -36,8 +38,18 @@ permissions:
 jobs:
   clean-runtime-ab:
     name: Paper 26.1.2 clean TPS-MSPT ABBA
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'phase2-runtime-formal'
     runs-on: ubuntu-latest
     timeout-minutes: 130
+    env:
+      CAMPAIGN_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || github.event.action == 'labeled' && '12' || '4' }}
+      CAMPAIGN_ITEMS: ${{ github.event_name == 'workflow_dispatch' && inputs.items || github.event.action == 'labeled' && '4096' || '1024' }}
+      CAMPAIGN_WARMUP_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.warmup_seconds || github.event.action == 'labeled' && '120' || '10' }}
+      CAMPAIGN_SETTLE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.settle_seconds || github.event.action == 'labeled' && '20' || '5' }}
+      CAMPAIGN_MEASURE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_seconds || github.event.action == 'labeled' && '180' || '10' }}
 
     steps:
       - name: Check out immutable test source
@@ -89,11 +101,11 @@ jobs:
 
       - name: Run restart-isolated clean ABBA campaign
         env:
-          RUNS: ${{ inputs.runs }}
-          ITEMS: ${{ inputs.items }}
-          WARMUP_SECONDS: ${{ inputs.warmup_seconds }}
-          SETTLE_SECONDS: ${{ inputs.settle_seconds }}
-          MEASURE_SECONDS: ${{ inputs.measure_seconds }}
+          RUNS: ${{ env.CAMPAIGN_RUNS }}
+          ITEMS: ${{ env.CAMPAIGN_ITEMS }}
+          WARMUP_SECONDS: ${{ env.CAMPAIGN_WARMUP_SECONDS }}
+          SETTLE_SECONDS: ${{ env.CAMPAIGN_SETTLE_SECONDS }}
+          MEASURE_SECONDS: ${{ env.CAMPAIGN_MEASURE_SECONDS }}
         run: |
           set -euo pipefail
           [[ "$RUNS" =~ ^(4|8|12)$ ]]

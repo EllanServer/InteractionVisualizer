@@ -1,6 +1,8 @@
 name: Phase 2 Packet Capture A-B
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       scenario:
@@ -47,9 +49,22 @@ permissions:
 
 jobs:
   packet-capture-ab:
-    name: Paper 26.1.2 packet ABBA (${{ inputs.scenario }})
+    name: Paper 26.1.2 packet ABBA
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'phase2-packet-static-formal' ||
+      github.event.label.name == 'phase2-packet-visibility-formal'
     runs-on: ubuntu-latest
     timeout-minutes: 100
+    env:
+      CAMPAIGN_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario || github.event.label.name == 'phase2-packet-visibility-formal' && 'visibility-return' || 'static-spawn' }}
+      CAMPAIGN_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || github.event.action == 'labeled' && '12' || '4' }}
+      CAMPAIGN_ITEMS: ${{ github.event_name == 'workflow_dispatch' && inputs.items || github.event.action == 'labeled' && '4096' || '1024' }}
+      CAMPAIGN_WARMUP_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.warmup_seconds || github.event.action == 'labeled' && '60' || '10' }}
+      CAMPAIGN_SETTLE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.settle_seconds || github.event.action == 'labeled' && '10' || '5' }}
+      CAMPAIGN_MEASURE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_seconds || github.event.action == 'labeled' && '10' || '5' }}
+      CAMPAIGN_SNAPLEN: ${{ github.event_name == 'workflow_dispatch' && inputs.snaplen || '128' }}
 
     steps:
       - name: Check out immutable test source
@@ -110,13 +125,13 @@ jobs:
 
       - name: Run restart-isolated packet ABBA campaign
         env:
-          SCENARIO: ${{ inputs.scenario }}
-          RUNS: ${{ inputs.runs }}
-          ITEMS: ${{ inputs.items }}
-          WARMUP_SECONDS: ${{ inputs.warmup_seconds }}
-          SETTLE_SECONDS: ${{ inputs.settle_seconds }}
-          MEASURE_SECONDS: ${{ inputs.measure_seconds }}
-          SNAPLEN: ${{ inputs.snaplen }}
+          SCENARIO: ${{ env.CAMPAIGN_SCENARIO }}
+          RUNS: ${{ env.CAMPAIGN_RUNS }}
+          ITEMS: ${{ env.CAMPAIGN_ITEMS }}
+          WARMUP_SECONDS: ${{ env.CAMPAIGN_WARMUP_SECONDS }}
+          SETTLE_SECONDS: ${{ env.CAMPAIGN_SETTLE_SECONDS }}
+          MEASURE_SECONDS: ${{ env.CAMPAIGN_MEASURE_SECONDS }}
+          SNAPLEN: ${{ env.CAMPAIGN_SNAPLEN }}
         run: |
           set -euo pipefail
           [[ "$SCENARIO" == static-spawn || "$SCENARIO" == visibility-return ]]
