@@ -18,6 +18,7 @@ import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.entityholders.ItemFrame;
 import com.loohp.interactionvisualizer.entityholders.VisualizerEntity;
 import com.loohp.interactionvisualizer.integration.packet.ClientPickupAnimationBridge;
+import com.loohp.interactionvisualizer.objectholders.SynchronizedFilteredCollection;
 import com.loohp.interactionvisualizer.utils.DisplayTransformFactory;
 import io.papermc.paper.event.packet.PlayerChunkLoadEvent;
 import io.papermc.paper.event.packet.PlayerChunkUnloadEvent;
@@ -336,7 +337,7 @@ public final class DisplayManager implements Listener {
     public static void removeAll(Player player) {
         runSync(() -> {
             clearVisibilityShowQueue(player.getUniqueId());
-            List<Integer> virtualItemIdsToRemove = new ArrayList<>();
+            VirtualItemIdBuffer virtualItemIdsToRemove = new VirtualItemIdBuffer();
             for (Map.Entry<VisualizerEntity, Set<UUID>> entry : shownViewers.entrySet()) {
                 if (entry.getValue().remove(player.getUniqueId())) {
                     if (entry.getKey() instanceof Item item) {
@@ -506,8 +507,10 @@ public final class DisplayManager implements Listener {
 
             packetOnlyItems.add(logical);
             itemAnimations.remove(logical);
-            ItemStack previousItemStack = renderedItemStacks.put(logical, itemStack.clone());
-            Location previousLocation = renderedItemLocations.put(logical, location.clone());
+            // Visualizer Item getters already return defensive copies. Retain those
+            // snapshots directly instead of cloning them a second time on every sync.
+            ItemStack previousItemStack = renderedItemStacks.put(logical, itemStack);
+            Location previousLocation = renderedItemLocations.put(logical, location);
             boolean itemChanged = previousItemStack == null || !previousItemStack.equals(itemStack);
             boolean locationChanged = previousLocation == null || !previousLocation.equals(location);
             if (wasPacketOnly && (itemChanged || locationChanged)) {
@@ -544,7 +547,7 @@ public final class DisplayManager implements Listener {
         }
 
         ItemStack itemStack = logical.getItemStack();
-        ItemStack previousItemStack = renderedItemStacks.put(logical, itemStack.clone());
+        ItemStack previousItemStack = renderedItemStacks.put(logical, itemStack);
         renderedItemLocations.remove(logical);
         boolean itemChanged = previousItemStack == null || !previousItemStack.equals(itemStack);
 
@@ -559,13 +562,13 @@ public final class DisplayManager implements Listener {
         actual.setInterpolationDelay(0);
         actual.setInterpolationDuration(0);
         actual.setTeleportDuration(0);
-        applyItemBase(actual, logical);
+        boolean anchorMoved = applyItemBase(actual, logical);
 
         Vector velocity = logical.getVelocity();
         boolean animated = requiresItemAnimation(logical.hasGravity(), velocity);
+        ItemAnimationState previousAnimation = itemAnimations.get(logical);
         if (animated) {
-            ItemAnimationState previous = itemAnimations.get(logical);
-            Location position = previous == null ? actual.getLocation() : previous.position.clone();
+            Location position = previousAnimation == null ? actual.getLocation() : previousAnimation.position.clone();
             itemAnimations.put(logical, new ItemAnimationState(velocity, logical.hasGravity(), position,
                     useStaticAnchorForAnimation(InteractionVisualizer.staticVirtualItemAnchorsDuringAnimation,
                             logical.isCustomNameVisible())));
@@ -576,20 +579,27 @@ public final class DisplayManager implements Listener {
 
         if (itemChanged) {
             respawnVirtualItems(logical);
-        } else {
+        } else if (requiresVirtualItemMotionSync(anchorMoved, previousAnimation != null, animated)) {
             synchronizeVirtualItemMotion(logical, actual.getLocation());
         }
     }
 
-    private static void applyItemBase(org.bukkit.entity.Entity actual, Item logical) {
+    static boolean requiresVirtualItemMotionSync(boolean anchorMoved, boolean wasAnimated, boolean animated) {
+        return anchorMoved || wasAnimated || animated;
+    }
+
+    private static boolean applyItemBase(org.bukkit.entity.Entity actual, Item logical) {
         actual.setGlowing(logical.isGlowing());
         actual.customName(logical.getCustomName());
         actual.setCustomNameVisible(logical.isCustomNameVisible());
-        if (!actual.getWorld().equals(logical.getWorld())
-                || actual.getLocation().distanceSquared(logical.getLocation()) > 1.0E-8) {
+        Location target = logical.getLocation();
+        boolean moved = !actual.getWorld().equals(target.getWorld())
+                || actual.getLocation().distanceSquared(target) > 1.0E-8;
+        if (moved) {
             PerformanceMetrics.bukkitEntityTeleport();
-            actual.teleport(logical.getLocation());
+            actual.teleport(target);
         }
+        return moved;
     }
 
     private static void syncItemFrame(ItemFrame logical) {
@@ -821,10 +831,13 @@ public final class DisplayManager implements Listener {
                     player, logical.getItemStack(), source);
             PerformanceMetrics.virtualSpawnBundle();
             ids.put(viewer, spawnedId);
-            Vector motion = nextVirtualItemMotion(logical);
-            if (motion.lengthSquared() > ITEM_ANIMATION_EPSILON) {
-                SparrowHeart.getInstance().sendClientSideEntityMotion(player, motion, spawnedId);
-                PerformanceMetrics.virtualMotionBundle();
+            ItemAnimationState animation = itemAnimations.get(logical);
+            if (animation != null) {
+                Vector motion = itemMovementForTick(animation.gravity, animation.velocity);
+                if (motion.lengthSquared() > ITEM_ANIMATION_EPSILON) {
+                    SparrowHeart.getInstance().sendClientSideEntityMotion(player, motion, spawnedId);
+                    PerformanceMetrics.virtualMotionBundle();
+                }
             }
             return true;
         } catch (RuntimeException exception) {
@@ -960,16 +973,14 @@ public final class DisplayManager implements Listener {
         }
     }
 
-    private static void removeVirtualItems(Player player, List<Integer> ids) {
+    private static void removeVirtualItems(Player player, VirtualItemIdBuffer ids) {
         if (ids.isEmpty() || player == null || !player.isOnline()) {
             return;
         }
         for (int start = 0; start < ids.size(); start += VIRTUAL_REMOVE_BATCH_SIZE) {
             int end = Math.min(ids.size(), start + VIRTUAL_REMOVE_BATCH_SIZE);
             int[] batch = new int[end - start];
-            for (int index = start; index < end; index++) {
-                batch[index - start] = ids.get(index);
-            }
+            ids.copyInto(start, batch);
             try {
                 SparrowHeart.getInstance().removeClientSideEntity(player, batch);
                 PerformanceMetrics.virtualRemovePacket();
@@ -1046,9 +1057,17 @@ public final class DisplayManager implements Listener {
 
     private static void index(VisualizerEntity logical) {
         Location location = logical.getLocation();
+        UUID world = location.getWorld().getUID();
+        int chunkX = location.getBlockX() >> 4;
+        int chunkZ = location.getBlockZ() >> 4;
+        ChunkKey previous = chunkByLogical.get(logical);
+        if (previous != null && previous.world().equals(world)
+                && previous.x() == chunkX && previous.z() == chunkZ) {
+            return;
+        }
         ChunkKey current = new ChunkKey(
-                location.getWorld().getUID(), location.getBlockX() >> 4, location.getBlockZ() >> 4);
-        ChunkKey previous = chunkByLogical.put(logical, current);
+                world, chunkX, chunkZ);
+        previous = chunkByLogical.put(logical, current);
         if (previous != null && !previous.equals(current)) {
             Set<VisualizerEntity> previousEntries = logicalsByChunk.get(previous);
             if (previousEntries != null) {
@@ -1109,12 +1128,8 @@ public final class DisplayManager implements Listener {
             return false;
         }
         UUID viewer = player.getUniqueId();
-        for (Player candidate : desiredPlayers) {
-            if (candidate != null && viewer.equals(candidate.getUniqueId())) {
-                return true;
-            }
-        }
-        return false;
+        return SynchronizedFilteredCollection.anyMatch(desiredPlayers,
+                candidate -> candidate != null && viewer.equals(candidate.getUniqueId()));
     }
 
     private static boolean isViewerDesired(VisualizerEntity logical, Player player) {
@@ -1130,16 +1145,23 @@ public final class DisplayManager implements Listener {
     }
 
     private static boolean isViewerRenderable(VisualizerEntity logical, Player player) {
+        if (logical instanceof Item item && packetOnlyItems.contains(item)) {
+            return isViewerRenderable(logical, player, item.getLocation(), qualifiesForPacketOnlyStatic(item));
+        }
+        return isViewerRenderable(logical, player, null, false);
+    }
+
+    private static boolean isViewerRenderable(VisualizerEntity logical, Player player,
+                                               Location packetOnlyLocation, boolean packetOnlyQualified) {
         if (player == null || !player.isOnline()) {
             return false;
         }
-        if (logical instanceof Item item && packetOnlyItems.contains(item)) {
-            Location location = item.getLocation();
-            if (!player.getWorld().equals(location.getWorld())) {
+        if (logical instanceof Item && packetOnlyItems.contains((Item) logical)) {
+            if (packetOnlyLocation == null || !player.getWorld().equals(packetOnlyLocation.getWorld())) {
                 return false;
             }
             PerformanceMetrics.virtualViewerChecks(1);
-            return qualifiesForPacketOnlyStatic(item) && player.isChunkSent(Chunk.getChunkKey(location));
+            return packetOnlyQualified && player.isChunkSent(Chunk.getChunkKey(packetOnlyLocation));
         }
         org.bukkit.entity.Entity actual = logical.getBukkitEntity().orElse(null);
         return actual != null && player.getWorld().equals(actual.getWorld());
@@ -1279,6 +1301,11 @@ public final class DisplayManager implements Listener {
         for (Map.Entry<UUID, VisibilityShowQueue<VisualizerEntity>> entry : visibilityShowQueues.entrySet()) {
             UUID viewer = entry.getKey();
             VisibilityShowQueue<VisualizerEntity> queue = entry.getValue();
+            // Queue states deliberately survive while empty to retain token-bucket
+            // credit. Skip them before player lookup/lambda/list allocation.
+            if (!queue.hasPending()) {
+                continue;
+            }
             Player player = Bukkit.getPlayer(viewer);
             if (player == null || !player.isOnline()) {
                 queue.clear();
@@ -1286,13 +1313,18 @@ public final class DisplayManager implements Listener {
                 continue;
             }
 
-            Predicate<VisualizerEntity> desired = logical -> isQueuedViewerStillRenderable(logical, player);
-            List<VisualizerEntity> ready = limited
-                    ? queue.drain(capacity, refill, currentTick, desired)
-                    : queue.drainAll(desired);
-            for (VisualizerEntity logical : ready) {
+            VisibilityShowQueue.DrainAction<VisualizerEntity> showIfRenderable = logical -> {
+                if (!isQueuedViewerStillRenderable(logical, player)) {
+                    return false;
+                }
                 PerformanceMetrics.visibilityShowDrained();
                 showViewerNow(logical, player);
+                return true;
+            };
+            if (limited) {
+                queue.drainTo(capacity, refill, currentTick, showIfRenderable);
+            } else {
+                queue.drainAllTo(showIfRenderable);
             }
         }
     }
@@ -1344,20 +1376,36 @@ public final class DisplayManager implements Listener {
 
     private static void reconcileViewers(VisualizerEntity logical) {
         Collection<Player> desiredPlayers = active.get(logical);
+        Location packetOnlyLocation = null;
+        boolean packetOnlyQualified = false;
+        if (logical instanceof Item item && packetOnlyItems.contains(item)) {
+            // Qualification and location are entity-invariant for this main-thread
+            // reconciliation. Evaluate them once rather than once per viewer.
+            packetOnlyLocation = item.getLocation();
+            packetOnlyQualified = qualifiesForPacketOnlyStatic(item);
+        }
+        Set<UUID> shown = shownViewers.get(logical);
+        if (shown == null) {
+            if (desiredPlayers != null) {
+                for (Player player : desiredPlayers) {
+                    if (isViewerRenderable(logical, player, packetOnlyLocation, packetOnlyQualified)) {
+                        requestViewerShow(logical, player);
+                    }
+                }
+            }
+            return;
+        }
         Set<UUID> desired = new HashSet<>();
         if (desiredPlayers != null) {
             for (Player player : desiredPlayers) {
-                if (isViewerRenderable(logical, player)) {
+                if (isViewerRenderable(logical, player, packetOnlyLocation, packetOnlyQualified)) {
                     desired.add(player.getUniqueId());
                 }
             }
         }
-        Set<UUID> shown = shownViewers.get(logical);
-        if (shown != null) {
-            for (UUID uuid : new HashSet<>(shown)) {
-                if (!desired.contains(uuid)) {
-                    hideViewer(logical, uuid, Bukkit.getPlayer(uuid));
-                }
+        for (UUID uuid : new HashSet<>(shown)) {
+            if (!desired.contains(uuid)) {
+                hideViewer(logical, uuid, Bukkit.getPlayer(uuid));
             }
         }
         for (UUID uuid : desired) {
@@ -1388,7 +1436,6 @@ public final class DisplayManager implements Listener {
             active.remove(logical);
             renderedRevision.remove(logical);
             forceScheduled.remove(logical);
-            unindex(logical);
             if (logical instanceof Item item) {
                 itemAnimations.remove(item);
                 renderedItemStacks.remove(item);
@@ -1397,6 +1444,11 @@ public final class DisplayManager implements Listener {
             }
         }
         runSync(() -> {
+            if (removeFromActive) {
+                // Keep both sides of the chunk index on the main thread. An
+                // asynchronous remove must not interleave unindex() with index().
+                unindex(logical);
+            }
             org.bukkit.entity.Entity actual = logical.getBukkitEntity().orElse(null);
             if (removeFromActive) {
                 if (actual != null) {
@@ -1490,7 +1542,9 @@ public final class DisplayManager implements Listener {
         if (logicals == null) {
             return;
         }
-        for (VisualizerEntity logical : new HashSet<>(logicals)) {
+        // Chunk index values are ConcurrentHashMap-backed sets; reconciliation
+        // does not mutate this index, so a snapshot allocation is unnecessary.
+        for (VisualizerEntity logical : logicals) {
             if (logical instanceof Item item && packetOnlyItems.contains(item)) {
                 reconcileViewer(item, event.getPlayer());
             }
@@ -1509,8 +1563,8 @@ public final class DisplayManager implements Listener {
             return;
         }
         Player player = event.getPlayer();
-        List<Integer> virtualItemIdsToRemove = new ArrayList<>();
-        for (VisualizerEntity logical : new HashSet<>(logicals)) {
+        VirtualItemIdBuffer virtualItemIdsToRemove = new VirtualItemIdBuffer();
+        for (VisualizerEntity logical : logicals) {
             if (logical instanceof Item item && packetOnlyItems.contains(item)) {
                 Integer id = forgetShownViewer(item, player.getUniqueId(), player);
                 if (id != null) {
@@ -1526,7 +1580,7 @@ public final class DisplayManager implements Listener {
         ChunkKey key = new ChunkKey(event.getWorld().getUID(), event.getChunk().getX(), event.getChunk().getZ());
         Set<VisualizerEntity> logicals = logicalsByChunk.get(key);
         if (logicals != null) {
-            for (VisualizerEntity logical : new HashSet<>(logicals)) {
+            for (VisualizerEntity logical : logicals) {
                 if (active.containsKey(logical) && logical.getBukkitEntity().isEmpty()) {
                     schedule(logical, true);
                 }
@@ -1606,39 +1660,63 @@ public final class DisplayManager implements Listener {
         }
 
         List<T> drain(int capacity, int refill, long currentTick, Predicate<T> desired) {
+            List<T> ready = new ArrayList<>();
+            drainTo(capacity, refill, currentTick, value -> {
+                if (!desired.test(value)) {
+                    return false;
+                }
+                ready.add(value);
+                return true;
+            });
+            return ready;
+        }
+
+        int drainTo(int capacity, int refill, long currentTick, DrainAction<T> action) {
             int boundedCapacity = Math.max(1, capacity);
             long elapsedTicks = Math.max(0L, currentTick - lastRefillTick);
             long restored = elapsedTicks * (long) Math.max(0, refill);
             tokens = (int) Math.min(boundedCapacity, Math.max(0L, tokens + restored));
             lastRefillTick = Math.max(lastRefillTick, currentTick);
-            List<T> ready = new ArrayList<>(Math.min(tokens, queued.size()));
+            int drained = 0;
             int inspected = 0;
             while (tokens > 0 && inspected < boundedCapacity && !pending.isEmpty()) {
                 QueuedShow<T> request = pending.removeFirst();
                 inspected++;
                 T value = request.value();
-                if (!queued.remove(value, request.generation()) || !desired.test(value)) {
+                if (!queued.remove(value, request.generation()) || !action.accept(value)) {
                     continue;
                 }
-                ready.add(value);
                 tokens--;
+                drained++;
             }
             if (queued.isEmpty()) {
                 pending.clear();
             }
-            return ready;
+            return drained;
         }
 
         List<T> drainAll(Predicate<T> desired) {
-            List<T> ready = new ArrayList<>(queued.size());
+            List<T> ready = new ArrayList<>();
+            drainAllTo(value -> {
+                if (!desired.test(value)) {
+                    return false;
+                }
+                ready.add(value);
+                return true;
+            });
+            return ready;
+        }
+
+        int drainAllTo(DrainAction<T> action) {
+            int drained = 0;
             while (!pending.isEmpty()) {
                 QueuedShow<T> request = pending.removeFirst();
                 T value = request.value();
-                if (queued.remove(value, request.generation()) && desired.test(value)) {
-                    ready.add(value);
+                if (queued.remove(value, request.generation()) && action.accept(value)) {
+                    drained++;
                 }
             }
-            return ready;
+            return drained;
         }
 
         boolean isEmpty() {
@@ -1652,6 +1730,12 @@ public final class DisplayManager implements Listener {
         void clear() {
             pending.clear();
             queued.clear();
+        }
+
+        @FunctionalInterface
+        interface DrainAction<T> {
+
+            boolean accept(T value);
         }
 
         private record QueuedShow<T>(T value, long generation) {
@@ -1670,6 +1754,35 @@ public final class DisplayManager implements Listener {
             this.gravity = gravity;
             this.position = position.clone();
             this.staticAnchor = staticAnchor;
+        }
+    }
+
+    private static final class VirtualItemIdBuffer {
+
+        private static final int[] EMPTY = new int[0];
+
+        private int[] values = EMPTY;
+        private int size;
+
+        private void add(int value) {
+            if (size == values.length) {
+                int[] expanded = new int[Math.max(16, size << 1)];
+                System.arraycopy(values, 0, expanded, 0, size);
+                values = expanded;
+            }
+            values[size++] = value;
+        }
+
+        private boolean isEmpty() {
+            return size == 0;
+        }
+
+        private int size() {
+            return size;
+        }
+
+        private void copyInto(int sourceOffset, int[] destination) {
+            System.arraycopy(values, sourceOffset, destination, 0, destination.length);
         }
     }
 

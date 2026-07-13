@@ -40,6 +40,14 @@ class DisplayManagerItemAnimationTest {
     }
 
     @Test
+    void virtualMotionPacketsAreSkippedForUnchangedStaticItems() {
+        assertFalse(DisplayManager.requiresVirtualItemMotionSync(false, false, false));
+        assertTrue(DisplayManager.requiresVirtualItemMotionSync(true, false, false));
+        assertTrue(DisplayManager.requiresVirtualItemMotionSync(false, true, false));
+        assertTrue(DisplayManager.requiresVirtualItemMotionSync(false, false, true));
+    }
+
+    @Test
     void staticAnchorExperimentNeverDetachesVisibleNames() {
         assertFalse(DisplayManager.useStaticAnchorForAnimation(false, false));
         assertFalse(DisplayManager.useStaticAnchorForAnimation(false, true));

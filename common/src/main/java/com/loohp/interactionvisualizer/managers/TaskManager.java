@@ -162,6 +162,8 @@ public class TaskManager {
 		*/
 
         List<EntryKey> keys = new ArrayList<>();
+        EventDrivenBlockUpdateListener eventDrivenBlockUpdateListener =
+                InteractionVisualizer.eventDrivenBlockUpdates ? new EventDrivenBlockUpdateListener() : null;
 
         Bukkit.getPluginManager().registerEvents(new Debug(), plugin);
         Bukkit.getPluginManager().registerEvents(new Updater(), plugin);
@@ -253,6 +255,9 @@ public class TaskManager {
             FurnaceDisplay fd = new FurnaceDisplay();
             keys.add(fd.registerNative());
             Bukkit.getPluginManager().registerEvents(fd, plugin);
+            if (eventDrivenBlockUpdateListener != null) {
+                eventDrivenBlockUpdateListener.add(fd);
+            }
             furnace = true;
         }
 
@@ -260,6 +265,9 @@ public class TaskManager {
             BlastFurnaceDisplay bfd = new BlastFurnaceDisplay();
             keys.add(bfd.registerNative());
             Bukkit.getPluginManager().registerEvents(bfd, plugin);
+            if (eventDrivenBlockUpdateListener != null) {
+                eventDrivenBlockUpdateListener.add(bfd);
+            }
             blastfurnace = true;
         }
 
@@ -267,6 +275,9 @@ public class TaskManager {
             SmokerDisplay sd = new SmokerDisplay();
             keys.add(sd.registerNative());
             Bukkit.getPluginManager().registerEvents(sd, plugin);
+            if (eventDrivenBlockUpdateListener != null) {
+                eventDrivenBlockUpdateListener.add(sd);
+            }
             smoker = true;
         }
 
@@ -337,6 +348,9 @@ public class TaskManager {
             BeeNestDisplay bnd = new BeeNestDisplay();
             keys.add(bnd.registerNative());
             Bukkit.getPluginManager().registerEvents(bnd, plugin);
+            if (eventDrivenBlockUpdateListener != null) {
+                eventDrivenBlockUpdateListener.add(bnd);
+            }
             beenest = true;
         }
 
@@ -344,6 +358,9 @@ public class TaskManager {
             BeeHiveDisplay bhd = new BeeHiveDisplay();
             keys.add(bhd.registerNative());
             Bukkit.getPluginManager().registerEvents(bhd, plugin);
+            if (eventDrivenBlockUpdateListener != null) {
+                eventDrivenBlockUpdateListener.add(bhd);
+            }
             beehive = true;
         }
 
@@ -408,6 +425,10 @@ public class TaskManager {
             keys.add(vd.registerNative());
             Bukkit.getPluginManager().registerEvents(vd, plugin);
             villager = true;
+        }
+
+        if (eventDrivenBlockUpdateListener != null && !eventDrivenBlockUpdateListener.isEmpty()) {
+            Bukkit.getPluginManager().registerEvents(eventDrivenBlockUpdateListener, plugin);
         }
 
         InteractionVisualizer.preferenceManager.registerEntry(keys);

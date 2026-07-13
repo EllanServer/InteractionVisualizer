@@ -83,6 +83,9 @@ public class TileEntityManager implements Listener {
         }
         TileEntityManager instance = new TileEntityManager();
         Bukkit.getPluginManager().registerEvents(instance, plugin);
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            Bukkit.getPluginManager().registerEvents(new EventDrivenLifecycleListener(instance), plugin);
+        }
         Scheduler.runTaskTimer(plugin, () -> {
             if (InteractionVisualizer.eventDrivenBlockUpdates) {
                 Set<UUID> online = new LinkedHashSet<>();
@@ -298,21 +301,18 @@ public class TileEntityManager implements Listener {
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates) {
             clearWatchedChunks(event.getPlayer().getUniqueId());
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onRespawn(PlayerRespawnEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates) {
             updateWatchedChunks(event.getPlayer().getUniqueId(), getAllChunks(event.getRespawnLocation()));
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onChangedWorld(PlayerChangedWorldEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates) {
             updateWatchedChunks(event.getPlayer().getUniqueId(), getAllChunks(event.getPlayer().getLocation()));
@@ -396,7 +396,6 @@ public class TileEntityManager implements Listener {
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onChunkLoad(ChunkLoadEvent event) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return;
@@ -407,7 +406,6 @@ public class TileEntityManager implements Listener {
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onChunkUnload(ChunkUnloadEvent event) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return;
@@ -458,6 +456,40 @@ public class TileEntityManager implements Listener {
     public void onEntityChangeBlock(EntityChangeBlockEvent event) {
         if (TileEntity.isTileEntityType(event.getBlock().getType())) {
             Scheduler.runTaskLater(plugin, () -> addTileEntities(getChunk(event.getBlock().getLocation())), 1);
+        }
+    }
+
+    private static final class EventDrivenLifecycleListener implements Listener {
+
+        private final TileEntityManager manager;
+
+        private EventDrivenLifecycleListener(TileEntityManager manager) {
+            this.manager = manager;
+        }
+
+        @EventHandler(priority = EventPriority.MONITOR)
+        public void onQuit(PlayerQuitEvent event) {
+            manager.onQuit(event);
+        }
+
+        @EventHandler(priority = EventPriority.MONITOR)
+        public void onRespawn(PlayerRespawnEvent event) {
+            manager.onRespawn(event);
+        }
+
+        @EventHandler(priority = EventPriority.MONITOR)
+        public void onChangedWorld(PlayerChangedWorldEvent event) {
+            manager.onChangedWorld(event);
+        }
+
+        @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+        public void onChunkLoad(ChunkLoadEvent event) {
+            manager.onChunkLoad(event);
+        }
+
+        @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+        public void onChunkUnload(ChunkUnloadEvent event) {
+            manager.onChunkUnload(event);
         }
     }
 

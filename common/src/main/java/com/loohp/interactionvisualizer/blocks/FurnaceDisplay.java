@@ -359,6 +359,11 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
         }
     }
 
+    /** Optimized aggregate-listener entry after the inventory location has been resolved once. */
+    public void onFurnaceInventoryChanged(Block block) {
+        markDirty(block);
+    }
+
     private void markDirty(Inventory inventory) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return;
@@ -374,47 +379,39 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFurnaceBurn(FurnaceBurnEvent event) {
         markDirty(event.getBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFurnaceStartSmelt(FurnaceStartSmeltEvent event) {
         markDirty(event.getBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFurnaceSmelt(FurnaceSmeltEvent event) {
         markDirty(event.getBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onFurnaceExtract(FurnaceExtractEvent event) {
         markDirty(event.getBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFurnaceMoveItem(InventoryMoveItemEvent event) {
         markDirty(event.getSource());
         markDirty(event.getDestination());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onFurnaceAdded(TileEntityAddedEvent event) {
         if (event.getTileEntityType() == TileEntityType.FURNACE) {
             markDirty(event.getBlock());
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onFurnaceActivated(TileEntityActivatedEvent event) {
         if (event.getTileEntityType() == TileEntityType.FURNACE) {
             markDirty(event.getBlock());
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onFurnaceDeactivated(TileEntityDeactivatedEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates
                 && event.getTileEntityType() == TileEntityType.FURNACE) {

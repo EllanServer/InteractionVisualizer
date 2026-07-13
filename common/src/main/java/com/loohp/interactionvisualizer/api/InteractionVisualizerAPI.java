@@ -120,7 +120,7 @@ public class InteractionVisualizerAPI {
         } else {
             players = SynchronizedFilteredCollection.filter(players, each -> !excludedPlayers.contains(each));
         }
-        return Collections.unmodifiableCollection(players);
+        return SynchronizedFilteredCollection.unmodifiableCollection(players);
     }
 
     /**

@@ -361,6 +361,11 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
         }
     }
 
+    /** Optimized aggregate-listener entry after the inventory location has been resolved once. */
+    public void onSmokerInventoryChanged(Block block) {
+        markDirty(block);
+    }
+
     private void markDirty(Inventory inventory) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return;
@@ -376,47 +381,39 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onSmokerBurn(FurnaceBurnEvent event) {
         markDirty(event.getBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onSmokerStartSmelt(FurnaceStartSmeltEvent event) {
         markDirty(event.getBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onSmokerSmelt(FurnaceSmeltEvent event) {
         markDirty(event.getBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onSmokerExtract(FurnaceExtractEvent event) {
         markDirty(event.getBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onSmokerMoveItem(InventoryMoveItemEvent event) {
         markDirty(event.getSource());
         markDirty(event.getDestination());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onSmokerAdded(TileEntityAddedEvent event) {
         if (event.getTileEntityType() == TileEntityType.SMOKER) {
             markDirty(event.getBlock());
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onSmokerActivated(TileEntityActivatedEvent event) {
         if (event.getTileEntityType() == TileEntityType.SMOKER) {
             markDirty(event.getBlock());
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onSmokerDeactivated(TileEntityDeactivatedEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates
                 && event.getTileEntityType() == TileEntityType.SMOKER) {
@@ -588,7 +585,6 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
         removeTrackedDisplay(event.getBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onRemoveSmoker(TileEntityRemovedEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates
                 && event.getTileEntityType() == TileEntityType.SMOKER) {

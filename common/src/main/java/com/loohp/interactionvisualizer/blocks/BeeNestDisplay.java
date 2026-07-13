@@ -253,6 +253,11 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         }
     }
 
+    /** Optimized aggregate-listener entry after the affected vertical column has been scanned once. */
+    public void onAffectedBeeBlock(Block block) {
+        markDirty(block);
+    }
+
     private void markAffectedColumnDirty(Block changedBlock) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates || changedBlock == null) {
             return;
@@ -262,7 +267,6 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedBlockPlace(BlockPlaceEvent event) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return;
@@ -270,7 +274,6 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         markAffectedColumnDirty(event.getBlockPlaced());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedBlockBreak(BlockBreakEvent event) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return;
@@ -278,7 +281,6 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         markAffectedColumnDirty(event.getBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedBlockBurn(BlockBurnEvent event) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return;
@@ -286,7 +288,6 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         markAffectedColumnDirty(event.getBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedBlockFade(BlockFadeEvent event) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return;
@@ -294,7 +295,6 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         markAffectedColumnDirty(event.getBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedBlockIgnite(BlockIgniteEvent event) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return;
@@ -302,7 +302,6 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         markAffectedColumnDirty(event.getBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedFluidFlow(BlockFromToEvent event) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return;
@@ -310,7 +309,6 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         markAffectedColumnDirty(event.getToBlock());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedBlockExplode(BlockExplodeEvent event) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return;
@@ -320,7 +318,6 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedEntityExplode(EntityExplodeEvent event) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return;
@@ -330,7 +327,6 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDispenserHarvest(BlockDispenseEvent event) {
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return;
@@ -345,7 +341,6 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onBeenestAdded(TileEntityAddedEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates
                 && event.getTileEntityType() == TileEntityType.BEE_NEST) {
@@ -353,7 +348,6 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onBeenestActivated(TileEntityActivatedEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates
                 && event.getTileEntityType() == TileEntityType.BEE_NEST) {
@@ -361,7 +355,6 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
     public void onBeenestDeactivated(TileEntityDeactivatedEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates
                 && event.getTileEntityType() == TileEntityType.BEE_NEST) {

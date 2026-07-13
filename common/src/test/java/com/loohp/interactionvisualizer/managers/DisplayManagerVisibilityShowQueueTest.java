@@ -13,6 +13,7 @@ package com.loohp.interactionvisualizer.managers;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -124,5 +125,27 @@ class DisplayManagerVisibilityShowQueueTest {
         assertEquals(List.of("first", "second"),
                 queue.drainAll(value -> !value.equals("stale")));
         assertTrue(queue.isEmpty());
+    }
+
+    @Test
+    void callbackDrainConsumesReadyEntriesWithoutBuildingAnIntermediateList() {
+        DisplayManager.VisibilityShowQueue<String> queue =
+                new DisplayManager.VisibilityShowQueue<>(2, 0L);
+        queue.request("first");
+        queue.request("stale");
+        queue.request("second");
+        List<String> shown = new ArrayList<>();
+
+        int drained = queue.drainTo(2, 0, 1L, value -> {
+            if (value.equals("stale")) {
+                return false;
+            }
+            shown.add(value);
+            return true;
+        });
+
+        assertEquals(1, drained);
+        assertEquals(List.of("first"), shown);
+        assertEquals(List.of("second"), queue.drain(2, 0, 2L, ignored -> true));
     }
 }
