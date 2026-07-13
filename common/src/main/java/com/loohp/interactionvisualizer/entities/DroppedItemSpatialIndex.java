@@ -119,7 +119,8 @@ final class DroppedItemSpatialIndex {
             WorldViewerBucket viewers = viewersByWorld == null
                     ? java.util.Objects.equals(singleWorldId, worldId) ? singleWorldViewers : null
                     : viewersByWorld.get(worldId);
-            return viewers != null && viewers.hasViewerWithin(x, y, z, range * range);
+            return viewers != null && !viewers.isOutsideBounds(x, y, z, range)
+                    && viewers.hasViewerWithin(x, y, z, range * range);
         }
 
         private static final class WorldViewerBucket {
@@ -131,6 +132,12 @@ final class DroppedItemSpatialIndex {
             private double[] xCoordinates = EMPTY;
             private double[] yCoordinates = EMPTY;
             private double[] zCoordinates = EMPTY;
+            private double minimumX = Double.POSITIVE_INFINITY;
+            private double minimumY = Double.POSITIVE_INFINITY;
+            private double minimumZ = Double.POSITIVE_INFINITY;
+            private double maximumX = Double.NEGATIVE_INFINITY;
+            private double maximumY = Double.NEGATIVE_INFINITY;
+            private double maximumZ = Double.NEGATIVE_INFINITY;
             private int size;
 
             private WorldViewerBucket(int initialCapacity) {
@@ -151,7 +158,19 @@ final class DroppedItemSpatialIndex {
                 xCoordinates[size] = x;
                 yCoordinates[size] = y;
                 zCoordinates[size] = z;
+                minimumX = Math.min(minimumX, x);
+                minimumY = Math.min(minimumY, y);
+                minimumZ = Math.min(minimumZ, z);
+                maximumX = Math.max(maximumX, x);
+                maximumY = Math.max(maximumY, y);
+                maximumZ = Math.max(maximumZ, z);
                 size++;
+            }
+
+            private boolean isOutsideBounds(double x, double y, double z, double range) {
+                return x < minimumX - range || x > maximumX + range
+                        || y < minimumY - range || y > maximumY + range
+                        || z < minimumZ - range || z > maximumZ + range;
             }
 
             private boolean hasViewerWithin(double x, double y, double z, double rangeSquared) {

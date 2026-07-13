@@ -75,6 +75,32 @@ class DroppedItemSpatialIndexTest {
     }
 
     @Test
+    void viewerBoundsKeepTouchingSphereEdgesExact() {
+        UUID world = UUID.randomUUID();
+        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(2);
+        viewers.addViewer(world, -10.0D, 64.0D, -10.0D);
+        viewers.addViewer(world, 10.0D, 70.0D, 10.0D);
+
+        assertTrue(viewers.hasViewerWithin(world, 20.0D, 70.0D, 10.0D, 10.0D));
+        assertFalse(viewers.hasViewerWithin(world, 20.0001D, 70.0D, 10.0D, 10.0D));
+        assertTrue(viewers.hasViewerWithin(world, -10.0D, 54.0D, -10.0D, 10.0D));
+        assertFalse(viewers.hasViewerWithin(world, -10.0D, 53.9999D, -10.0D, 10.0D));
+    }
+
+    @Test
+    void viewerBoundsStillRunExactChecksInsideTheBox() {
+        UUID world = UUID.randomUUID();
+        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(4);
+        viewers.addViewer(world, -100.0D, 64.0D, -100.0D);
+        viewers.addViewer(world, -100.0D, 64.0D, 100.0D);
+        viewers.addViewer(world, 100.0D, 64.0D, -100.0D);
+        viewers.addViewer(world, 100.0D, 64.0D, 100.0D);
+
+        assertFalse(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 10.0D));
+        assertTrue(viewers.hasViewerWithin(world, 90.0D, 64.0D, 100.0D, 10.0D));
+    }
+
+    @Test
     void upgradesFromSingleWorldFastPathAndKeepsWorldsIsolated() {
         UUID firstWorld = UUID.randomUUID();
         UUID secondWorld = UUID.randomUUID();

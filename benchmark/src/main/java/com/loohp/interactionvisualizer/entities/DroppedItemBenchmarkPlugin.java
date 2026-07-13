@@ -83,7 +83,7 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
             benchmarkCramping(world, itemCount, false);
             benchmarkCramping(world, itemCount, true);
         }
-        for (String distribution : List.of("uniform", "hotspot", "no-hit")) {
+        for (String distribution : List.of("uniform", "hotspot", "no-hit", "enclosed-no-hit")) {
             for (int itemCount : List.of(500, 2000, 8000)) {
                 for (int viewerCount : List.of(1, 8, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024)) {
                     for (int seed = 0; seed < VISIBILITY_SEEDS; seed++) {
@@ -193,6 +193,10 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                 items = randomPoints(random, itemCount, 0.0D, 256.0D);
                 viewers = randomPoints(random, viewerCount, 768.0D, 256.0D);
             }
+            case "enclosed-no-hit" -> {
+                items = randomPoints(random, itemCount, 448.0D, 128.0D);
+                viewers = enclosingRingPoints(random, viewerCount);
+            }
             default -> throw new IllegalArgumentException("Unknown visibility distribution: " + distribution);
         }
         LongSupplier linearReference = () -> linearActiveLabels(items, viewers, VIEW_DISTANCE);
@@ -219,9 +223,10 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                 "{\"benchmark\":\"%s\",\"distribution\":\"%s\",\"seed\":%d," +
                         "\"items\":%d,\"viewers\":%d," +
                         "\"range\":%.1f,\"baseline\":\"%s\",\"baselineUsesGrid\":%b," +
-                        "\"candidate\":\"production-primitive-viewer-index\"," +
+                        "\"candidate\":\"production-bounded-primitive-viewer-index\"," +
                         "\"candidateStorage\":\"primitive-soa\"," +
                         "\"indexRebuiltPerOperation\":true,\"candidateUsesGrid\":false," +
+                        "\"candidateUsesBounds\":true," +
                         "\"sampleTargetNs\":%d,\"warmupRounds\":%d,\"measurementRounds\":%d," +
                         "\"roundOrder\":\"%s\"," +
                         "\"baselineMedianNs\":%d,\"baselineP95Ns\":%d," +
@@ -261,6 +266,24 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         for (int index = 0; index < count; index++) {
             points.add(new Point(index, offset + random.nextDouble(width), 64.0D + random.nextDouble(32.0D),
                     offset + random.nextDouble(width)));
+        }
+        return points;
+    }
+
+    /**
+     * Places viewers around an empty central region. From eight viewers onward the item region is
+     * enclosed by the viewer AABB, while every viewer remains well beyond the visibility radius.
+     * This prevents an outer-bounds fast rejection from disguising worst-case miss scans.
+     */
+    private static List<Point> enclosingRingPoints(Random random, int count) {
+        List<Point> points = new ArrayList<>(count);
+        double phase = random.nextDouble(2.0D * Math.PI);
+        for (int index = 0; index < count; index++) {
+            double angle = phase + 2.0D * Math.PI * index / Math.max(1, count);
+            points.add(new Point(index,
+                    512.0D + Math.cos(angle) * 300.0D,
+                    64.0D + random.nextDouble(32.0D),
+                    512.0D + Math.sin(angle) * 300.0D));
         }
         return points;
     }
