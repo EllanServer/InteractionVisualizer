@@ -74,13 +74,10 @@ final class DroppedItemSpatialIndex {
 
     static final class ViewerIndex {
 
-        private static final int POINT_STORAGE_MAX_ITEMS_PER_VIEWER = 4;
-
         private UUID singleWorldId;
         private WorldViewerBucket singleWorldViewers;
         private Map<UUID, WorldViewerBucket> viewersByWorld;
         private final int expectedViewers;
-        private final boolean pointStorage;
 
         ViewerIndex() {
             this(0);
@@ -91,25 +88,12 @@ final class DroppedItemSpatialIndex {
                 throw new IllegalArgumentException("expectedViewers must be non-negative");
             }
             this.expectedViewers = expectedViewers;
-            this.pointStorage = false;
-        }
-
-        ViewerIndex(int expectedViewers, int expectedItems) {
-            if (expectedViewers < 0) {
-                throw new IllegalArgumentException("expectedViewers must be non-negative");
-            }
-            if (expectedItems < 0) {
-                throw new IllegalArgumentException("expectedItems must be non-negative");
-            }
-            this.expectedViewers = expectedViewers;
-            this.pointStorage = expectedViewers > 0
-                    && (long) expectedItems <= (long) expectedViewers * POINT_STORAGE_MAX_ITEMS_PER_VIEWER;
         }
 
         void addViewer(UUID worldId, double x, double y, double z) {
             if (singleWorldViewers == null) {
                 singleWorldId = worldId;
-                singleWorldViewers = createBucket(expectedViewers);
+                singleWorldViewers = new WorldViewerBucket(expectedViewers);
                 singleWorldViewers.add(x, y, z);
                 return;
             }
@@ -121,21 +105,11 @@ final class DroppedItemSpatialIndex {
                 viewersByWorld = new HashMap<>();
                 viewersByWorld.put(singleWorldId, singleWorldViewers);
             }
-            viewersByWorld.computeIfAbsent(worldId, ignored -> createBucket(0)).add(x, y, z);
+            viewersByWorld.computeIfAbsent(worldId, ignored -> new WorldViewerBucket(0)).add(x, y, z);
         }
 
         boolean isEmpty() {
             return singleWorldViewers == null;
-        }
-
-        boolean usesPointStorage() {
-            return pointStorage;
-        }
-
-        private WorldViewerBucket createBucket(int initialCapacity) {
-            return pointStorage
-                    ? new PointWorldViewerBucket(initialCapacity)
-                    : new PrimitiveWorldViewerBucket(initialCapacity);
         }
 
         boolean hasViewerWithin(UUID worldId, double x, double y, double z, double range) {
@@ -148,15 +122,10 @@ final class DroppedItemSpatialIndex {
             return viewers != null && viewers.hasViewerWithin(x, y, z, range * range);
         }
 
-        private abstract static class WorldViewerBucket {
+        private static final class WorldViewerBucket {
 
-            abstract void add(double x, double y, double z);
-
-            abstract boolean hasViewerWithin(double x, double y, double z, double rangeSquared);
-        }
-
-        private static final class PrimitiveWorldViewerBucket extends WorldViewerBucket {
-
+            private static final int INITIAL_CAPACITY = 8;
+            private static final int MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
             private static final double[] EMPTY = new double[0];
 
             private double[] xCoordinates = EMPTY;
@@ -164,7 +133,7 @@ final class DroppedItemSpatialIndex {
             private double[] zCoordinates = EMPTY;
             private int size;
 
-            private PrimitiveWorldViewerBucket(int initialCapacity) {
+            private WorldViewerBucket(int initialCapacity) {
                 if (initialCapacity > 0) {
                     xCoordinates = new double[initialCapacity];
                     yCoordinates = new double[initialCapacity];
@@ -172,8 +141,7 @@ final class DroppedItemSpatialIndex {
                 }
             }
 
-            @Override
-            void add(double x, double y, double z) {
+            private void add(double x, double y, double z) {
                 if (size == xCoordinates.length) {
                     int capacity = grownCapacity(size);
                     xCoordinates = grow(xCoordinates, capacity);
@@ -186,8 +154,7 @@ final class DroppedItemSpatialIndex {
                 size++;
             }
 
-            @Override
-            boolean hasViewerWithin(double x, double y, double z, double rangeSquared) {
+            private boolean hasViewerWithin(double x, double y, double z, double rangeSquared) {
                 for (int index = 0; index < size; index++) {
                     double deltaX = xCoordinates[index] - x;
                     double deltaY = yCoordinates[index] - y;
@@ -198,66 +165,21 @@ final class DroppedItemSpatialIndex {
                 }
                 return false;
             }
-        }
 
-        private static final class PointWorldViewerBucket extends WorldViewerBucket {
-
-            private static final Point[] EMPTY = new Point[0];
-
-            private Point[] points = EMPTY;
-            private int size;
-
-            private PointWorldViewerBucket(int initialCapacity) {
-                if (initialCapacity > 0) {
-                    points = new Point[initialCapacity];
+            private static int grownCapacity(int size) {
+                if (size >= MAX_ARRAY_SIZE) {
+                    throw new OutOfMemoryError("Too many viewers");
                 }
+                return size > MAX_ARRAY_SIZE / 2
+                        ? MAX_ARRAY_SIZE
+                        : Math.max(INITIAL_CAPACITY, size << 1);
             }
 
-            @Override
-            void add(double x, double y, double z) {
-                if (size == points.length) {
-                    points = grow(points, grownCapacity(size));
-                }
-                points[size++] = new Point(x, y, z);
+            private static double[] grow(double[] source, int capacity) {
+                double[] expanded = new double[capacity];
+                System.arraycopy(source, 0, expanded, 0, source.length);
+                return expanded;
             }
-
-            @Override
-            boolean hasViewerWithin(double x, double y, double z, double rangeSquared) {
-                for (int index = 0; index < size; index++) {
-                    Point point = points[index];
-                    double deltaX = point.x() - x;
-                    double deltaY = point.y() - y;
-                    double deltaZ = point.z() - z;
-                    if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-        }
-
-        private static final int INITIAL_BUCKET_CAPACITY = 8;
-        private static final int MAX_BUCKET_ARRAY_SIZE = Integer.MAX_VALUE - 8;
-
-        private static int grownCapacity(int size) {
-            if (size >= MAX_BUCKET_ARRAY_SIZE) {
-                throw new OutOfMemoryError("Too many viewers");
-            }
-            return size > MAX_BUCKET_ARRAY_SIZE / 2
-                    ? MAX_BUCKET_ARRAY_SIZE
-                    : Math.max(INITIAL_BUCKET_CAPACITY, size << 1);
-        }
-
-        private static double[] grow(double[] source, int capacity) {
-            double[] expanded = new double[capacity];
-            System.arraycopy(source, 0, expanded, 0, source.length);
-            return expanded;
-        }
-
-        private static Point[] grow(Point[] source, int capacity) {
-            Point[] expanded = new Point[capacity];
-            System.arraycopy(source, 0, expanded, 0, source.length);
-            return expanded;
         }
     }
 

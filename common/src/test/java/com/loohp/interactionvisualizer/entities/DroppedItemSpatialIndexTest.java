@@ -69,23 +69,9 @@ class DroppedItemSpatialIndexTest {
     }
 
     @Test
-    void pointStorageExpandsAtTheMeasuredLowItemToViewerRatio() {
-        UUID world = UUID.randomUUID();
-        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(1, 4);
-        assertTrue(viewers.usesPointStorage());
-
-        for (int index = 0; index < 10; index++) {
-            viewers.addViewer(world, index * -2.5D, 64.0D + index, index * 3.5D);
-        }
-
-        assertTrue(viewers.hasViewerWithin(world, -22.5D, 73.0D, 31.5D, 0.0D));
-        assertFalse(viewers.hasViewerWithin(world, -22.5D, 74.0001D, 31.5D, 1.0D));
-        assertFalse(new DroppedItemSpatialIndex.ViewerIndex(128, 513).usesPointStorage());
-        assertFalse(new DroppedItemSpatialIndex.ViewerIndex(Integer.MAX_VALUE).usesPointStorage());
+    void rejectsNegativeExpectedViewerCapacity() {
         assertThrows(IllegalArgumentException.class,
                 () -> new DroppedItemSpatialIndex.ViewerIndex(-1));
-        assertThrows(IllegalArgumentException.class,
-                () -> new DroppedItemSpatialIndex.ViewerIndex(1, -1));
     }
 
     @Test

@@ -26,8 +26,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 import java.util.function.LongSupplier;
@@ -186,21 +188,41 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
             }
             default -> throw new IllegalArgumentException("Unknown visibility distribution: " + distribution);
         }
-        LongSupplier baseline = () -> linearActiveLabels(items, viewers, VIEW_DISTANCE);
+        LongSupplier linearReference = () -> linearActiveLabels(items, viewers, VIEW_DISTANCE);
+        LongSupplier legacyProduction = () -> legacyGridActiveLabels(items, viewers, VIEW_DISTANCE);
         LongSupplier candidate = () -> indexedActiveLabels(items, viewers, VIEW_DISTANCE);
-        long expectedLabels = baseline.getAsLong();
+        long expectedLabels = linearReference.getAsLong();
+        long legacyLabels = legacyProduction.getAsLong();
         long candidateLabels = candidate.getAsLong();
-        if (expectedLabels != candidateLabels) {
-            throw new IllegalStateException("Visibility A/B mismatch: " + expectedLabels + " != " + candidateLabels);
+        if (expectedLabels != legacyLabels || expectedLabels != candidateLabels) {
+            throw new IllegalStateException("Visibility A/B mismatch: linear=" + expectedLabels
+                    + ", legacy=" + legacyLabels + ", candidate=" + candidateLabels);
         }
-        String candidateStorage = candidateStorage(itemCount, viewers);
-        Comparison comparison = compare(baseline, candidate);
+        Comparison productionComparison;
+        Comparison referenceComparison;
+        if (((itemCount + viewerCount + seed) & 1) == 0) {
+            productionComparison = compare(legacyProduction, candidate);
+            referenceComparison = compare(linearReference, candidate);
+        } else {
+            referenceComparison = compare(linearReference, candidate);
+            productionComparison = compare(legacyProduction, candidate);
+        }
         double reduction = itemCount == 0 ? 0.0D : 100.0D * (itemCount - expectedLabels) / itemCount;
+        reportVisibilityComparison("visibility-production-ab", "legacy-production-viewer-grid", true,
+                distribution, seed, itemCount, viewerCount, productionComparison, expectedLabels, reduction);
+        reportVisibilityComparison("visibility-linear-reference", "linear-viewer-snapshot-any", false,
+                distribution, seed, itemCount, viewerCount, referenceComparison, expectedLabels, reduction);
+    }
+
+    private void reportVisibilityComparison(String benchmark, String baseline, boolean baselineUsesGrid,
+                                            String distribution, int seed, int itemCount, int viewerCount,
+                                            Comparison comparison, long activeLabels, double reduction) {
         String result = String.format(Locale.ROOT,
-                "{\"benchmark\":\"visibility\",\"distribution\":\"%s\",\"seed\":%d," +
+                "{\"benchmark\":\"%s\",\"distribution\":\"%s\",\"seed\":%d," +
                         "\"items\":%d,\"viewers\":%d," +
-                        "\"range\":%.1f,\"baseline\":\"linear-viewer-snapshot-any\"," +
-                        "\"candidate\":\"production-hybrid-viewer-index\",\"candidateStorage\":\"%s\"," +
+                        "\"range\":%.1f,\"baseline\":\"%s\",\"baselineUsesGrid\":%b," +
+                        "\"candidate\":\"production-primitive-viewer-index\"," +
+                        "\"candidateStorage\":\"primitive-soa\"," +
                         "\"indexRebuiltPerOperation\":true,\"candidateUsesGrid\":false," +
                         "\"sampleTargetNs\":%d,\"measurementRounds\":%d," +
                         "\"baselineMedianNs\":%d,\"baselineP95Ns\":%d," +
@@ -208,12 +230,12 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                         "\"baselineRoundsNs\":%s,\"candidateRoundsNs\":%s," +
                         "\"allLabels\":%d,\"activeLabels\":%d," +
                         "\"labelReductionPct\":%.3f}",
-                distribution, seed, itemCount, viewerCount, VIEW_DISTANCE, candidateStorage,
+                benchmark, distribution, seed, itemCount, viewerCount, VIEW_DISTANCE, baseline, baselineUsesGrid,
                 SAMPLE_TARGET_NANOS, MEASUREMENT_ROUNDS,
                 comparison.baseline().median(), comparison.baseline().p95(),
                 comparison.candidate().median(), comparison.candidate().p95(), comparison.speedup(),
                 Arrays.toString(comparison.baselineRoundsNs()), Arrays.toString(comparison.candidateRoundsNs()),
-                itemCount, expectedLabels, reduction);
+                itemCount, activeLabels, reduction);
         report(result);
     }
 
@@ -245,8 +267,11 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         return active;
     }
 
-    private static long indexedActiveLabels(List<Point> items, List<Point> viewers, double range) {
-        DroppedItemSpatialIndex.ViewerIndex index = createViewerIndex(viewers, items.size());
+    private static long legacyGridActiveLabels(List<Point> items, List<Point> viewers, double range) {
+        LegacyViewerIndex index = new LegacyViewerIndex();
+        for (Point viewer : viewers) {
+            index.addViewer(BENCHMARK_WORLD_ID, viewer.x(), viewer.y(), viewer.z());
+        }
         long active = 0;
         for (Point item : items) {
             if (index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range)) {
@@ -257,13 +282,20 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         return active;
     }
 
-    private static String candidateStorage(int itemCount, List<Point> viewers) {
-        return createViewerIndex(viewers, itemCount).usesPointStorage() ? "point-array" : "primitive-soa";
+    private static long indexedActiveLabels(List<Point> items, List<Point> viewers, double range) {
+        DroppedItemSpatialIndex.ViewerIndex index = createViewerIndex(viewers);
+        long active = 0;
+        for (Point item : items) {
+            if (index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range)) {
+                active++;
+            }
+        }
+        blackhole = active;
+        return active;
     }
 
-    private static DroppedItemSpatialIndex.ViewerIndex createViewerIndex(List<Point> viewers, int itemCount) {
-        DroppedItemSpatialIndex.ViewerIndex index =
-                new DroppedItemSpatialIndex.ViewerIndex(viewers.size(), itemCount);
+    private static DroppedItemSpatialIndex.ViewerIndex createViewerIndex(List<Point> viewers) {
+        DroppedItemSpatialIndex.ViewerIndex index = new DroppedItemSpatialIndex.ViewerIndex(viewers.size());
         for (Point viewer : viewers) {
             index.addViewer(BENCHMARK_WORLD_ID, viewer.x(), viewer.y(), viewer.z());
         }
@@ -337,6 +369,60 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
 
     private record Comparison(Samples baseline, Samples candidate, long[] baselineRoundsNs,
                               long[] candidateRoundsNs, double speedup) {
+    }
+
+    /** Exact copy of the viewer-grid strategy used by production before the optimized candidate. */
+    private static final class LegacyViewerIndex {
+
+        private static final double CELL_SIZE = 16.0D;
+        private final Map<LegacyViewerCell, List<LegacyViewerPoint>> viewerCells = new HashMap<>();
+
+        private void addViewer(UUID worldId, double x, double y, double z) {
+            viewerCells.computeIfAbsent(cell(worldId, x, z), ignored -> new ArrayList<>())
+                    .add(new LegacyViewerPoint(x, y, z));
+        }
+
+        private boolean hasViewerWithin(UUID worldId, double x, double y, double z, double range) {
+            if (range < 0.0D) {
+                return false;
+            }
+            int minimumX = coordinate(x - range);
+            int maximumX = coordinate(x + range);
+            int minimumZ = coordinate(z - range);
+            int maximumZ = coordinate(z + range);
+            double rangeSquared = range * range;
+            for (int cellX = minimumX; cellX <= maximumX; cellX++) {
+                for (int cellZ = minimumZ; cellZ <= maximumZ; cellZ++) {
+                    List<LegacyViewerPoint> points = viewerCells.get(new LegacyViewerCell(worldId, cellX, cellZ));
+                    if (points == null) {
+                        continue;
+                    }
+                    for (LegacyViewerPoint point : points) {
+                        double deltaX = point.x() - x;
+                        double deltaY = point.y() - y;
+                        double deltaZ = point.z() - z;
+                        if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static LegacyViewerCell cell(UUID worldId, double x, double z) {
+            return new LegacyViewerCell(worldId, coordinate(x), coordinate(z));
+        }
+
+        private static int coordinate(double value) {
+            return (int) Math.floor(value / CELL_SIZE);
+        }
+    }
+
+    private record LegacyViewerCell(UUID worldId, int x, int z) {
+    }
+
+    private record LegacyViewerPoint(double x, double y, double z) {
     }
 
     private record Point(int id, double x, double y, double z) {

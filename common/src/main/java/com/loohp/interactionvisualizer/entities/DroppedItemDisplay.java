@@ -243,6 +243,13 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     private void tickAllInternal() {
         Collection<Player> viewers = reconcileEligibleViewers();
+        DroppedItemSpatialIndex.ViewerIndex viewerIndex =
+                new DroppedItemSpatialIndex.ViewerIndex(viewers.size());
+        for (Player viewer : viewers) {
+            Location location = viewer.getLocation();
+            viewerIndex.addViewer(viewer.getWorld().getUID(), location.getX(), location.getY(), location.getZ());
+        }
+
         List<TrackedItem> validItems = new ArrayList<>(trackedItems.size());
         Iterator<Map.Entry<UUID, Item>> iterator = trackedItems.entrySet().iterator();
         while (iterator.hasNext()) {
@@ -254,13 +261,6 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 continue;
             }
             validItems.add(new TrackedItem(entry.getKey(), item, item.getLocation()));
-        }
-
-        DroppedItemSpatialIndex.ViewerIndex viewerIndex =
-                new DroppedItemSpatialIndex.ViewerIndex(viewers.size(), validItems.size());
-        for (Player viewer : viewers) {
-            Location location = viewer.getLocation();
-            viewerIndex.addViewer(viewer.getWorld().getUID(), location.getX(), location.getY(), location.getZ());
         }
 
         if (viewerIndex.isEmpty()) {
