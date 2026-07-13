@@ -1,4 +1,4 @@
-name: Phase 2 Clean Runtime A-B
+name: Phase 2 Runtime A-B
 
 on:
   pull_request:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: "Clean runtime workload"
+        description: "Runtime workload"
         required: true
         default: "static-steady"
         type: choice
@@ -33,7 +33,7 @@ on:
         default: "20"
         type: string
       measure_seconds:
-        description: "Clean MSPT/TPS sampling window"
+        description: "MSPT/TPS sampling window (diagnostic when Spark is enabled)"
         required: true
         default: "180"
         type: string
@@ -49,7 +49,7 @@ permissions:
 
 jobs:
   clean-runtime-ab:
-    name: Paper 26.1.2 clean TPS-MSPT ABBA
+    name: Paper 26.1.2 runtime ABBA
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.action != 'labeled' ||
@@ -64,6 +64,7 @@ jobs:
       CAMPAIGN_SETTLE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.settle_seconds || github.event.action == 'labeled' && '20' || '5' }}
       CAMPAIGN_MEASURE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_seconds || github.event.action == 'labeled' && '180' || '10' }}
       CAMPAIGN_SPARK_PROFILE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.spark_profile_mode || 'none' }}
+      CAMPAIGN_EVIDENCE_KIND: ${{ github.event_name == 'workflow_dispatch' && inputs.spark_profile_mode != 'none' && 'diagnostic' || 'clean' }}
 
     steps:
       - name: Check out immutable test source
@@ -113,7 +114,7 @@ jobs:
       - name: Prepare immutable protocol client artifact
         run: bash tools/perf/prepare-phase2-protocol-client.sh phase2-dependencies/protocol-client
 
-      - name: Run restart-isolated clean ABBA campaign
+      - name: Run restart-isolated runtime campaign
         env:
           SCENARIO: ${{ env.CAMPAIGN_SCENARIO }}
           RUNS: ${{ env.CAMPAIGN_RUNS }}
@@ -122,6 +123,7 @@ jobs:
           SETTLE_SECONDS: ${{ env.CAMPAIGN_SETTLE_SECONDS }}
           MEASURE_SECONDS: ${{ env.CAMPAIGN_MEASURE_SECONDS }}
           SPARK_PROFILE_MODE: ${{ env.CAMPAIGN_SPARK_PROFILE_MODE }}
+          EVIDENCE_KIND: ${{ env.CAMPAIGN_EVIDENCE_KIND }}
         run: |
           set -euo pipefail
           [[ "$SCENARIO" == static-steady || "$SCENARIO" == block-idle || \
@@ -163,8 +165,16 @@ jobs:
 
           PLUGIN_JAR=$(find build/libs -maxdepth 1 -type f -name 'InteractionVisualizer-*.jar' ! -name '*-sources.jar' ! -name '*-benchmark.jar' -print -quit)
           test -n "$PLUGIN_JAR"
-          mkdir -p phase2-results/clean
-          MANIFEST=phase2-results/clean/abba-manifest.csv
+          if [[ "$SPARK_PROFILE_MODE" == none ]]; then
+            [[ "$EVIDENCE_KIND" == clean ]]
+            CAPTURE_METHOD=none
+          else
+            [[ "$EVIDENCE_KIND" == diagnostic ]]
+            CAPTURE_METHOD="spark-$SPARK_PROFILE_MODE"
+          fi
+          EVIDENCE_ROOT="phase2-results/$EVIDENCE_KIND"
+          mkdir -p "$EVIDENCE_ROOT"
+          MANIFEST="$EVIDENCE_ROOT/abba-manifest.csv"
           printf 'Scenario,Block,Position,Variant,RunId,StackSha256,ArtifactSha256,CaptureMethod,SourcePath\n' > "$MANIFEST"
           ARTIFACT_SHA=$(sha256sum "$PLUGIN_JAR" | awk '{print $1}')
           STACK_SHA=$(
@@ -189,7 +199,7 @@ jobs:
             PHASE2_PLUGIN_JAR="$PLUGIN_JAR" \
             PHASE2_PAPER_JAR=phase2-dependencies/paper.jar \
             PHASE2_CLIENT_ROOT=phase2-dependencies/protocol-client \
-            PHASE2_OUTPUT_ROOT=phase2-results/clean \
+            PHASE2_OUTPUT_ROOT="$EVIDENCE_ROOT" \
             PHASE2_RUN_ID="$run_id" \
             PHASE2_SCENARIO="$SCENARIO" \
             PHASE2_VARIANT="$variant" \
@@ -202,26 +212,29 @@ jobs:
             PHASE2_SPARK_PROFILE_MODE="$SPARK_PROFILE_MODE" \
             bash tools/perf/run-phase2-runtime-once.sh
 
-            printf '%s,%d,%d,%s,%s,%s,%s,none,%s/iv-perf.json\n' \
-              "$SCENARIO" "$block" "$position" "$variant" "$run_id" "$STACK_SHA" "$ARTIFACT_SHA" "$run_id" \
+            printf '%s,%d,%d,%s,%s,%s,%s,%s,%s/iv-perf.json\n' \
+              "$SCENARIO" "$block" "$position" "$variant" "$run_id" "$STACK_SHA" "$ARTIFACT_SHA" \
+              "$CAPTURE_METHOD" "$run_id" \
               >> "$MANIFEST"
           done
 
-          minimum_seconds=$(( MEASURE_SECONDS - 2 ))
-          incomplete=()
-          if [[ "$RUNS" != 12 ]]; then incomplete=(-AllowIncomplete); fi
-          for metric in msptP95 msptP99 msptMean; do
+          if [[ "$SPARK_PROFILE_MODE" == none ]]; then
+            minimum_seconds=$(( MEASURE_SECONDS - 2 ))
+            incomplete=()
+            if [[ "$RUNS" != 12 ]]; then incomplete=(-AllowIncomplete); fi
+            for metric in msptP95 msptP99 msptMean; do
+              pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$MANIFEST" \
+                -Scenario "$SCENARIO" -Metric "$metric" -Direction LowerIsBetter \
+                -MinimumSeconds "$minimum_seconds" "${incomplete[@]}" \
+                -OutputJson "$EVIDENCE_ROOT/$metric.analysis.json" -Overwrite
+            done
+            # At a healthy 20 TPS cap this is only an overload/non-regression
+            # diagnostic. MSPT remains the optimization effect-size metric.
             pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$MANIFEST" \
-              -Scenario "$SCENARIO" -Metric "$metric" -Direction LowerIsBetter \
+              -Scenario "$SCENARIO" -Metric observedTps -Direction HigherIsBetter \
               -MinimumSeconds "$minimum_seconds" "${incomplete[@]}" \
-              -OutputJson "phase2-results/clean/$metric.analysis.json" -Overwrite
-          done
-          # At a healthy 20 TPS cap this is only an overload/non-regression
-          # diagnostic. MSPT remains the optimization effect-size metric.
-          pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$MANIFEST" \
-            -Scenario "$SCENARIO" -Metric observedTps -Direction HigherIsBetter \
-            -MinimumSeconds "$minimum_seconds" "${incomplete[@]}" \
-            -OutputJson phase2-results/clean/observedTps.analysis.json -Overwrite
+              -OutputJson "$EVIDENCE_ROOT/observedTps.analysis.json" -Overwrite
+          fi
 
           if [[ "$SCENARIO" == block-* ]]; then
             # Active/direct-write CPU time has a meaningful LowerIsBetter
@@ -229,15 +242,15 @@ jobs:
             # candidate can legitimately perform zero checks in a short
             # window, so it stays diagnostic instead of entering log ratios.
             # Raw check counts never carry a universal performance direction.
-            if [[ "$SCENARIO" != block-idle ]]; then
+            if [[ "$SPARK_PROFILE_MODE" == none && "$SCENARIO" != block-idle ]]; then
               pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$MANIFEST" \
                 -Scenario "$SCENARIO" -Metric blockUpdateMs -Direction LowerIsBetter \
                 -MinimumSeconds "$minimum_seconds" "${incomplete[@]}" \
-                -OutputJson phase2-results/clean/blockUpdateMs.analysis.json -Overwrite
+                -OutputJson "$EVIDENCE_ROOT/blockUpdateMs.analysis.json" -Overwrite
             fi
 
-            python3 - "$MANIFEST" "$SCENARIO" "$RUNS" "$ITEMS" \
-              phase2-results/clean/blockUpdateChecks.evidence.json <<'PY'
+            python3 - "$MANIFEST" "$SCENARIO" "$RUNS" "$ITEMS" "$CAPTURE_METHOD" \
+              "$EVIDENCE_ROOT/blockUpdateChecks.evidence.json" <<'PY'
           from pathlib import Path
           import csv
           import json
@@ -250,7 +263,8 @@ jobs:
           scenario = sys.argv[2]
           expected_runs = int(sys.argv[3])
           expected_items = int(sys.argv[4])
-          output_path = Path(sys.argv[5])
+          capture_method = sys.argv[5]
+          output_path = Path(sys.argv[6])
           records = []
           with manifest_path.open(encoding="utf-8", newline="") as stream:
               rows = list(csv.DictReader(stream))
@@ -260,6 +274,10 @@ jobs:
           for row in rows:
               if row["Scenario"] != scenario:
                   raise SystemExit(f"manifest scenario drift: {row['Scenario']} != {scenario}")
+              if row["CaptureMethod"] != capture_method:
+                  raise SystemExit(
+                      f"manifest capture-method drift: {row['CaptureMethod']} != {capture_method}"
+                  )
               source_path = manifest_path.parent / row["SourcePath"]
               metrics = json.loads(source_path.read_text(encoding="utf-8"))
               run_id = row["RunId"]
@@ -341,22 +359,36 @@ jobs:
                   ),
               }
 
+          if capture_method == "none":
+              interpretation = (
+                  "blockUpdateChecks is workload evidence, not a standalone optimization objective; "
+                  "fewer checks can mean either effective event-driven scheduling or missing work. "
+                  "For block-idle, zero candidate checks/time in a short window is valid and blockUpdateMs "
+                  "has no ratio analysis. Interpret all scenarios with machine-validated scene actions, "
+                  "blockUpdateMs, MSPT and TPS."
+              )
+          else:
+              interpretation = (
+                  "Instrumented Spark workload evidence only. blockUpdateChecks can establish executed work, "
+                  "but MSPT, TPS and blockUpdateMs were collected under profiler overhead and must not be "
+                  "used as clean performance effect sizes. Use the saved profile to attribute CPU cost, then "
+                  "confirm any optimization in a separate captureMethod=none campaign."
+              )
+
           evidence = {
               "schemaVersion": 1,
               "analysisType": "diagnostic-work-evidence",
               "scenario": scenario,
               "requestedRuns": expected_runs,
               "expectedItems": expected_items,
-              "formalComplete": expected_runs == 12,
+              "captureMethod": capture_method,
+              "performanceEvidenceReady": capture_method == "none",
+              "formalComplete": expected_runs == 12 and capture_method == "none",
               "blockUpdateChecksDirection": None,
-              "blockUpdateMsDirection": None if scenario == "block-idle" else "LowerIsBetter",
-              "interpretation": (
-                  "blockUpdateChecks is workload evidence, not a standalone optimization objective; "
-                  "fewer checks can mean either effective event-driven scheduling or missing work. "
-                  "For block-idle, zero candidate checks/time in a short window is valid and blockUpdateMs "
-                  "has no ratio analysis. Interpret all scenarios with machine-validated scene actions, "
-                  "blockUpdateMs, MSPT and TPS."
+              "blockUpdateMsDirection": (
+                  "LowerIsBetter" if capture_method == "none" and scenario != "block-idle" else None
               ),
+              "interpretation": interpretation,
               "activeCadenceGuard": cadence_guard,
               "byVariant": by_variant,
               "runs": records,
@@ -370,6 +402,10 @@ jobs:
           if step_summary:
               with open(step_summary, "a", encoding="utf-8", newline="\n") as stream:
                   stream.write(f"### {scenario} block update evidence\n\n")
+                  stream.write(
+                      f"Capture method: `{capture_method}`; clean performance evidence ready: "
+                      f"`{str(capture_method == 'none').lower()}`.\n\n"
+                  )
                   stream.write("`blockUpdateChecks` is diagnostic work evidence (no universal direction).\n\n")
                   stream.write("| Run | Variant | Checks | Checks/tick | Update ms | ms/check |\n")
                   stream.write("|---|---:|---:|---:|---:|---:|\n")
@@ -398,13 +434,13 @@ jobs:
           PY
           fi
 
-      - name: Publish clean runtime evidence
+      - name: Publish runtime evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase2-clean-runtime-${{ env.CAMPAIGN_SCENARIO }}-${{ github.sha }}-${{ github.run_id }}
+          name: phase2-${{ env.CAMPAIGN_EVIDENCE_KIND }}-runtime-${{ env.CAMPAIGN_SCENARIO }}-${{ github.sha }}-${{ github.run_id }}
           path: |
-            phase2-results/clean
+            phase2-results/${{ env.CAMPAIGN_EVIDENCE_KIND }}
             phase2-dependencies/protocol-client/client-build-manifest.json
             phase2-dependencies/protocol-client/client-files.sha256
             phase2-dependencies/protocol-client/node-minecraft-protocol/package-lock.json
