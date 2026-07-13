@@ -45,7 +45,7 @@ class BlockUpdateSchedulerTest {
     }
 
     @Test
-    void prioritizesDirtyAndRotatesActiveWithinTheConfiguredPeriod() {
+    void prioritizesUrgentDirtyAndRotatesActiveWithinTheConfiguredPeriod() {
         BlockUpdateScheduler<String> scheduler = new BlockUpdateScheduler<>(Set::of, 2, 600);
         List<String> updates = new ArrayList<>();
         scheduler.markActive("a", 1);
@@ -73,6 +73,66 @@ class BlockUpdateSchedulerTest {
             return !value.equals("a");
         }));
         assertEquals(2, scheduler.activeCount());
+    }
+
+    @Test
+    void synchronizedLevelSignalsDoNotBurstPastTheActiveCadence() {
+        BlockUpdateScheduler<Integer> scheduler = new BlockUpdateScheduler<>(Set::of, 20, 600);
+        for (int value = 0; value < 100; value++) {
+            scheduler.markActive(value, 1);
+        }
+        for (int value = 0; value < 100; value++) {
+            scheduler.markDirtyUnlessActive(value, 1);
+        }
+
+        assertEquals(0, scheduler.pendingDirtyCount());
+        int total = 0;
+        for (int tick = 1; tick <= 20; tick++) {
+            int checks = scheduler.tick(tick, 64, value -> true);
+            assertEquals(5, checks);
+            total += checks;
+        }
+        assertEquals(100, total);
+        assertEquals(100, scheduler.activeCount());
+    }
+
+    @Test
+    void levelSignalsStillBootstrapInactiveValues() {
+        BlockUpdateScheduler<String> scheduler = new BlockUpdateScheduler<>(Set::of, 20, 600);
+        scheduler.markDirtyUnlessActive("inactive", 2);
+
+        assertEquals(1, scheduler.pendingDirtyCount());
+        assertEquals(0, scheduler.tick(1, 64, value -> true));
+        assertEquals(1, scheduler.tick(2, 64, value -> false));
+        assertEquals(0, scheduler.pendingDirtyCount());
+    }
+
+    @Test
+    void coalescedStopSignalLeavesTheActivePeriodAsTheMaximumDelay() {
+        BlockUpdateScheduler<String> scheduler = new BlockUpdateScheduler<>(Set::of, 20, 600);
+        scheduler.markActive("furnace", 1);
+        assertEquals(1, scheduler.tick(1, 64, value -> true));
+
+        scheduler.markDirtyUnlessActive("furnace", 2);
+        assertEquals(0, scheduler.pendingDirtyCount());
+        for (int tick = 2; tick < 21; tick++) {
+            assertEquals(0, scheduler.tick(tick, 64, value -> false));
+        }
+        assertEquals(1, scheduler.tick(21, 64, value -> false));
+        assertEquals(0, scheduler.activeCount());
+    }
+
+    @Test
+    void coalescedSignalDoesNotDiscardAnExistingUrgentInvalidation() {
+        BlockUpdateScheduler<String> scheduler = new BlockUpdateScheduler<>(Set::of, 20, 600);
+        scheduler.markActive("furnace", 10);
+        scheduler.markDirty("furnace", 2);
+        scheduler.markDirtyUnlessActive("furnace", 2);
+
+        assertEquals(1, scheduler.pendingDirtyCount());
+        assertEquals(1, scheduler.tick(2, 64, value -> true));
+        assertEquals(0, scheduler.pendingDirtyCount());
+        assertEquals(1, scheduler.activeCount());
     }
 
     @Test

@@ -361,6 +361,12 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
         }
     }
 
+    private void markDirtyUnlessActive(Block block) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates && block != null && isSmoker(block.getType())) {
+            blockUpdates.markDirtyUnlessActive(block, (long) Bukkit.getCurrentTick() + 1L);
+        }
+    }
+
     /** Optimized aggregate-listener entry after the inventory location has been resolved once. */
     public void onSmokerInventoryChanged(Block block) {
         markDirty(block);
@@ -386,11 +392,11 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
     }
 
     public void onSmokerStartSmelt(FurnaceStartSmeltEvent event) {
-        markDirty(event.getBlock());
+        markDirtyUnlessActive(event.getBlock());
     }
 
     public void onSmokerSmelt(FurnaceSmeltEvent event) {
-        markDirty(event.getBlock());
+        markDirtyUnlessActive(event.getBlock());
     }
 
     public void onSmokerExtract(FurnaceExtractEvent event) {

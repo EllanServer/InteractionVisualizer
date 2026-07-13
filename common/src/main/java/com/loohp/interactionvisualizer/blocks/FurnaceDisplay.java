@@ -359,6 +359,12 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
         }
     }
 
+    private void markDirtyUnlessActive(Block block) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates && block != null && isFurnace(block.getType())) {
+            blockUpdates.markDirtyUnlessActive(block, (long) Bukkit.getCurrentTick() + 1L);
+        }
+    }
+
     /** Optimized aggregate-listener entry after the inventory location has been resolved once. */
     public void onFurnaceInventoryChanged(Block block) {
         markDirty(block);
@@ -384,11 +390,11 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
     }
 
     public void onFurnaceStartSmelt(FurnaceStartSmeltEvent event) {
-        markDirty(event.getBlock());
+        markDirtyUnlessActive(event.getBlock());
     }
 
     public void onFurnaceSmelt(FurnaceSmeltEvent event) {
-        markDirty(event.getBlock());
+        markDirtyUnlessActive(event.getBlock());
     }
 
     public void onFurnaceExtract(FurnaceExtractEvent event) {

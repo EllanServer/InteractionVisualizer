@@ -360,6 +360,12 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
         }
     }
 
+    private void markDirtyUnlessActive(Block block) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates && block != null && isBlastFurnace(block.getType())) {
+            blockUpdates.markDirtyUnlessActive(block, (long) Bukkit.getCurrentTick() + 1L);
+        }
+    }
+
     /** Optimized aggregate-listener entry after the inventory location has been resolved once. */
     public void onBlastFurnaceInventoryChanged(Block block) {
         markDirty(block);
@@ -385,11 +391,11 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
     }
 
     public void onBlastFurnaceStartSmelt(FurnaceStartSmeltEvent event) {
-        markDirty(event.getBlock());
+        markDirtyUnlessActive(event.getBlock());
     }
 
     public void onBlastFurnaceSmelt(FurnaceSmeltEvent event) {
-        markDirty(event.getBlock());
+        markDirtyUnlessActive(event.getBlock());
     }
 
     public void onBlastFurnaceExtract(FurnaceExtractEvent event) {

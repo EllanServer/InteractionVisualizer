@@ -27,7 +27,9 @@ import java.util.function.Supplier;
  *
  * <p>Dirty entries are coalesced by key and become eligible on an explicit
  * tick. Active entries are rotated through a reusable queue so each entry is
- * checked approximately once per configured update period. A weakly
+ * checked approximately once per configured update period. Callers can absorb
+ * synchronized level signals for already-active entries into that cadence
+ * without weakening urgent interaction edges. A weakly
  * consistent iterator performs a bounded safety audit without allocating a
  * snapshot of every tracked block. The dirty cap supplied to {@link #tick}
  * applies to this scheduler instance (one display type), not globally across
@@ -94,6 +96,19 @@ final class BlockUpdateScheduler<T> {
         }
         this.dirtyDueTick.put(value, readyTick);
         this.dirtyByTick.computeIfAbsent(readyTick, ignored -> new LinkedHashSet<>()).add(value);
+    }
+
+    /**
+     * Coalesces a non-urgent level signal into the existing active cadence.
+     * Inactive values still enter the dirty queue so the signal can bootstrap
+     * tracking. Urgent player, inventory and lifecycle edges must use
+     * {@link #markDirty(Object, long)}.
+     */
+    void markDirtyUnlessActive(T value, long readyTick) {
+        if (value != null && this.activeDueTick.containsKey(value)) {
+            return;
+        }
+        this.markDirty(value, readyTick);
     }
 
     void markActive(T value, long readyTick) {
