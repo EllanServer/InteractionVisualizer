@@ -27,6 +27,7 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
+import org.bukkit.entity.Bee;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -37,14 +38,25 @@ import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockFadeEvent;
 import org.bukkit.event.block.BlockFromToEvent;
 import org.bukkit.event.block.BlockIgniteEvent;
+import org.bukkit.event.block.BlockPistonExtendEvent;
+import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.block.BlockRedstoneEvent;
+import org.bukkit.event.entity.EntityChangeBlockEvent;
+import org.bukkit.event.entity.EntityEnterBlockEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.inventory.FurnaceBurnEvent;
 import org.bukkit.event.inventory.FurnaceExtractEvent;
 import org.bukkit.event.inventory.FurnaceSmeltEvent;
 import org.bukkit.event.inventory.FurnaceStartSmeltEvent;
 import org.bukkit.event.inventory.InventoryMoveItemEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.Inventory;
+
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * Listener surface used exclusively by the startup-locked event-driven block
@@ -52,6 +64,11 @@ import org.bukkit.inventory.Inventory;
  * legacy mode pays no Bukkit dispatch cost for them.
  */
 public final class EventDrivenBlockUpdateListener implements Listener {
+
+    private static final BlockFace[] REDSTONE_NEIGHBORS = {
+            BlockFace.NORTH, BlockFace.EAST, BlockFace.SOUTH, BlockFace.WEST,
+            BlockFace.UP, BlockFace.DOWN
+    };
 
     private FurnaceDisplay furnace;
     private BlastFurnaceDisplay blastFurnace;
@@ -362,6 +379,88 @@ public final class EventDrivenBlockUpdateListener implements Listener {
         }
     }
 
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBeeEnterBlock(EntityEnterBlockEvent event) {
+        if (hasBeeDisplays() && event.getEntity() instanceof Bee) {
+            routeBeeBlock(event.getBlock());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onEntityChangeBlock(EntityChangeBlockEvent event) {
+        if (!hasBeeDisplays()) {
+            return;
+        }
+        Block block = event.getBlock();
+        if (event.getEntity() instanceof Bee && beeTarget(block.getType()) != BeeTarget.NONE) {
+            routeBeeBlock(block);
+            return;
+        }
+        // Falling blocks, Endermen and other entity-driven changes can alter
+        // the unobstructed campfire smoke column even when no bee is involved.
+        routeAffectedColumn(block);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBeeRelevantInteract(PlayerInteractEvent event) {
+        if (!hasBeeDisplays()) {
+            return;
+        }
+        Block block = event.getClickedBlock();
+        if (block == null) {
+            return;
+        }
+        Material material = block.getType();
+        if (beeTarget(material) != BeeTarget.NONE) {
+            routeBeeBlock(block);
+        } else if (isSmokeColumnInteractable(material)) {
+            routeAffectedColumn(block);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onAffectedPistonExtend(BlockPistonExtendEvent event) {
+        if (!hasBeeDisplays()) {
+            return;
+        }
+        routeAffectedColumns(pistonAffectedBlocks(event.getBlock(), event.getBlocks(),
+                event.getDirection(), event.getDirection()));
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onAffectedPistonRetract(BlockPistonRetractEvent event) {
+        if (!hasBeeDisplays()) {
+            return;
+        }
+        routeAffectedColumns(pistonAffectedBlocks(event.getBlock(), event.getBlocks(),
+                event.getDirection(), event.getDirection().getOppositeFace()));
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onAffectedRedstone(BlockRedstoneEvent event) {
+        if (!hasBeeDisplays() || event.getOldCurrent() == event.getNewCurrent()) {
+            return;
+        }
+        Set<Block> changedOpenables = null;
+        Block source = event.getBlock();
+        if (isRedstoneOpenable(source.getType())) {
+            changedOpenables = new LinkedHashSet<>();
+            changedOpenables.add(source);
+        }
+        for (BlockFace face : REDSTONE_NEIGHBORS) {
+            Block neighbor = source.getRelative(face);
+            if (isRedstoneOpenable(neighbor.getType())) {
+                if (changedOpenables == null) {
+                    changedOpenables = new LinkedHashSet<>();
+                }
+                changedOpenables.add(neighbor);
+            }
+        }
+        if (changedOpenables != null) {
+            routeAffectedColumns(changedOpenables);
+        }
+    }
+
     private void routeInventoryBlock(Block block) {
         if (block == null) {
             return;
@@ -387,13 +486,22 @@ public final class EventDrivenBlockUpdateListener implements Listener {
         }
     }
 
+    private boolean hasBeeDisplays() {
+        return beeHive != null || beeNest != null;
+    }
+
     private void routeAffectedColumn(Block changedBlock) {
         if (changedBlock == null || beeHive == null && beeNest == null) {
             return;
         }
-        for (int distance = 1; distance <= 5; distance++) {
-            routeBeeBlock(changedBlock.getRelative(BlockFace.UP, distance));
+        scanAffectedColumn(changedBlock, this::routeBeeBlock);
+    }
+
+    private void routeAffectedColumns(Collection<Block> changedBlocks) {
+        if (changedBlocks == null || changedBlocks.isEmpty() || beeHive == null && beeNest == null) {
+            return;
         }
+        scanAffectedColumns(changedBlocks, this::routeBeeBlock);
     }
 
     private void routeBeeBlock(Block block) {
@@ -449,6 +557,63 @@ public final class EventDrivenBlockUpdateListener implements Listener {
             case BEE_NEST -> BeeTarget.NEST;
             default -> BeeTarget.NONE;
         };
+    }
+
+    static boolean isRedstoneOpenable(Material material) {
+        if (material == null) {
+            return false;
+        }
+        String name = material.name();
+        return name.endsWith("_TRAPDOOR") || name.endsWith("_DOOR") || name.endsWith("_FENCE_GATE");
+    }
+
+    static boolean isSmokeColumnInteractable(Material material) {
+        return material == Material.CAMPFIRE || material == Material.SOUL_CAMPFIRE
+                || isRedstoneOpenable(material);
+    }
+
+    static Set<Block> pistonAffectedBlocks(Block piston, Collection<Block> movedBlocks,
+                                           BlockFace movementDirection, BlockFace headDirection) {
+        Set<Block> affected = new LinkedHashSet<>();
+        if (piston != null) {
+            affected.add(piston);
+            affected.add(piston.getRelative(headDirection));
+        }
+        if (movedBlocks != null) {
+            for (Block moved : movedBlocks) {
+                if (moved != null) {
+                    affected.add(moved);
+                    affected.add(moved.getRelative(movementDirection));
+                }
+            }
+        }
+        return affected;
+    }
+
+    static void scanAffectedColumn(Block changedBlock, Consumer<Block> route) {
+        if (changedBlock == null || route == null) {
+            return;
+        }
+        for (int distance = 1; distance <= 5; distance++) {
+            Block candidate = changedBlock.getRelative(BlockFace.UP, distance);
+            if (beeTarget(candidate.getType()) != BeeTarget.NONE) {
+                route.accept(candidate);
+            }
+        }
+    }
+
+    static void scanAffectedColumns(Collection<Block> changedBlocks, Consumer<Block> route) {
+        if (changedBlocks == null || changedBlocks.isEmpty() || route == null) {
+            return;
+        }
+        Set<Block> routed = new LinkedHashSet<>();
+        for (Block changedBlock : changedBlocks) {
+            scanAffectedColumn(changedBlock, candidate -> {
+                if (routed.add(candidate)) {
+                    route.accept(candidate);
+                }
+            });
+        }
     }
 
     enum FurnaceTarget {

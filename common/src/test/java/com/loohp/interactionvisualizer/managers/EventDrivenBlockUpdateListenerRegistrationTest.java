@@ -13,14 +13,21 @@ package com.loohp.interactionvisualizer.managers;
 
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
 import com.loohp.interactionvisualizer.blocks.BeeHiveDisplay;
+import com.loohp.interactionvisualizer.blocks.BeeNestDisplay;
 import com.loohp.interactionvisualizer.blocks.FurnaceDisplay;
 import com.loohp.interactionvisualizer.blocks.SmokerDisplay;
 import org.bukkit.Material;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.block.BlockPistonExtendEvent;
+import org.bukkit.event.block.BlockPistonRetractEvent;
+import org.bukkit.event.block.BlockRedstoneEvent;
+import org.bukkit.event.entity.EntityChangeBlockEvent;
+import org.bukkit.event.entity.EntityEnterBlockEvent;
 import org.bukkit.event.inventory.FurnaceBurnEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
 import org.junit.jupiter.api.Test;
 
@@ -43,6 +50,8 @@ class EventDrivenBlockUpdateListenerRegistrationTest {
     @Test
     void legacyHandlersRemainOnAlwaysRegisteredListeners() throws Exception {
         assertRegistered(FurnaceDisplay.class, "onUseFurnace", InventoryClickEvent.class);
+        assertRegistered(BeeHiveDisplay.class, "onBeeEnterBeehive", EntityEnterBlockEvent.class);
+        assertRegistered(BeeNestDisplay.class, "onBeeEnterBeenest", EntityEnterBlockEvent.class);
         assertRegistered(TileEntityManager.class, "onPlayerMove", PlayerMoveEvent.class);
     }
 
@@ -50,6 +59,12 @@ class EventDrivenBlockUpdateListenerRegistrationTest {
     void conditionalListenerOwnsTheEventDrivenSurface() throws Exception {
         assertRegistered(EventDrivenBlockUpdateListener.class, "onFurnaceBurn", FurnaceBurnEvent.class);
         assertRegistered(EventDrivenBlockUpdateListener.class, "onAffectedBlockPlace", BlockPlaceEvent.class);
+        assertRegistered(EventDrivenBlockUpdateListener.class, "onBeeEnterBlock", EntityEnterBlockEvent.class);
+        assertRegistered(EventDrivenBlockUpdateListener.class, "onEntityChangeBlock", EntityChangeBlockEvent.class);
+        assertRegistered(EventDrivenBlockUpdateListener.class, "onBeeRelevantInteract", PlayerInteractEvent.class);
+        assertRegistered(EventDrivenBlockUpdateListener.class, "onAffectedPistonExtend", BlockPistonExtendEvent.class);
+        assertRegistered(EventDrivenBlockUpdateListener.class, "onAffectedPistonRetract", BlockPistonRetractEvent.class);
+        assertRegistered(EventDrivenBlockUpdateListener.class, "onAffectedRedstone", BlockRedstoneEvent.class);
         assertRegistered(EventDrivenBlockUpdateListener.class, "onTileEntityRemoved", TileEntityRemovedEvent.class);
         Class<?> lifecycleListener = findDeclaredClass(TileEntityManager.class, "EventDrivenLifecycleListener");
         assertRegistered(lifecycleListener, "onChunkLoad", ChunkLoadEvent.class);

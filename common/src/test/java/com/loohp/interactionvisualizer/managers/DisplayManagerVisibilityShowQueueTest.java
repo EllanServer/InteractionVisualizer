@@ -79,22 +79,35 @@ class DisplayManagerVisibilityShowQueueTest {
     }
 
     @Test
-    void staleInspectionWorkIsBoundedAcrossTicks() {
+    void rejectedInspectionWorkIsBoundedAcrossTicks() {
         DisplayManager.VisibilityShowQueue<String> queue =
                 new DisplayManager.VisibilityShowQueue<>(1, 0L);
         for (int index = 0; index < 20; index++) {
-            queue.request("stale-" + index);
+            queue.request("rejected-" + index);
+        }
+        queue.request("desired");
+
+        for (long tick = 1L; tick <= 5L; tick++) {
+            assertEquals(List.of(), queue.drain(4, 0, tick, "desired"::equals));
+            assertFalse(queue.isEmpty());
+        }
+        assertEquals(List.of("desired"), queue.drain(4, 0, 6L, "desired"::equals));
+        assertTrue(queue.isEmpty());
+    }
+
+    @Test
+    void cancelledEntriesDoNotLeaveInspectionBacklog() {
+        DisplayManager.VisibilityShowQueue<String> queue =
+                new DisplayManager.VisibilityShowQueue<>(1, 0L);
+        for (int index = 0; index < 20; index++) {
+            queue.request("cancelled-" + index);
         }
         queue.request("desired");
         for (int index = 0; index < 20; index++) {
-            queue.cancel("stale-" + index);
+            queue.cancel("cancelled-" + index);
         }
 
-        for (long tick = 1L; tick <= 5L; tick++) {
-            assertEquals(List.of(), queue.drain(4, 0, tick, ignored -> true));
-            assertFalse(queue.isEmpty());
-        }
-        assertEquals(List.of("desired"), queue.drain(4, 0, 6L, ignored -> true));
+        assertEquals(List.of("desired"), queue.drain(4, 0, 1L, ignored -> true));
         assertTrue(queue.isEmpty());
     }
 

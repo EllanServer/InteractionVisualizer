@@ -47,7 +47,6 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
-import org.bukkit.entity.Bee;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -364,55 +363,39 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBeeEnterBeenest(EntityEnterBlockEvent event) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
         if (event.isCancelled()) {
             return;
         }
         Block block = event.getBlock();
-        if (InteractionVisualizer.eventDrivenBlockUpdates) {
-            if (!(event.getEntity() instanceof Bee) || block.getType() != Material.BEE_NEST
-                    || !beenestMap.containsKey(block)) {
-                return;
-            }
-            markDirty(block);
-        } else {
-            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> measureLegacyUpdate(block), 1, block.getLocation());
-        }
+        Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> measureLegacyUpdate(block), 1, block.getLocation());
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBeeLeaveBeenest(EntityChangeBlockEvent event) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
         if (event.isCancelled()) {
             return;
         }
         Block block = event.getBlock();
-        if (InteractionVisualizer.eventDrivenBlockUpdates) {
-            markAffectedColumnDirty(block);
-            if (!(event.getEntity() instanceof Bee) || block.getType() != Material.BEE_NEST
-                    || !beenestMap.containsKey(block)) {
-                return;
-            }
-            markDirty(block);
-        } else {
-            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> measureLegacyUpdate(block), 1, block.getLocation());
-        }
+        Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> measureLegacyUpdate(block), 1, block.getLocation());
     }
 
     @SuppressWarnings("deprecation")
     @EventHandler(priority = EventPriority.MONITOR)
     public void onInteractBeenest(PlayerInteractEvent event) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
         if (event.isCancelled()) {
             return;
         }
         Block block = event.getClickedBlock();
-        if (InteractionVisualizer.eventDrivenBlockUpdates) {
-            if (block == null) {
-                return;
-            }
-            // Covers both harvesting the nest itself and toggling an
-            // obstruction (for example a trapdoor) in the smoke column.
-            markAffectedColumnDirty(block);
-            markDirty(block);
-        } else if (block != null) {
+        if (block != null) {
             Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> measureLegacyUpdate(block), 1, block.getLocation());
         }
     }

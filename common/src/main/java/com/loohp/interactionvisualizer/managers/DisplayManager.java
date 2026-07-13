@@ -50,12 +50,10 @@ import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.util.Vector;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Deque;
-import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -1189,7 +1187,9 @@ public final class DisplayManager implements Listener {
     }
 
     private static void showViewerNow(VisualizerEntity logical, Player player) {
-        cancelVisibilityShow(logical, player.getUniqueId());
+        // Both callers remove the pending request before entering: the immediate
+        // path cancels it, while VisibilityShowQueue removes it before invoking
+        // the drain action. Avoid a second queue lookup on every successful show.
         Set<UUID> shown = shownViewers.computeIfAbsent(logical, ignored -> ConcurrentHashMap.newKeySet());
         UUID viewer = player.getUniqueId();
         if (!shown.add(viewer)) {
@@ -1621,38 +1621,26 @@ public final class DisplayManager implements Listener {
 
     static final class VisibilityShowQueue<T> {
 
-        private final Deque<QueuedShow<T>> pending;
-        private final Map<T, Long> queued;
+        private final LinkedHashSet<T> pending;
         private int tokens;
         private long lastRefillTick;
-        private long nextGeneration;
 
         VisibilityShowQueue(int initialTokens) {
             this(initialTokens, 0L);
         }
 
         VisibilityShowQueue(int initialTokens, long initialTick) {
-            this.pending = new ArrayDeque<>();
-            this.queued = new HashMap<>();
+            this.pending = new LinkedHashSet<>();
             this.tokens = Math.max(0, initialTokens);
             this.lastRefillTick = initialTick;
         }
 
         boolean request(T value) {
-            if (queued.containsKey(value)) {
-                return false;
-            }
-            long generation = ++nextGeneration;
-            queued.put(value, generation);
-            pending.addLast(new QueuedShow<>(value, generation));
-            return true;
+            return pending.add(value);
         }
 
         void cancel(T value) {
-            queued.remove(value);
-            if (queued.isEmpty()) {
-                pending.clear();
-            }
+            pending.remove(value);
         }
 
         List<T> drain(int capacity, int refill, Predicate<T> desired) {
@@ -1677,20 +1665,19 @@ public final class DisplayManager implements Listener {
             long restored = elapsedTicks * (long) Math.max(0, refill);
             tokens = (int) Math.min(boundedCapacity, Math.max(0L, tokens + restored));
             lastRefillTick = Math.max(lastRefillTick, currentTick);
+            if (tokens == 0 || pending.isEmpty()) {
+                return 0;
+            }
             int drained = 0;
             int inspected = 0;
             while (tokens > 0 && inspected < boundedCapacity && !pending.isEmpty()) {
-                QueuedShow<T> request = pending.removeFirst();
+                T value = pending.removeFirst();
                 inspected++;
-                T value = request.value();
-                if (!queued.remove(value, request.generation()) || !action.accept(value)) {
+                if (!action.accept(value)) {
                     continue;
                 }
                 tokens--;
                 drained++;
-            }
-            if (queued.isEmpty()) {
-                pending.clear();
             }
             return drained;
         }
@@ -1710,9 +1697,8 @@ public final class DisplayManager implements Listener {
         int drainAllTo(DrainAction<T> action) {
             int drained = 0;
             while (!pending.isEmpty()) {
-                QueuedShow<T> request = pending.removeFirst();
-                T value = request.value();
-                if (queued.remove(value, request.generation()) && action.accept(value)) {
+                T value = pending.removeFirst();
+                if (action.accept(value)) {
                     drained++;
                 }
             }
@@ -1720,16 +1706,15 @@ public final class DisplayManager implements Listener {
         }
 
         boolean isEmpty() {
-            return queued.isEmpty();
+            return pending.isEmpty();
         }
 
         boolean hasPending() {
-            return !queued.isEmpty();
+            return !pending.isEmpty();
         }
 
         void clear() {
             pending.clear();
-            queued.clear();
         }
 
         @FunctionalInterface
@@ -1738,8 +1723,6 @@ public final class DisplayManager implements Listener {
             boolean accept(T value);
         }
 
-        private record QueuedShow<T>(T value, long generation) {
-        }
     }
 
     private static final class ItemAnimationState {
