@@ -312,11 +312,11 @@ if grep -Fq -- "No key layers in MapLike" "$server_log"; then
 fi
 
 send_console "difficulty peaceful"
-send_console "gamerule minecraft:do_mob_spawning false"
-send_console "gamerule minecraft:do_weather_cycle false"
-send_console "gamerule minecraft:do_daylight_cycle false"
+send_console "gamerule minecraft:spawn_mobs false"
+send_console "gamerule minecraft:advance_weather false"
+send_console "gamerule minecraft:advance_time false"
 send_console "gamerule minecraft:random_tick_speed 0"
-send_console "gamerule minecraft:spawn_radius 0"
+send_console "gamerule minecraft:respawn_radius 0"
 send_console "setworldspawn 0 -60 0"
 send_console "weather clear"
 send_console "time set day"
