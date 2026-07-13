@@ -78,61 +78,22 @@ final class DroppedItemSpatialIndex {
         private WorldViewerBucket singleWorldViewers;
         private Map<UUID, WorldViewerBucket> viewersByWorld;
         private final int expectedViewers;
-        private final int expectedQueries;
-        private final boolean adaptive;
-        private UUID singleExpectedQueryWorldId;
-        private int singleWorldExpectedQueries;
-        private Map<UUID, Integer> expectedQueriesByWorld;
-        private boolean usesPerWorldQueryBudgets;
 
         ViewerIndex() {
-            this(0, 0);
+            this(0);
         }
 
         ViewerIndex(int expectedViewers) {
-            this(expectedViewers, 0);
-        }
-
-        ViewerIndex(int expectedViewers, int expectedQueries) {
-            this(expectedViewers, expectedQueries, true);
-        }
-
-        ViewerIndex(int expectedViewers, int expectedQueries, boolean adaptive) {
-            if (expectedViewers < 0 || expectedQueries < 0) {
-                throw new IllegalArgumentException("expected sizes must be non-negative");
+            if (expectedViewers < 0) {
+                throw new IllegalArgumentException("expectedViewers must be non-negative");
             }
             this.expectedViewers = expectedViewers;
-            this.expectedQueries = expectedQueries;
-            this.adaptive = adaptive;
-        }
-
-        void expectQuery(UUID worldId) {
-            if (singleWorldViewers != null) {
-                throw new IllegalStateException("query budgets must be declared before viewers");
-            }
-            usesPerWorldQueryBudgets = true;
-            if (singleExpectedQueryWorldId == null) {
-                singleExpectedQueryWorldId = worldId;
-                singleWorldExpectedQueries = 1;
-                return;
-            }
-            if (expectedQueriesByWorld == null
-                    && java.util.Objects.equals(singleExpectedQueryWorldId, worldId)) {
-                singleWorldExpectedQueries = saturatedIncrement(singleWorldExpectedQueries);
-                return;
-            }
-            if (expectedQueriesByWorld == null) {
-                expectedQueriesByWorld = new HashMap<>();
-                expectedQueriesByWorld.put(singleExpectedQueryWorldId, singleWorldExpectedQueries);
-            }
-            expectedQueriesByWorld.merge(worldId, 1, ViewerIndex::saturatedAdd);
         }
 
         void addViewer(UUID worldId, double x, double y, double z) {
             if (singleWorldViewers == null) {
                 singleWorldId = worldId;
-                singleWorldViewers = new WorldViewerBucket(expectedViewers,
-                        expectedQueries(worldId), adaptive);
+                singleWorldViewers = new WorldViewerBucket(expectedViewers);
                 singleWorldViewers.add(x, y, z);
                 return;
             }
@@ -145,18 +106,23 @@ final class DroppedItemSpatialIndex {
                 viewersByWorld.put(singleWorldId, singleWorldViewers);
             }
             viewersByWorld.computeIfAbsent(worldId,
-                            ignored -> new WorldViewerBucket(0, expectedQueries(worldId), adaptive))
+                            ignored -> new WorldViewerBucket(0))
                     .add(x, y, z);
         }
 
         boolean hasViewerWithin(UUID worldId, double x, double y, double z, double range) {
+            return hasViewerWithin(worldId, x, y, z, range, Integer.MAX_VALUE);
+        }
+
+        boolean hasViewerWithin(UUID worldId, double x, double y, double z,
+                                double range, int remainingQueries) {
             if (range < 0.0D) {
                 return false;
             }
             WorldViewerBucket viewers = viewersByWorld == null
                     ? java.util.Objects.equals(singleWorldId, worldId) ? singleWorldViewers : null
                     : viewersByWorld.get(worldId);
-            return viewers != null && viewers.hasViewerWithin(x, y, z, range);
+            return viewers != null && viewers.hasViewerWithin(x, y, z, range, remainingQueries);
         }
 
         boolean hasAdaptiveGrid(UUID worldId) {
@@ -180,35 +146,18 @@ final class DroppedItemSpatialIndex {
             return viewers != null && viewers.boundsActive;
         }
 
-        private int expectedQueries(UUID worldId) {
-            if (!usesPerWorldQueryBudgets) {
-                return expectedQueries;
-            }
-            if (expectedQueriesByWorld == null) {
-                return java.util.Objects.equals(singleExpectedQueryWorldId, worldId)
-                        ? singleWorldExpectedQueries : 0;
-            }
-            return expectedQueriesByWorld.getOrDefault(worldId, 0);
-        }
-
-        private static int saturatedIncrement(int value) {
-            return value == Integer.MAX_VALUE ? Integer.MAX_VALUE : value + 1;
-        }
-
-        private static int saturatedAdd(int first, int second) {
-            return first > Integer.MAX_VALUE - second ? Integer.MAX_VALUE : first + second;
-        }
-
         private static final class WorldViewerBucket {
 
             private static final int INITIAL_CAPACITY = 8;
             private static final int MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
             private static final double[] EMPTY = new double[0];
             private static final double GRID_CELL_SIZE = 16.0D;
-            private static final int MINIMUM_GRID_VIEWERS = 768;
-            private static final int INTERNAL_MISSES_BEFORE_GRID = 8;
+            private static final int MINIMUM_DEEP_SCAN_VIEWERS = 192;
+            private static final int EXPENSIVE_QUERIES_BEFORE_GRID = 8;
             private static final int MINIMUM_REMAINING_QUERIES = 256;
-            private static final int VIEWERS_PER_QUERIED_CELL = 7;
+            private static final int CELL_LOOKUP_EQUIVALENT_VIEWERS = 3;
+            private static final int GRID_BUILD_EQUIVALENT_VIEWERS_PER_VIEWER = 4;
+            private static final int GRID_LINEAR_PROBE_INTERVAL = 64;
 
             private double[] xCoordinates = EMPTY;
             private double[] yCoordinates = EMPTY;
@@ -219,19 +168,16 @@ final class DroppedItemSpatialIndex {
             private double maximumX = Double.NEGATIVE_INFINITY;
             private double maximumY = Double.NEGATIVE_INFINITY;
             private double maximumZ = Double.NEGATIVE_INFINITY;
-            private final int expectedQueries;
-            private final boolean adaptive;
             private Map<ViewerGridCell, List<Point>> viewerGrid;
             private boolean boundsInitialized;
             private boolean boundsActive;
             private boolean useGrid;
-            private int completedQueries;
-            private int internalMisses;
+            private boolean persistentGridHits;
+            private int expensiveQueries;
+            private int gridQueriesUntilProbe;
             private int size;
 
-            private WorldViewerBucket(int initialCapacity, int expectedQueries, boolean adaptive) {
-                this.expectedQueries = expectedQueries;
-                this.adaptive = adaptive;
+            private WorldViewerBucket(int initialCapacity) {
                 if (initialCapacity > 0) {
                     xCoordinates = new double[initialCapacity];
                     yCoordinates = new double[initialCapacity];
@@ -250,7 +196,8 @@ final class DroppedItemSpatialIndex {
                 yCoordinates[size] = y;
                 zCoordinates[size] = z;
                 size++;
-                if (adaptive && (boundsInitialized || viewerGrid != null || completedQueries != 0)) {
+                if (boundsInitialized || viewerGrid != null || useGrid || persistentGridHits
+                        || expensiveQueries != 0 || gridQueriesUntilProbe != 0) {
                     resetAdaptiveState();
                 }
             }
@@ -261,61 +208,73 @@ final class DroppedItemSpatialIndex {
                         || z < minimumZ - range || z > maximumZ + range;
             }
 
-            private boolean hasViewerWithin(double x, double y, double z, double range) {
-                if (!adaptive) {
-                    return hasViewerWithinLinear(x, y, z, range * range);
-                }
-                completedQueries++;
+            private boolean hasViewerWithin(double x, double y, double z,
+                                            double range, int remainingQueries) {
                 if (boundsActive && isOutsideBounds(x, y, z, range)) {
                     return false;
                 }
                 double rangeSquared = range * range;
                 if (useGrid) {
-                    ViewerCellWindow window = gridWindowIfCostEffective(x, z, range);
+                    ViewerCellWindow window = gridWindow(x, z, range);
                     if (window == null) {
                         useGrid = false;
+                        persistentGridHits = false;
+                        expensiveQueries = 0;
+                    } else if (--gridQueriesUntilProbe <= 0) {
+                        useGrid = false;
+                        persistentGridHits = false;
+                        expensiveQueries = EXPENSIVE_QUERIES_BEFORE_GRID - 1;
                     } else {
                         if (hasViewerWithinGrid(x, y, z, rangeSquared, window)) {
-                            useGrid = false;
                             boundsActive = false;
-                            internalMisses = 0;
+                            if (!persistentGridHits) {
+                                useGrid = false;
+                                expensiveQueries = 0;
+                            }
                             return true;
+                        }
+                        if (isOutsideBounds(x, y, z, range)) {
+                            boundsActive = true;
                         }
                         return false;
                     }
                 }
-                if (hasViewerWithinLinear(x, y, z, rangeSquared)) {
-                    if (boundsActive || internalMisses != 0) {
+                int matchingViewer = firstViewerWithin(x, y, z, rangeSquared);
+                if (matchingViewer != 0) {
+                    if (boundsActive) {
                         boundsActive = false;
-                        internalMisses = 0;
+                    }
+                    if (matchingViewer >= MINIMUM_DEEP_SCAN_VIEWERS) {
+                        expensiveQueries++;
+                        activateGridIfBeneficial(x, z, range, remainingQueries,
+                                matchingViewer, matchingViewer - 1, true);
+                    } else if (expensiveQueries != 0 || persistentGridHits) {
+                        expensiveQueries = 0;
+                        persistentGridHits = false;
                     }
                     return true;
                 }
                 initializeBounds();
-                boundsActive = true;
                 if (isOutsideBounds(x, y, z, range)) {
+                    boundsActive = true;
                     return false;
                 }
-                internalMisses++;
-                if (shouldUseGrid(x, z, range)) {
-                    if (viewerGrid == null) {
-                        buildGrid();
-                    }
-                    useGrid = true;
-                }
+                boundsActive = false;
+                expensiveQueries++;
+                activateGridIfBeneficial(x, z, range, remainingQueries, size, -1, false);
                 return false;
             }
 
-            private boolean hasViewerWithinLinear(double x, double y, double z, double rangeSquared) {
+            private int firstViewerWithin(double x, double y, double z, double rangeSquared) {
                 for (int index = 0; index < size; index++) {
                     double deltaX = xCoordinates[index] - x;
                     double deltaY = yCoordinates[index] - y;
                     double deltaZ = zCoordinates[index] - z;
                     if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
-                        return true;
+                        return index + 1;
                     }
                 }
-                return false;
+                return 0;
             }
 
             private boolean hasViewerWithinGrid(double x, double y, double z, double rangeSquared,
@@ -348,16 +307,66 @@ final class DroppedItemSpatialIndex {
                 return false;
             }
 
-            private boolean shouldUseGrid(double x, double z, double range) {
-                if (size < MINIMUM_GRID_VIEWERS
-                        || internalMisses < INTERNAL_MISSES_BEFORE_GRID
-                        || expectedQueries - completedQueries < MINIMUM_REMAINING_QUERIES) {
-                    return false;
+            private void activateGridIfBeneficial(double x, double z, double range,
+                                                  int remainingQueries, int scannedViewers,
+                                                  int matchingViewerIndex, boolean persistOnHits) {
+                if (expensiveQueries < EXPENSIVE_QUERIES_BEFORE_GRID
+                        || (viewerGrid == null && remainingQueries < MINIMUM_REMAINING_QUERIES)) {
+                    return;
                 }
-                return gridWindowIfCostEffective(x, z, range) != null;
+                ViewerCellWindow window = gridWindow(x, z, range);
+                if (window == null || !gridLikelyCheaper(
+                        window, scannedViewers, matchingViewerIndex, remainingQueries)) {
+                    expensiveQueries = EXPENSIVE_QUERIES_BEFORE_GRID - GRID_LINEAR_PROBE_INTERVAL;
+                    return;
+                }
+                if (viewerGrid == null) {
+                    buildGrid();
+                }
+                useGrid = true;
+                persistentGridHits = persistOnHits;
+                expensiveQueries = 0;
+                gridQueriesUntilProbe = GRID_LINEAR_PROBE_INTERVAL;
             }
 
-            private ViewerCellWindow gridWindowIfCostEffective(double x, double z, double range) {
+            private boolean gridLikelyCheaper(ViewerCellWindow window, int scannedViewers,
+                                              int matchingViewerIndex, int remainingQueries) {
+                long finalCell = window.cellCount();
+                if (matchingViewerIndex >= 0) {
+                    long matchingCell = window.ordinal(viewerCoordinate(xCoordinates[matchingViewerIndex]),
+                            viewerCoordinate(zCoordinates[matchingViewerIndex]));
+                    if (matchingCell > 0L) {
+                        finalCell = matchingCell;
+                    }
+                }
+                long cellCost = finalCell * CELL_LOOKUP_EQUIVALENT_VIEWERS;
+                if (cellCost >= scannedViewers) {
+                    return false;
+                }
+                long maximumVisitedViewers = scannedViewers - cellCost - 1L;
+                int visitedViewers = 0;
+                for (int index = 0; index < size; index++) {
+                    long ordinal = window.ordinal(viewerCoordinate(xCoordinates[index]),
+                            viewerCoordinate(zCoordinates[index]));
+                    if (ordinal > 0L && (ordinal < finalCell
+                            || ordinal == finalCell && (matchingViewerIndex < 0 || index <= matchingViewerIndex))) {
+                        visitedViewers++;
+                        if (visitedViewers > maximumVisitedViewers) {
+                            return false;
+                        }
+                    }
+                }
+                long perQuerySaving = scannedViewers - cellCost - visitedViewers;
+                long futureQueries = Math.max(0L, remainingQueries);
+                long linearProbeCost = ((futureQueries + GRID_LINEAR_PROBE_INTERVAL - 1L)
+                        / GRID_LINEAR_PROBE_INTERVAL) * scannedViewers;
+                long totalSaving = perQuerySaving * futureQueries - linearProbeCost;
+                long buildCost = viewerGrid == null
+                        ? (long) size * GRID_BUILD_EQUIVALENT_VIEWERS_PER_VIEWER : 0L;
+                return totalSaving > buildCost;
+            }
+
+            private ViewerCellWindow gridWindow(double x, double z, double range) {
                 if (!Double.isFinite(x) || !Double.isFinite(z)
                         || !Double.isFinite(range) || range < 0.0D) {
                     return null;
@@ -376,7 +385,7 @@ final class DroppedItemSpatialIndex {
                 int maximumCellZ = (int) maximumCellZValue;
                 long queriedCellsX = (long) maximumCellX - minimumCellX + 1L;
                 long queriedCellsZ = (long) maximumCellZ - minimumCellZ + 1L;
-                long maximumQueriedCells = size / VIEWERS_PER_QUERIED_CELL;
+                long maximumQueriedCells = size;
                 if (queriedCellsX <= 0L || queriedCellsZ <= 0L || maximumQueriedCells <= 0L
                         || queriedCellsX > maximumQueriedCells
                         || queriedCellsZ > maximumQueriedCells
@@ -415,11 +424,35 @@ final class DroppedItemSpatialIndex {
 
             private void buildGrid() {
                 Map<ViewerGridCell, List<Point>> grid = new HashMap<>(viewerGridCapacity(size));
+                boolean calculateBounds = !boundsInitialized;
+                double nextMinimumX = Double.POSITIVE_INFINITY;
+                double nextMinimumY = Double.POSITIVE_INFINITY;
+                double nextMinimumZ = Double.POSITIVE_INFINITY;
+                double nextMaximumX = Double.NEGATIVE_INFINITY;
+                double nextMaximumY = Double.NEGATIVE_INFINITY;
+                double nextMaximumZ = Double.NEGATIVE_INFINITY;
                 for (int index = 0; index < size; index++) {
                     ViewerGridCell cell = new ViewerGridCell(viewerCoordinate(xCoordinates[index]),
                             viewerCoordinate(zCoordinates[index]));
                     grid.computeIfAbsent(cell, ignored -> new ArrayList<>())
                             .add(new Point(xCoordinates[index], yCoordinates[index], zCoordinates[index]));
+                    if (calculateBounds) {
+                        nextMinimumX = Math.min(nextMinimumX, xCoordinates[index]);
+                        nextMinimumY = Math.min(nextMinimumY, yCoordinates[index]);
+                        nextMinimumZ = Math.min(nextMinimumZ, zCoordinates[index]);
+                        nextMaximumX = Math.max(nextMaximumX, xCoordinates[index]);
+                        nextMaximumY = Math.max(nextMaximumY, yCoordinates[index]);
+                        nextMaximumZ = Math.max(nextMaximumZ, zCoordinates[index]);
+                    }
+                }
+                if (calculateBounds) {
+                    minimumX = nextMinimumX;
+                    minimumY = nextMinimumY;
+                    minimumZ = nextMinimumZ;
+                    maximumX = nextMaximumX;
+                    maximumY = nextMaximumY;
+                    maximumZ = nextMaximumZ;
+                    boundsInitialized = true;
                 }
                 viewerGrid = grid;
             }
@@ -429,8 +462,9 @@ final class DroppedItemSpatialIndex {
                 boundsInitialized = false;
                 boundsActive = false;
                 useGrid = false;
-                completedQueries = 0;
-                internalMisses = 0;
+                persistentGridHits = false;
+                expensiveQueries = 0;
+                gridQueriesUntilProbe = 0;
                 minimumX = Double.POSITIVE_INFINITY;
                 minimumY = Double.POSITIVE_INFINITY;
                 minimumZ = Double.POSITIVE_INFINITY;
@@ -475,6 +509,21 @@ final class DroppedItemSpatialIndex {
     }
 
     private record ViewerCellWindow(int minimumX, int maximumX, int minimumZ, int maximumZ) {
+
+        private long widthZ() {
+            return (long) maximumZ - minimumZ + 1L;
+        }
+
+        private long cellCount() {
+            return ((long) maximumX - minimumX + 1L) * widthZ();
+        }
+
+        private long ordinal(int x, int z) {
+            if (x < minimumX || x > maximumX || z < minimumZ || z > maximumZ) {
+                return -1L;
+            }
+            return ((long) x - minimumX) * widthZ() + (long) z - minimumZ + 1L;
+        }
     }
 
     private record Point(double x, double y, double z) {

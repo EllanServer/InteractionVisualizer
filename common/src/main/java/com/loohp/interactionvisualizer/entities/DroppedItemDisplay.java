@@ -244,6 +244,9 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     private void tickAllInternal() {
         Collection<Player> viewers = reconcileEligibleViewers();
         List<TrackedItem> validItems = new ArrayList<>(trackedItems.size());
+        UUID singleItemWorldId = null;
+        int singleWorldItemCount = 0;
+        Map<UUID, Integer> itemCountsByWorld = null;
         Iterator<Map.Entry<UUID, Item>> iterator = trackedItems.entrySet().iterator();
         while (iterator.hasNext()) {
             Map.Entry<UUID, Item> entry = iterator.next();
@@ -254,7 +257,20 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 continue;
             }
             Location location = item.getLocation();
-            validItems.add(new TrackedItem(entry.getKey(), item, location.getWorld().getUID(), location));
+            UUID worldId = location.getWorld().getUID();
+            validItems.add(new TrackedItem(entry.getKey(), item, worldId, location));
+            if (singleItemWorldId == null) {
+                singleItemWorldId = worldId;
+                singleWorldItemCount = 1;
+            } else if (itemCountsByWorld == null && singleItemWorldId.equals(worldId)) {
+                singleWorldItemCount++;
+            } else {
+                if (itemCountsByWorld == null) {
+                    itemCountsByWorld = new HashMap<>();
+                    itemCountsByWorld.put(singleItemWorldId, singleWorldItemCount);
+                }
+                itemCountsByWorld.merge(worldId, 1, Integer::sum);
+            }
         }
 
         if (viewers.isEmpty()) {
@@ -266,9 +282,6 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
         DroppedItemSpatialIndex.ViewerIndex viewerIndex =
                 new DroppedItemSpatialIndex.ViewerIndex(viewers.size());
-        for (TrackedItem tracked : validItems) {
-            viewerIndex.expectQuery(tracked.worldId());
-        }
         for (Player viewer : viewers) {
             Location location = viewer.getLocation();
             viewerIndex.addViewer(viewer.getWorld().getUID(), location.getX(), location.getY(), location.getZ());
@@ -282,14 +295,23 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                         location.getX(), location.getY(), location.getZ());
             }
         }
-        for (TrackedItem tracked : validItems) {
-            update(tracked, itemIndex, viewerIndex);
+        int remainingSingleWorldItems = singleWorldItemCount;
+        for (int trackedIndex = 0; trackedIndex < validItems.size(); trackedIndex++) {
+            TrackedItem tracked = validItems.get(trackedIndex);
+            int remainingWorldItems;
+            if (itemCountsByWorld == null) {
+                remainingWorldItems = --remainingSingleWorldItems;
+            } else {
+                remainingWorldItems = itemCountsByWorld.get(tracked.worldId()) - 1;
+                itemCountsByWorld.put(tracked.worldId(), remainingWorldItems);
+            }
+            update(tracked, itemIndex, viewerIndex, remainingWorldItems);
         }
         reconcileLabelVisibility(viewers, validItems);
     }
 
     private void update(TrackedItem tracked, DroppedItemSpatialIndex itemIndex,
-                        DroppedItemSpatialIndex.ViewerIndex viewerIndex) {
+                        DroppedItemSpatialIndex.ViewerIndex viewerIndex, int remainingWorldItems) {
         Item item = tracked.item();
         Location itemLocation = tracked.location();
         TextDisplay label = labels.get(tracked.itemId());
@@ -300,7 +322,8 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 ? effectiveViewDistance
                 : effectiveViewDistance + VIEW_DISTANCE_HYSTERESIS;
         if (!viewerIndex.hasViewerWithin(tracked.worldId(),
-                itemLocation.getX(), itemLocation.getY(), itemLocation.getZ(), cullingDistance)) {
+                itemLocation.getX(), itemLocation.getY(), itemLocation.getZ(),
+                cullingDistance, remainingWorldItems)) {
             removeLabel(tracked.itemId());
             return;
         }

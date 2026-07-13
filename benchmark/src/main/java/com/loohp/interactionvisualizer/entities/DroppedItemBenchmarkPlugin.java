@@ -221,11 +221,6 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                     + ", legacy=" + legacyLabels + ", control=" + controlLabels
                     + ", candidate=" + candidateLabels);
         }
-        AdaptivePathProbe pathProbe = probeAdaptivePaths(items, viewers, VIEW_DISTANCE);
-        if (pathProbe.activeLabels() != expectedLabels) {
-            throw new IllegalStateException("Adaptive path probe mismatch: expected=" + expectedLabels
-                    + ", probe=" + pathProbe.activeLabels());
-        }
         if ((distribution.endsWith("no-hit") && expectedLabels != 0L)
                 || (distribution.equals("late-hit") && expectedLabels != itemCount)) {
             throw new IllegalStateException("Invalid " + distribution + " fixture: active=" + expectedLabels);
@@ -233,11 +228,16 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         int startingPermutation = Math.floorMod(itemCount * 31 + viewerCount * 17 + seed, 6);
         ThreeWayComparison comparisons = compareThree(
                 legacyProduction, primitiveControl, candidate, startingPermutation);
+        AdaptivePathProbe pathProbe = probeAdaptivePaths(items, viewers, VIEW_DISTANCE);
+        if (pathProbe.activeLabels() != expectedLabels) {
+            throw new IllegalStateException("Adaptive path probe mismatch: expected=" + expectedLabels
+                    + ", probe=" + pathProbe.activeLabels());
+        }
         double reduction = itemCount == 0 ? 0.0D : 100.0D * (itemCount - expectedLabels) / itemCount;
         reportVisibilityComparison("visibility-production-ab", "legacy-production-viewer-grid", true,
                 distribution, seed, itemCount, viewerCount, comparisons.legacyCandidate(),
                 pathProbe, expectedLabels, reduction);
-        reportVisibilityComparison("visibility-adaptive-control-ab", "production-primitive-viewer-index", false,
+        reportVisibilityComparison("visibility-adaptive-control-ab", "pure-primitive-soa-control", false,
                 distribution, seed, itemCount, viewerCount, comparisons.controlCandidate(),
                 pathProbe, expectedLabels, reduction);
     }
@@ -250,6 +250,7 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                 "{\"benchmark\":\"%s\",\"distribution\":\"%s\",\"seed\":%d," +
                         "\"items\":%d,\"viewers\":%d," +
                         "\"range\":%.1f,\"baseline\":\"%s\",\"baselineUsesGrid\":%b," +
+                        "\"baselineUsesBounds\":false,\"sharedCandidateSample\":true," +
                         "\"candidate\":\"production-adaptive-primitive-viewer-index\"," +
                         "\"candidateStorage\":\"primitive-soa\"," +
                         "\"indexRebuiltPerOperation\":true,\"candidateUsesGrid\":true," +
@@ -377,7 +378,8 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
             index.addViewer(BENCHMARK_WORLD_ID, viewer.x(), viewer.y(), viewer.z());
         }
         long active = 0;
-        for (Point item : items) {
+        for (int itemIndex = 0; itemIndex < items.size(); itemIndex++) {
+            Point item = items.get(itemIndex);
             if (index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range)) {
                 active++;
             }
@@ -387,10 +389,12 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
     }
 
     private static long indexedActiveLabels(List<Point> items, List<Point> viewers, double range) {
-        DroppedItemSpatialIndex.ViewerIndex index = createViewerIndex(viewers, items.size());
+        DroppedItemSpatialIndex.ViewerIndex index = createViewerIndex(viewers);
         long active = 0;
-        for (Point item : items) {
-            if (index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range)) {
+        for (int itemIndex = 0; itemIndex < items.size(); itemIndex++) {
+            Point item = items.get(itemIndex);
+            if (index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range,
+                    items.size() - itemIndex - 1)) {
                 active++;
             }
         }
@@ -399,13 +403,13 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
     }
 
     private static long primitiveControlActiveLabels(List<Point> items, List<Point> viewers, double range) {
-        DroppedItemSpatialIndex.ViewerIndex index =
-                new DroppedItemSpatialIndex.ViewerIndex(viewers.size(), items.size(), false);
+        PrimitiveViewerIndex index = new PrimitiveViewerIndex(viewers.size());
         for (Point viewer : viewers) {
             index.addViewer(BENCHMARK_WORLD_ID, viewer.x(), viewer.y(), viewer.z());
         }
         long active = 0;
-        for (Point item : items) {
+        for (int itemIndex = 0; itemIndex < items.size(); itemIndex++) {
+            Point item = items.get(itemIndex);
             if (index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range)) {
                 active++;
             }
@@ -415,10 +419,12 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
     }
 
     private static AdaptivePathProbe probeAdaptivePaths(List<Point> items, List<Point> viewers, double range) {
-        DroppedItemSpatialIndex.ViewerIndex index = createViewerIndex(viewers, items.size());
+        DroppedItemSpatialIndex.ViewerIndex index = createViewerIndex(viewers);
         long active = 0;
-        for (Point item : items) {
-            if (index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range)) {
+        for (int itemIndex = 0; itemIndex < items.size(); itemIndex++) {
+            Point item = items.get(itemIndex);
+            if (index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range,
+                    items.size() - itemIndex - 1)) {
                 active++;
             }
         }
@@ -427,9 +433,9 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                 index.hasActiveBounds(BENCHMARK_WORLD_ID));
     }
 
-    private static DroppedItemSpatialIndex.ViewerIndex createViewerIndex(List<Point> viewers, int expectedQueries) {
+    private static DroppedItemSpatialIndex.ViewerIndex createViewerIndex(List<Point> viewers) {
         DroppedItemSpatialIndex.ViewerIndex index =
-                new DroppedItemSpatialIndex.ViewerIndex(viewers.size(), expectedQueries);
+                new DroppedItemSpatialIndex.ViewerIndex(viewers.size());
         for (Point viewer : viewers) {
             index.addViewer(BENCHMARK_WORLD_ID, viewer.x(), viewer.y(), viewer.z());
         }
@@ -606,6 +612,48 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
 
     private record AdaptivePathProbe(long activeLabels, boolean gridBuilt,
                                      boolean gridActiveAtEnd, boolean boundsActiveAtEnd) {
+    }
+
+    /** Strict pure primitive SoA lower-bound control without bounds or an adaptive grid. */
+    private static final class PrimitiveViewerIndex {
+
+        private final double[] xCoordinates;
+        private final double[] yCoordinates;
+        private final double[] zCoordinates;
+        private UUID worldId;
+        private int size;
+
+        private PrimitiveViewerIndex(int capacity) {
+            xCoordinates = new double[capacity];
+            yCoordinates = new double[capacity];
+            zCoordinates = new double[capacity];
+        }
+
+        private void addViewer(UUID worldId, double x, double y, double z) {
+            if (this.worldId == null) {
+                this.worldId = worldId;
+            }
+            xCoordinates[size] = x;
+            yCoordinates[size] = y;
+            zCoordinates[size] = z;
+            size++;
+        }
+
+        private boolean hasViewerWithin(UUID worldId, double x, double y, double z, double range) {
+            if (!java.util.Objects.equals(this.worldId, worldId)) {
+                return false;
+            }
+            double rangeSquared = range * range;
+            for (int index = 0; index < size; index++) {
+                double deltaX = xCoordinates[index] - x;
+                double deltaY = yCoordinates[index] - y;
+                double deltaZ = zCoordinates[index] - z;
+                if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     /** Exact copy of the viewer-grid strategy used by production before the optimized candidate. */
