@@ -38,7 +38,8 @@ jobs:
             'tools/perf/analyze-presentmon.ps1',
             'tools/perf/analyze-minecraft-debug-profile.ps1',
             'tools/perf/analyze-jfr-socket-writes.ps1',
-            'tools/perf/analyze-phase2-abba.ps1'
+            'tools/perf/analyze-phase2-abba.ps1',
+            'tools/perf/analyze-phase2-pcap.ps1'
           )
           foreach ($script in $scripts) {
             [void][scriptblock]::Create((Get-Content -Raw -LiteralPath $script))
@@ -67,6 +68,11 @@ jobs:
           $abbaSelfTest = $abbaSelfTestJson | ConvertFrom-Json
           if (-not $abbaSelfTest.passed) {
             throw 'Phase 2 ABBA analyzer self-test did not report passed=true.'
+          }
+          $pcapSelfTestJson = & ./tools/perf/analyze-phase2-pcap.ps1 -SelfTest | Out-String
+          $pcapSelfTest = $pcapSelfTestJson | ConvertFrom-Json
+          if (-not $pcapSelfTest.passed) {
+            throw 'Phase 2 pcap analyzer self-test did not report passed=true.'
           }
 
       - name: Run checks and build production jar
