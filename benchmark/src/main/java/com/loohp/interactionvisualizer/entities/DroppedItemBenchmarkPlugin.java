@@ -193,20 +193,23 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         if (expectedLabels != candidateLabels) {
             throw new IllegalStateException("Visibility A/B mismatch: " + expectedLabels + " != " + candidateLabels);
         }
+        String candidateStorage = candidateStorage(itemCount, viewers);
         Comparison comparison = compare(baseline, candidate);
         double reduction = itemCount == 0 ? 0.0D : 100.0D * (itemCount - expectedLabels) / itemCount;
         String result = String.format(Locale.ROOT,
                 "{\"benchmark\":\"visibility\",\"distribution\":\"%s\",\"seed\":%d," +
                         "\"items\":%d,\"viewers\":%d," +
                         "\"range\":%.1f,\"baseline\":\"linear-viewer-snapshot-any\"," +
-                        "\"candidate\":\"production-primitive-viewer-index\",\"indexRebuiltPerOperation\":true," +
-                        "\"candidateUsesGrid\":false,\"sampleTargetNs\":%d,\"measurementRounds\":%d," +
+                        "\"candidate\":\"production-hybrid-viewer-index\",\"candidateStorage\":\"%s\"," +
+                        "\"indexRebuiltPerOperation\":true,\"candidateUsesGrid\":false," +
+                        "\"sampleTargetNs\":%d,\"measurementRounds\":%d," +
                         "\"baselineMedianNs\":%d,\"baselineP95Ns\":%d," +
                         "\"candidateMedianNs\":%d,\"candidateP95Ns\":%d,\"speedup\":%.3f," +
                         "\"baselineRoundsNs\":%s,\"candidateRoundsNs\":%s," +
                         "\"allLabels\":%d,\"activeLabels\":%d," +
                         "\"labelReductionPct\":%.3f}",
-                distribution, seed, itemCount, viewerCount, VIEW_DISTANCE, SAMPLE_TARGET_NANOS, MEASUREMENT_ROUNDS,
+                distribution, seed, itemCount, viewerCount, VIEW_DISTANCE, candidateStorage,
+                SAMPLE_TARGET_NANOS, MEASUREMENT_ROUNDS,
                 comparison.baseline().median(), comparison.baseline().p95(),
                 comparison.candidate().median(), comparison.candidate().p95(), comparison.speedup(),
                 Arrays.toString(comparison.baselineRoundsNs()), Arrays.toString(comparison.candidateRoundsNs()),
@@ -243,7 +246,7 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
     }
 
     private static long indexedActiveLabels(List<Point> items, List<Point> viewers, double range) {
-        DroppedItemSpatialIndex.ViewerIndex index = createViewerIndex(viewers);
+        DroppedItemSpatialIndex.ViewerIndex index = createViewerIndex(viewers, items.size());
         long active = 0;
         for (Point item : items) {
             if (index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range)) {
@@ -254,8 +257,13 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         return active;
     }
 
-    private static DroppedItemSpatialIndex.ViewerIndex createViewerIndex(List<Point> viewers) {
-        DroppedItemSpatialIndex.ViewerIndex index = new DroppedItemSpatialIndex.ViewerIndex(viewers.size());
+    private static String candidateStorage(int itemCount, List<Point> viewers) {
+        return createViewerIndex(viewers, itemCount).usesPointStorage() ? "point-array" : "primitive-soa";
+    }
+
+    private static DroppedItemSpatialIndex.ViewerIndex createViewerIndex(List<Point> viewers, int itemCount) {
+        DroppedItemSpatialIndex.ViewerIndex index =
+                new DroppedItemSpatialIndex.ViewerIndex(viewers.size(), itemCount);
         for (Point viewer : viewers) {
             index.addViewer(BENCHMARK_WORLD_ID, viewer.x(), viewer.y(), viewer.z());
         }

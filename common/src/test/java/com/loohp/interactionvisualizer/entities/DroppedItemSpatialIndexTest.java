@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DroppedItemSpatialIndexTest {
@@ -65,6 +66,26 @@ class DroppedItemSpatialIndexTest {
         assertTrue(viewers.hasViewerWithin(world,
                 -1024.25D + 256 * 8.5D, 40.0D + 256 % 7, -256 * 3.25D, 0.0D));
         assertFalse(viewers.hasViewerWithin(world, 5000.0D, 5000.0D, 5000.0D, 1.0D));
+    }
+
+    @Test
+    void pointStorageExpandsAtTheMeasuredLowItemToViewerRatio() {
+        UUID world = UUID.randomUUID();
+        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(1, 4);
+        assertTrue(viewers.usesPointStorage());
+
+        for (int index = 0; index < 10; index++) {
+            viewers.addViewer(world, index * -2.5D, 64.0D + index, index * 3.5D);
+        }
+
+        assertTrue(viewers.hasViewerWithin(world, -22.5D, 73.0D, 31.5D, 0.0D));
+        assertFalse(viewers.hasViewerWithin(world, -22.5D, 74.0001D, 31.5D, 1.0D));
+        assertFalse(new DroppedItemSpatialIndex.ViewerIndex(128, 513).usesPointStorage());
+        assertFalse(new DroppedItemSpatialIndex.ViewerIndex(Integer.MAX_VALUE).usesPointStorage());
+        assertThrows(IllegalArgumentException.class,
+                () -> new DroppedItemSpatialIndex.ViewerIndex(-1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DroppedItemSpatialIndex.ViewerIndex(1, -1));
     }
 
     @Test

@@ -74,10 +74,13 @@ final class DroppedItemSpatialIndex {
 
     static final class ViewerIndex {
 
+        private static final int POINT_STORAGE_MAX_ITEMS_PER_VIEWER = 4;
+
         private UUID singleWorldId;
         private WorldViewerBucket singleWorldViewers;
         private Map<UUID, WorldViewerBucket> viewersByWorld;
         private final int expectedViewers;
+        private final boolean pointStorage;
 
         ViewerIndex() {
             this(0);
@@ -88,12 +91,25 @@ final class DroppedItemSpatialIndex {
                 throw new IllegalArgumentException("expectedViewers must be non-negative");
             }
             this.expectedViewers = expectedViewers;
+            this.pointStorage = false;
+        }
+
+        ViewerIndex(int expectedViewers, int expectedItems) {
+            if (expectedViewers < 0) {
+                throw new IllegalArgumentException("expectedViewers must be non-negative");
+            }
+            if (expectedItems < 0) {
+                throw new IllegalArgumentException("expectedItems must be non-negative");
+            }
+            this.expectedViewers = expectedViewers;
+            this.pointStorage = expectedViewers > 0
+                    && (long) expectedItems <= (long) expectedViewers * POINT_STORAGE_MAX_ITEMS_PER_VIEWER;
         }
 
         void addViewer(UUID worldId, double x, double y, double z) {
             if (singleWorldViewers == null) {
                 singleWorldId = worldId;
-                singleWorldViewers = new WorldViewerBucket(expectedViewers);
+                singleWorldViewers = new WorldViewerBucket(expectedViewers, pointStorage);
                 singleWorldViewers.add(x, y, z);
                 return;
             }
@@ -105,11 +121,15 @@ final class DroppedItemSpatialIndex {
                 viewersByWorld = new HashMap<>();
                 viewersByWorld.put(singleWorldId, singleWorldViewers);
             }
-            viewersByWorld.computeIfAbsent(worldId, ignored -> new WorldViewerBucket(0)).add(x, y, z);
+            viewersByWorld.computeIfAbsent(worldId, ignored -> new WorldViewerBucket(0, pointStorage)).add(x, y, z);
         }
 
         boolean isEmpty() {
             return singleWorldViewers == null;
+        }
+
+        boolean usesPointStorage() {
+            return pointStorage;
         }
 
         boolean hasViewerWithin(UUID worldId, double x, double y, double z, double range) {
@@ -124,45 +144,68 @@ final class DroppedItemSpatialIndex {
 
         private static final class WorldViewerBucket {
 
-            private static final int COORDINATES_PER_VIEWER = 3;
-            private static final int INITIAL_COORDINATE_CAPACITY = 8 * COORDINATES_PER_VIEWER;
-            private static final int MAX_COORDINATE_CAPACITY = Integer.MAX_VALUE - 8;
+            private static final int INITIAL_CAPACITY = 8;
+            private static final int MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
             private static final double[] EMPTY = new double[0];
+            private static final Point[] EMPTY_POINTS = new Point[0];
 
-            private double[] coordinates = EMPTY;
+            private double[] xCoordinates = EMPTY;
+            private double[] yCoordinates = EMPTY;
+            private double[] zCoordinates = EMPTY;
+            private Point[] points = EMPTY_POINTS;
+            private final boolean pointStorage;
             private int size;
 
-            private WorldViewerBucket(int initialCapacity) {
+            private WorldViewerBucket(int initialCapacity, boolean pointStorage) {
+                this.pointStorage = pointStorage;
                 if (initialCapacity > 0) {
-                    if (initialCapacity > MAX_COORDINATE_CAPACITY / COORDINATES_PER_VIEWER) {
-                        throw new IllegalArgumentException("initialCapacity is too large");
+                    if (pointStorage) {
+                        points = new Point[initialCapacity];
+                    } else {
+                        xCoordinates = new double[initialCapacity];
+                        yCoordinates = new double[initialCapacity];
+                        zCoordinates = new double[initialCapacity];
                     }
-                    coordinates = new double[initialCapacity * COORDINATES_PER_VIEWER];
                 }
             }
 
             private void add(double x, double y, double z) {
-                if (size > MAX_COORDINATE_CAPACITY - COORDINATES_PER_VIEWER) {
-                    throw new OutOfMemoryError("Too many viewer coordinates");
+                if (pointStorage) {
+                    if (size == points.length) {
+                        points = grow(points, grownCapacity(size));
+                    }
+                    points[size++] = new Point(x, y, z);
+                    return;
                 }
-                int required = size + COORDINATES_PER_VIEWER;
-                if (required > coordinates.length) {
-                    int capacity = size > MAX_COORDINATE_CAPACITY / 2
-                            ? MAX_COORDINATE_CAPACITY
-                            : Math.max(INITIAL_COORDINATE_CAPACITY, size << 1);
-                    coordinates = grow(coordinates, Math.max(required, capacity));
+                if (size == xCoordinates.length) {
+                    int capacity = grownCapacity(size);
+                    xCoordinates = grow(xCoordinates, capacity);
+                    yCoordinates = grow(yCoordinates, capacity);
+                    zCoordinates = grow(zCoordinates, capacity);
                 }
-                coordinates[size] = x;
-                coordinates[size + 1] = y;
-                coordinates[size + 2] = z;
-                size = required;
+                xCoordinates[size] = x;
+                yCoordinates[size] = y;
+                zCoordinates[size] = z;
+                size++;
             }
 
             private boolean hasViewerWithin(double x, double y, double z, double rangeSquared) {
-                for (int index = 0; index < size; index += COORDINATES_PER_VIEWER) {
-                    double deltaX = coordinates[index] - x;
-                    double deltaY = coordinates[index + 1] - y;
-                    double deltaZ = coordinates[index + 2] - z;
+                if (pointStorage) {
+                    for (int index = 0; index < size; index++) {
+                        Point point = points[index];
+                        double deltaX = point.x() - x;
+                        double deltaY = point.y() - y;
+                        double deltaZ = point.z() - z;
+                        if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                for (int index = 0; index < size; index++) {
+                    double deltaX = xCoordinates[index] - x;
+                    double deltaY = yCoordinates[index] - y;
+                    double deltaZ = zCoordinates[index] - z;
                     if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
                         return true;
                     }
@@ -174,6 +217,21 @@ final class DroppedItemSpatialIndex {
                 double[] expanded = new double[capacity];
                 System.arraycopy(source, 0, expanded, 0, source.length);
                 return expanded;
+            }
+
+            private static Point[] grow(Point[] source, int capacity) {
+                Point[] expanded = new Point[capacity];
+                System.arraycopy(source, 0, expanded, 0, source.length);
+                return expanded;
+            }
+
+            private static int grownCapacity(int size) {
+                if (size >= MAX_ARRAY_SIZE) {
+                    throw new OutOfMemoryError("Too many viewers");
+                }
+                return size > MAX_ARRAY_SIZE / 2
+                        ? MAX_ARRAY_SIZE
+                        : Math.max(INITIAL_CAPACITY, size << 1);
             }
         }
     }
