@@ -45,7 +45,6 @@ import org.bukkit.event.block.BlockRedstoneEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityEnterBlockEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
-import org.bukkit.event.inventory.FurnaceBurnEvent;
 import org.bukkit.event.inventory.FurnaceExtractEvent;
 import org.bukkit.event.inventory.FurnaceSmeltEvent;
 import org.bukkit.event.inventory.FurnaceStartSmeltEvent;
@@ -100,29 +99,13 @@ public final class EventDrivenBlockUpdateListener implements Listener {
         return furnace == null && blastFurnace == null && smoker == null && beeHive == null && beeNest == null;
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onFurnaceBurn(FurnaceBurnEvent event) {
-        switch (furnaceTarget(event.getBlock().getType())) {
-            case FURNACE -> {
-                if (furnace != null) {
-                    furnace.onFurnaceBurn(event);
-                }
-            }
-            case BLAST_FURNACE -> {
-                if (blastFurnace != null) {
-                    blastFurnace.onBlastFurnaceBurn(event);
-                }
-            }
-            case SMOKER -> {
-                if (smoker != null) {
-                    smoker.onSmokerBurn(event);
-                }
-            }
-            case NONE -> {
-            }
-        }
-    }
-
+    /*
+     * FurnaceBurnEvent is intentionally not part of this listener. Paper
+     * 26.1.2 emits it as a per-tick level signal for processing furnaces, so
+     * treating it as a dirty edge permanently saturates all three furnace
+     * schedulers. StartSmelt/Smelt/inventory/lifecycle edges bootstrap work;
+     * the active cadence owns progress and fuel-state refreshes thereafter.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFurnaceStartSmelt(FurnaceStartSmeltEvent event) {
         switch (furnaceTarget(event.getBlock().getType())) {

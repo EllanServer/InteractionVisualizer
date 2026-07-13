@@ -212,7 +212,7 @@ jobs:
                 -OutputJson phase2-results/clean/blockUpdateMs.analysis.json -Overwrite
             fi
 
-            python3 - "$MANIFEST" "$SCENARIO" "$RUNS" \
+            python3 - "$MANIFEST" "$SCENARIO" "$RUNS" "$ITEMS" \
               phase2-results/clean/blockUpdateChecks.evidence.json <<'PY'
           from pathlib import Path
           import csv
@@ -225,7 +225,8 @@ jobs:
           manifest_path = Path(sys.argv[1])
           scenario = sys.argv[2]
           expected_runs = int(sys.argv[3])
-          output_path = Path(sys.argv[4])
+          expected_items = int(sys.argv[4])
+          output_path = Path(sys.argv[5])
           records = []
           with manifest_path.open(encoding="utf-8", newline="") as stream:
               rows = list(csv.DictReader(stream))
@@ -249,6 +250,9 @@ jobs:
                   raise SystemExit(f"invalid blockUpdateMs for {run_id}: {elapsed_ms!r}")
               if checks > 0 and elapsed_ms <= 0:
                   raise SystemExit(f"{run_id} recorded {checks} checks but no elapsed time")
+              tick_samples = metrics.get("tickSamples")
+              if isinstance(tick_samples, bool) or not isinstance(tick_samples, int) or tick_samples <= 0:
+                  raise SystemExit(f"invalid tickSamples for {run_id}: {tick_samples!r}")
               expected_event_driven = row["Variant"] == "B"
               if metrics.get("eventDrivenBlockUpdates") is not expected_event_driven:
                   raise SystemExit(f"event-driven config mismatch for {run_id}")
@@ -258,6 +262,8 @@ jobs:
                   "variant": row["Variant"],
                   "runId": run_id,
                   "blockUpdateChecks": checks,
+                  "tickSamples": tick_samples,
+                  "checksPerTick": checks / tick_samples,
                   "blockUpdateMs": elapsed_ms,
                   "msPerCheck": elapsed_ms / checks if checks else None,
                   "sourcePath": source_path.as_posix(),
@@ -266,6 +272,7 @@ jobs:
           def summarize(variant):
               selected = [record for record in records if record["variant"] == variant]
               checks = [record["blockUpdateChecks"] for record in selected]
+              checks_per_tick = [record["checksPerTick"] for record in selected]
               times = [record["blockUpdateMs"] for record in selected]
               return {
                   "runCount": len(selected),
@@ -274,6 +281,11 @@ jobs:
                       "median": statistics.median(checks),
                       "mean": statistics.fmean(checks),
                   },
+                  "checksPerTick": {
+                      "values": checks_per_tick,
+                      "median": statistics.median(checks_per_tick),
+                      "mean": statistics.fmean(checks_per_tick),
+                  },
                   "blockUpdateMs": {
                       "values": times,
                       "median": statistics.median(times),
@@ -281,11 +293,36 @@ jobs:
                   },
               }
 
+          by_variant = {"A": summarize("A"), "B": summarize("B")}
+          cadence_guard = {
+              "evaluated": False,
+              "reason": "only block-active workloads with at least 100 blocks have a stable mixed-type cadence",
+          }
+          if scenario == "block-active" and expected_items >= 100:
+              baseline = by_variant["A"]["checksPerTick"]["median"]
+              candidate = by_variant["B"]["checksPerTick"]["median"]
+              if baseline <= 0:
+                  raise SystemExit("block-active baseline recorded no checks")
+              ratio = candidate / baseline
+              cadence_guard = {
+                  "evaluated": True,
+                  "minimumCandidateToBaselineRatio": 0.60,
+                  "maximumCandidateToBaselineRatio": 0.85,
+                  "candidateToBaselineRatio": ratio,
+                  "passed": 0.60 <= ratio <= 0.85,
+                  "interpretation": (
+                      "The active candidate aggregate rate must remain consistent with all three furnace "
+                      "cadences while eliminating "
+                      "idle bee polling and noisy level-event invalidations."
+                  ),
+              }
+
           evidence = {
               "schemaVersion": 1,
               "analysisType": "diagnostic-work-evidence",
               "scenario": scenario,
               "requestedRuns": expected_runs,
+              "expectedItems": expected_items,
               "formalComplete": expected_runs == 12,
               "blockUpdateChecksDirection": None,
               "blockUpdateMsDirection": None if scenario == "block-idle" else "LowerIsBetter",
@@ -296,7 +333,8 @@ jobs:
                   "has no ratio analysis. Interpret all scenarios with machine-validated scene actions, "
                   "blockUpdateMs, MSPT and TPS."
               ),
-              "byVariant": {"A": summarize("A"), "B": summarize("B")},
+              "activeCadenceGuard": cadence_guard,
+              "byVariant": by_variant,
               "runs": records,
           }
           output_path.write_text(
@@ -309,16 +347,30 @@ jobs:
               with open(step_summary, "a", encoding="utf-8", newline="\n") as stream:
                   stream.write(f"### {scenario} block update evidence\n\n")
                   stream.write("`blockUpdateChecks` is diagnostic work evidence (no universal direction).\n\n")
-                  stream.write("| Run | Variant | Checks | Update ms | ms/check |\n")
-                  stream.write("|---|---:|---:|---:|---:|\n")
+                  stream.write("| Run | Variant | Checks | Checks/tick | Update ms | ms/check |\n")
+                  stream.write("|---|---:|---:|---:|---:|---:|\n")
                   for record in records:
                       per_check = record["msPerCheck"]
                       per_check_text = "n/a" if per_check is None else f"{per_check:.9f}"
                       stream.write(
                           f"| {record['runId']} | {record['variant']} | "
-                          f"{record['blockUpdateChecks']} | {record['blockUpdateMs']:.6f} | "
+                          f"{record['blockUpdateChecks']} | {record['checksPerTick']:.6f} | "
+                          f"{record['blockUpdateMs']:.6f} | "
                           f"{per_check_text} |\n"
                       )
+                  if cadence_guard["evaluated"]:
+                      stream.write(
+                          "\nActive cadence guard: "
+                          f"`{'pass' if cadence_guard['passed'] else 'fail'}`; "
+                          f"candidate/baseline=`{cadence_guard['candidateToBaselineRatio']:.6f}` "
+                          "(required `0.60..0.85`).\n"
+                      )
+
+          if cadence_guard["evaluated"] and not cadence_guard["passed"]:
+              raise SystemExit(
+                  "block-active candidate checks/tick escaped the expected mixed-type cadence: "
+                  f"ratio={cadence_guard['candidateToBaselineRatio']:.6f}"
+              )
           PY
           fi
 

@@ -14,6 +14,7 @@ package com.loohp.interactionvisualizer.managers;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
 import com.loohp.interactionvisualizer.blocks.BeeHiveDisplay;
 import com.loohp.interactionvisualizer.blocks.BeeNestDisplay;
+import com.loohp.interactionvisualizer.blocks.BlastFurnaceDisplay;
 import com.loohp.interactionvisualizer.blocks.FurnaceDisplay;
 import com.loohp.interactionvisualizer.blocks.SmokerDisplay;
 import org.bukkit.Material;
@@ -25,7 +26,11 @@ import org.bukkit.event.block.BlockRedstoneEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityEnterBlockEvent;
 import org.bukkit.event.inventory.FurnaceBurnEvent;
+import org.bukkit.event.inventory.FurnaceExtractEvent;
+import org.bukkit.event.inventory.FurnaceSmeltEvent;
+import org.bukkit.event.inventory.FurnaceStartSmeltEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
@@ -34,6 +39,7 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
@@ -42,6 +48,8 @@ class EventDrivenBlockUpdateListenerRegistrationTest {
     @Test
     void eventDrivenOnlyHandlersAreAbsentFromAlwaysRegisteredListeners() throws Exception {
         assertNotRegistered(FurnaceDisplay.class, "onFurnaceBurn", FurnaceBurnEvent.class);
+        assertNotRegistered(BlastFurnaceDisplay.class, "onBlastFurnaceBurn", FurnaceBurnEvent.class);
+        assertNotRegistered(SmokerDisplay.class, "onSmokerBurn", FurnaceBurnEvent.class);
         assertNotRegistered(BeeHiveDisplay.class, "onAffectedBlockPlace", BlockPlaceEvent.class);
         assertNotRegistered(SmokerDisplay.class, "onRemoveSmoker", TileEntityRemovedEvent.class);
         assertNotRegistered(TileEntityManager.class, "onChunkLoad", ChunkLoadEvent.class);
@@ -57,7 +65,14 @@ class EventDrivenBlockUpdateListenerRegistrationTest {
 
     @Test
     void conditionalListenerOwnsTheEventDrivenSurface() throws Exception {
-        assertRegistered(EventDrivenBlockUpdateListener.class, "onFurnaceBurn", FurnaceBurnEvent.class);
+        // Paper 26.1.2 emits FurnaceBurnEvent for every processing furnace on
+        // every tick. It is a level signal, not an invalidation edge; routing it
+        // would permanently saturate each furnace scheduler's dirty budget.
+        assertNoRegisteredHandler(EventDrivenBlockUpdateListener.class, FurnaceBurnEvent.class);
+        assertRegistered(EventDrivenBlockUpdateListener.class, "onFurnaceStartSmelt", FurnaceStartSmeltEvent.class);
+        assertRegistered(EventDrivenBlockUpdateListener.class, "onFurnaceSmelt", FurnaceSmeltEvent.class);
+        assertRegistered(EventDrivenBlockUpdateListener.class, "onFurnaceExtract", FurnaceExtractEvent.class);
+        assertRegistered(EventDrivenBlockUpdateListener.class, "onInventoryMoveItem", InventoryMoveItemEvent.class);
         assertRegistered(EventDrivenBlockUpdateListener.class, "onAffectedBlockPlace", BlockPlaceEvent.class);
         assertRegistered(EventDrivenBlockUpdateListener.class, "onBeeEnterBlock", EntityEnterBlockEvent.class);
         assertRegistered(EventDrivenBlockUpdateListener.class, "onEntityChangeBlock", EntityChangeBlockEvent.class);
@@ -111,5 +126,14 @@ class EventDrivenBlockUpdateListenerRegistrationTest {
     private static void assertNotRegistered(Class<?> type, String methodName, Class<?> eventType) throws Exception {
         Method method = type.getDeclaredMethod(methodName, eventType);
         assertNull(method.getAnnotation(EventHandler.class), type.getSimpleName() + "." + methodName);
+    }
+
+    private static void assertNoRegisteredHandler(Class<?> type, Class<?> eventType) {
+        for (Method method : type.getDeclaredMethods()) {
+            Class<?>[] parameters = method.getParameterTypes();
+            boolean catchesEvent = parameters.length == 1 && parameters[0].isAssignableFrom(eventType);
+            assertFalse(catchesEvent && method.getAnnotation(EventHandler.class) != null,
+                    type.getSimpleName() + "." + method.getName());
+        }
     }
 }

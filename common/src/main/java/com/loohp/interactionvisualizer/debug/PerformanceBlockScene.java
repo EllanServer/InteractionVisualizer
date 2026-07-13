@@ -587,7 +587,7 @@ public final class PerformanceBlockScene {
         inventory.setSmelting(new ItemStack(input, amount));
         if (mode == Mode.ACTIVE) {
             // Vanilla consumes this fuel on its next tick and dispatches the real
-            // FurnaceBurnEvent/FurnaceStartSmeltEvent sequence.
+            // FurnaceStartSmeltEvent edge used by the event-driven updater.
             inventory.setFuel(new ItemStack(Material.COAL_BLOCK));
         }
         furnace.setBurnTime((short) 0);
