@@ -51,56 +51,37 @@ class DroppedItemSpatialIndexTest {
         assertTrue(viewers.hasViewerWithin(world, 15.9D, 64.0D, 0.0D, 0.3D));
         assertFalse(viewers.hasViewerWithin(world, 15.9D, 64.0D, 0.0D, 0.1D));
         assertFalse(viewers.hasViewerWithin(UUID.randomUUID(), 15.9D, 64.0D, 0.0D, 1.0D));
-        assertFalse(viewers.usesGrid(world));
     }
 
     @Test
-    void smallViewerSetsStayLinearWithExactWorldAndVerticalDistance() {
+    void primitiveViewerStorageExpandsWithoutLosingExactMatches() {
         UUID world = UUID.randomUUID();
         DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex();
-        for (int index = 0; index < 50; index++) {
-            viewers.addViewer(world, index, 64.0D, 0.0D);
+        for (int index = 0; index < 257; index++) {
+            viewers.addViewer(world, -1024.25D + index * 8.5D, 40.0D + index % 7, -index * 3.25D);
         }
-        viewers.addViewer(UUID.randomUUID(), 0.0D, 64.0D, 0.0D);
 
-        assertTrue(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 0.0D));
-        assertFalse(viewers.hasViewerWithin(world, 0.0D, 65.0001D, 0.0D, 1.0D));
-        assertFalse(viewers.usesGrid(world));
+        assertTrue(viewers.hasViewerWithin(world, -1024.25D, 40.0D, 0.0D, 0.0D));
+        assertTrue(viewers.hasViewerWithin(world,
+                -1024.25D + 256 * 8.5D, 40.0D + 256 % 7, -256 * 3.25D, 0.0D));
+        assertFalse(viewers.hasViewerWithin(world, 5000.0D, 5000.0D, 5000.0D, 1.0D));
     }
 
     @Test
-    void largeViewerSetsLazilyBuildTheGridWithoutChangingExactMatches() {
-        UUID world = UUID.randomUUID();
+    void upgradesFromSingleWorldFastPathAndKeepsWorldsIsolated() {
+        UUID firstWorld = UUID.randomUUID();
+        UUID secondWorld = UUID.randomUUID();
         DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex();
-        for (int index = 0; index < DroppedItemSpatialIndex.ViewerIndex.DEFAULT_MINIMUM_GRID_VIEWERS; index++) {
-            viewers.addViewer(world, index * 4.0D, 64.0D + index % 3, index * -3.0D);
-        }
+        viewers.addViewer(firstWorld, -0.01D, 70.0D, -16.1D);
 
-        assertTrue(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 0.0D));
-        assertFalse(viewers.usesGrid(world));
-        int extra = DroppedItemSpatialIndex.ViewerIndex.DEFAULT_MINIMUM_GRID_VIEWERS;
-        viewers.addViewer(world, extra * 4.0D, 64.0D + extra % 3, extra * -3.0D);
-        assertTrue(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 0.0D));
-        assertTrue(viewers.usesGrid(world));
-        assertFalse(viewers.hasViewerWithin(world, 0.0D, 66.0001D, 0.0D, 2.0D));
-        assertFalse(viewers.hasViewerWithin(UUID.randomUUID(), 0.0D, 64.0D, 0.0D, 1.0D));
-    }
+        assertTrue(viewers.hasViewerWithin(firstWorld, 0.0D, 70.0D, -16.0D, 0.15D));
+        assertFalse(viewers.hasViewerWithin(secondWorld, 0.0D, 70.0D, -16.0D, 0.15D));
 
-    @Test
-    void gridKeepsNegativeCoordinatesAndLaterViewersExact() {
-        UUID world = UUID.randomUUID();
-        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(0);
-        for (int index = 0; index < 8; index++) {
-            viewers.addViewer(world, 1_000.0D + index * 16.0D, 64.0D, 1_000.0D);
-        }
-        viewers.addViewer(world, -16.1D, 64.0D, -31.9D);
-
-        assertTrue(viewers.hasViewerWithin(world, -16.0D, 64.0D, -32.0D, 0.15D));
-        assertTrue(viewers.usesGrid(world));
-        assertFalse(viewers.hasViewerWithin(world, -15.9D, 64.0D, -32.0D, 0.15D));
-
-        viewers.addViewer(world, -0.01D, 70.0D, -0.01D);
-        assertTrue(viewers.hasViewerWithin(world, 0.0D, 70.0D, 0.0D, 0.02D));
-        assertFalse(viewers.hasViewerWithin(world, 0.0D, 70.03D, 0.0D, 0.02D));
+        viewers.addViewer(secondWorld, 0.0D, 90.0D, 0.0D);
+        viewers.addViewer(firstWorld, 32.0D, 72.0D, 32.0D);
+        assertTrue(viewers.hasViewerWithin(secondWorld, 0.0D, 90.0D, 0.0D, 0.0D));
+        assertFalse(viewers.hasViewerWithin(firstWorld, 0.0D, 90.0D, 0.0D, 0.0D));
+        assertTrue(viewers.hasViewerWithin(firstWorld, 32.0D, 72.0D, 32.0D, 0.0D));
+        assertFalse(viewers.hasViewerWithin(firstWorld, 32.0D, 73.0001D, 32.0D, 1.0D));
     }
 }

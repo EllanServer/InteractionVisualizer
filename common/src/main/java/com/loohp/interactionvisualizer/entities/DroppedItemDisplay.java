@@ -243,7 +243,8 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     private void tickAllInternal() {
         Collection<Player> viewers = reconcileEligibleViewers();
-        DroppedItemSpatialIndex.ViewerIndex viewerIndex = new DroppedItemSpatialIndex.ViewerIndex();
+        DroppedItemSpatialIndex.ViewerIndex viewerIndex =
+                new DroppedItemSpatialIndex.ViewerIndex(viewers.size());
         for (Player viewer : viewers) {
             Location location = viewer.getLocation();
             viewerIndex.addViewer(viewer.getWorld().getUID(), location.getX(), location.getY(), location.getZ());
