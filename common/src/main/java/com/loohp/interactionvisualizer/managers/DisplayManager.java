@@ -1162,7 +1162,22 @@ public final class DisplayManager implements Listener {
             return packetOnlyQualified && player.isChunkSent(Chunk.getChunkKey(packetOnlyLocation));
         }
         org.bukkit.entity.Entity actual = logical.getBukkitEntity().orElse(null);
-        return actual != null && player.getWorld().equals(actual.getWorld());
+        if (actual == null || !player.getWorld().equals(actual.getWorld())) {
+            return false;
+        }
+
+        // showEntity() records Paper's visibility override even when the
+        // entity tracker cannot send a spawn yet. In particular, ChunkLoadEvent
+        // can recreate a non-persistent display before the destination chunk
+        // packet reaches the player. Waiting for the sent-chunk lifecycle keeps
+        // shownViewers from turning that lost first attempt into a permanent
+        // omission. The chunk index avoids allocating a Location in this hot
+        // eligibility check.
+        ChunkKey key = chunkByLogical.get(logical);
+        if (key == null || !key.world().equals(player.getWorld().getUID())) {
+            return false;
+        }
+        return player.isChunkSent(Chunk.getChunkKey(key.x(), key.z()));
     }
 
     private static void requestViewerShow(VisualizerEntity logical, Player player) {
@@ -1533,29 +1548,25 @@ public final class DisplayManager implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerChunkLoad(PlayerChunkLoadEvent event) {
-        if (!InteractionVisualizer.packetOnlyStaticVirtualItems) {
-            return;
-        }
         Chunk chunk = event.getChunk();
         ChunkKey key = new ChunkKey(chunk.getWorld().getUID(), chunk.getX(), chunk.getZ());
         Set<VisualizerEntity> logicals = logicalsByChunk.get(key);
         if (logicals == null) {
             return;
         }
-        // Chunk index values are ConcurrentHashMap-backed sets; reconciliation
-        // does not mutate this index, so a snapshot allocation is unnecessary.
+        // This event fires after the chunk packet is sent and is Paper's
+        // supported lifecycle hook for client-side entities. Reconcile both
+        // packet-only items and Paper-owned displays here: a ChunkLoadEvent can
+        // otherwise call showEntity() too early and lose an entire chunk's
+        // display spawns. Chunk index values are concurrent sets, so no
+        // snapshot allocation is necessary.
         for (VisualizerEntity logical : logicals) {
-            if (logical instanceof Item item && packetOnlyItems.contains(item)) {
-                reconcileViewer(item, event.getPlayer());
-            }
+            reconcileViewer(logical, event.getPlayer());
         }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerChunkUnload(PlayerChunkUnloadEvent event) {
-        if (!InteractionVisualizer.packetOnlyStaticVirtualItems || packetOnlyItems.isEmpty()) {
-            return;
-        }
         Chunk chunk = event.getChunk();
         ChunkKey key = new ChunkKey(chunk.getWorld().getUID(), chunk.getX(), chunk.getZ());
         Set<VisualizerEntity> logicals = logicalsByChunk.get(key);
@@ -1570,6 +1581,12 @@ public final class DisplayManager implements Listener {
                 if (id != null) {
                     virtualItemIdsToRemove.add(id);
                 }
+            } else {
+                // Revoke visibleByDefault=false's Paper override while the
+                // chunk is absent. This makes the next PlayerChunkLoadEvent the
+                // single source of truth and lets its visibility token bucket
+                // pace even entities whose server chunk stayed loaded.
+                hideViewer(logical, player.getUniqueId(), player);
             }
         }
         removeVirtualItems(player, virtualItemIdsToRemove);
