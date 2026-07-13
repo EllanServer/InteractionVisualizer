@@ -196,8 +196,7 @@ final class DroppedItemSpatialIndex {
                 yCoordinates[size] = y;
                 zCoordinates[size] = z;
                 size++;
-                if (boundsInitialized || viewerGrid != null || useGrid || persistentGridHits
-                        || expensiveQueries != 0 || gridQueriesUntilProbe != 0) {
+                if (boundsInitialized || viewerGrid != null || expensiveQueries != 0) {
                     resetAdaptiveState();
                 }
             }
@@ -210,26 +209,42 @@ final class DroppedItemSpatialIndex {
 
             private boolean hasViewerWithin(double x, double y, double z,
                                             double range, int remainingQueries) {
+                double rangeSquared = range * range;
+                if (!boundsActive && !useGrid && expensiveQueries == 0) {
+                    int matchingViewer = firstViewerWithin(x, y, z, rangeSquared);
+                    if (matchingViewer > 0 && matchingViewer < MINIMUM_DEEP_SCAN_VIEWERS) {
+                        return true;
+                    }
+                    return resolveLinearResult(x, y, z, range, remainingQueries, matchingViewer);
+                }
+                return hasViewerWithinAdaptiveState(x, y, z, range, rangeSquared, remainingQueries);
+            }
+
+            private boolean hasViewerWithinAdaptiveState(double x, double y, double z, double range,
+                                                         double rangeSquared, int remainingQueries) {
                 if (boundsActive && isOutsideBounds(x, y, z, range)) {
                     return false;
                 }
-                double rangeSquared = range * range;
                 if (useGrid) {
                     ViewerCellWindow window = gridWindow(x, z, range);
                     if (window == null) {
                         useGrid = false;
                         persistentGridHits = false;
                         expensiveQueries = 0;
+                        gridQueriesUntilProbe = 0;
                     } else if (--gridQueriesUntilProbe <= 0) {
                         useGrid = false;
                         persistentGridHits = false;
                         expensiveQueries = EXPENSIVE_QUERIES_BEFORE_GRID - 1;
                     } else {
                         if (hasViewerWithinGrid(x, y, z, rangeSquared, window)) {
-                            boundsActive = false;
+                            if (boundsActive) {
+                                boundsActive = false;
+                            }
                             if (!persistentGridHits) {
                                 useGrid = false;
                                 expensiveQueries = 0;
+                                gridQueriesUntilProbe = 0;
                             }
                             return true;
                         }
@@ -240,6 +255,11 @@ final class DroppedItemSpatialIndex {
                     }
                 }
                 int matchingViewer = firstViewerWithin(x, y, z, rangeSquared);
+                return resolveLinearResult(x, y, z, range, remainingQueries, matchingViewer);
+            }
+
+            private boolean resolveLinearResult(double x, double y, double z, double range,
+                                                int remainingQueries, int matchingViewer) {
                 if (matchingViewer != 0) {
                     if (boundsActive) {
                         boundsActive = false;
