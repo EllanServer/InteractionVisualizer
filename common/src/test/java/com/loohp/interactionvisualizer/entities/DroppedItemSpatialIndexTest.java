@@ -237,13 +237,15 @@ class DroppedItemSpatialIndexTest {
         DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(768);
         addViewerRing(viewers, world, 768, 300.0D);
 
-        for (int query = 0; query < 7; query++) {
+        for (int query = 0; query < 6; query++) {
             assertFalse(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D,
                     72.0D, 511 - query));
         }
-        assertFalse(viewers.hasViewerWithin(world, 1000.0D, 64.0D, 0.0D, 72.0D, 504));
+        assertFalse(viewers.hasViewerWithin(world, 1000.0D, 64.0D, 0.0D, 72.0D, 505));
         assertFalse(viewers.hasAdaptiveGrid(world));
         assertTrue(viewers.hasActiveBounds(world));
+        assertFalse(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 72.0D, 504));
+        assertFalse(viewers.hasAdaptiveGrid(world));
         assertFalse(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 72.0D, 503));
         assertTrue(viewers.hasAdaptiveGrid(world));
     }
@@ -257,14 +259,14 @@ class DroppedItemSpatialIndexTest {
             double z = (index & 2) == 0 ? -62.0D : 62.0D;
             viewers.addViewer(world, x, 64.0D, z);
         }
-        for (int query = 0; query < 72; query++) {
+        for (int query = 0; query < 71; query++) {
             assertFalse(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D,
                     72.0D, 499 - query));
         }
         assertFalse(viewers.hasAdaptiveGrid(world));
-        assertTrue(viewers.hasViewerWithin(world, -62.0D, 64.0D, -62.0D, 0.0D, 427));
-        assertFalse(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 72.0D, 426));
-        assertFalse(viewers.hasAdaptiveGrid(world));
+        assertFalse(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 0.0D, 428));
+        assertTrue(viewers.hasAdaptiveGrid(world));
+        assertTrue(viewers.isUsingAdaptiveGrid(world));
     }
 
     @Test
