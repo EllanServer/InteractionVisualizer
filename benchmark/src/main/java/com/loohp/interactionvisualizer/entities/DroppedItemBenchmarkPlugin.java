@@ -38,8 +38,9 @@ import java.util.function.LongSupplier;
  */
 public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
 
-    private static final int WARMUP_ROUNDS = 6;
-    private static final int MEASUREMENT_ROUNDS = 18;
+    private static final int WARMUP_ROUNDS = 8;
+    private static final int MEASUREMENT_ROUNDS = 40;
+    private static final int VISIBILITY_SEEDS = 3;
     private static final long SAMPLE_TARGET_NANOS = 2_000_000L;
     private static final int MAX_SAMPLE_REPETITIONS = 4_096;
     private static final double VIEW_DISTANCE = 72.0D;
@@ -74,7 +75,9 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         for (String distribution : List.of("uniform", "hotspot", "no-hit")) {
             for (int itemCount : List.of(500, 2000, 8000)) {
                 for (int viewerCount : List.of(1, 8, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024)) {
-                    benchmarkVisibility(itemCount, viewerCount, distribution);
+                    for (int seed = 0; seed < VISIBILITY_SEEDS; seed++) {
+                        benchmarkVisibility(itemCount, viewerCount, distribution, seed);
+                    }
                 }
             }
         }
@@ -163,8 +166,9 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         return cramped;
     }
 
-    private void benchmarkVisibility(int itemCount, int viewerCount, String distribution) {
-        Random random = new Random(0x51A71A1L + itemCount * 31L + viewerCount * 17L + distribution.hashCode());
+    private void benchmarkVisibility(int itemCount, int viewerCount, String distribution, int seed) {
+        Random random = new Random(0x51A71A1L + itemCount * 31L + viewerCount * 17L
+                + distribution.hashCode() * 13L + seed * 0x9E3779B9L);
         List<Point> items;
         List<Point> viewers;
         switch (distribution) {
@@ -192,15 +196,16 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         Comparison comparison = compare(baseline, candidate);
         double reduction = itemCount == 0 ? 0.0D : 100.0D * (itemCount - expectedLabels) / itemCount;
         String result = String.format(Locale.ROOT,
-                "{\"benchmark\":\"visibility\",\"distribution\":\"%s\",\"items\":%d,\"viewers\":%d," +
+                "{\"benchmark\":\"visibility\",\"distribution\":\"%s\",\"seed\":%d," +
+                        "\"items\":%d,\"viewers\":%d," +
                         "\"range\":%.1f,\"baseline\":\"linear-viewer-snapshot-any\"," +
                         "\"candidate\":\"production-primitive-viewer-index\",\"indexRebuiltPerOperation\":true," +
-                        "\"candidateUsesGrid\":false,\"sampleTargetNs\":%d," +
+                        "\"candidateUsesGrid\":false,\"sampleTargetNs\":%d,\"measurementRounds\":%d," +
                         "\"baselineMedianNs\":%d,\"baselineP95Ns\":%d," +
                         "\"candidateMedianNs\":%d,\"candidateP95Ns\":%d,\"speedup\":%.3f," +
                         "\"allLabels\":%d,\"activeLabels\":%d," +
                         "\"labelReductionPct\":%.3f}",
-                distribution, itemCount, viewerCount, VIEW_DISTANCE, SAMPLE_TARGET_NANOS,
+                distribution, seed, itemCount, viewerCount, VIEW_DISTANCE, SAMPLE_TARGET_NANOS, MEASUREMENT_ROUNDS,
                 comparison.baseline().median(), comparison.baseline().p95(),
                 comparison.candidate().median(), comparison.candidate().p95(), comparison.speedup(),
                 itemCount, expectedLabels, reduction);
