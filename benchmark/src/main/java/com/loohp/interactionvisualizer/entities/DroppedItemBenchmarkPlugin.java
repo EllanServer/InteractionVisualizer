@@ -26,13 +26,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Random;
-import java.util.Set;
 import java.util.UUID;
 import java.util.function.LongSupplier;
 
@@ -44,7 +40,10 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
 
     private static final int WARMUP_ROUNDS = 6;
     private static final int MEASUREMENT_ROUNDS = 18;
-    private static final double VIEW_DISTANCE = 64.0D;
+    private static final long SAMPLE_TARGET_NANOS = 2_000_000L;
+    private static final int MAX_SAMPLE_REPETITIONS = 4_096;
+    private static final double VIEW_DISTANCE = 72.0D;
+    private static final UUID BENCHMARK_WORLD_ID = UUID.fromString("f17968b7-ad29-4e08-bc29-56dc57f74b90");
     private static volatile long blackhole;
 
     private final List<String> results = new ArrayList<>();
@@ -72,9 +71,11 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
             benchmarkCramping(world, itemCount, false);
             benchmarkCramping(world, itemCount, true);
         }
-        for (int itemCount : List.of(500, 2000, 8000)) {
-            for (int viewerCount : List.of(1, 10, 50)) {
-                benchmarkVisibility(itemCount, viewerCount);
+        for (String distribution : List.of("uniform", "hotspot", "no-hit")) {
+            for (int itemCount : List.of(500, 2000, 8000)) {
+                for (int viewerCount : List.of(1, 8, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024)) {
+                    benchmarkVisibility(itemCount, viewerCount, distribution);
+                }
             }
         }
         for (int pending : List.of(100, 500, 2000, 8000)) {
@@ -162,83 +163,104 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         return cramped;
     }
 
-    private void benchmarkVisibility(int itemCount, int viewerCount) {
-        Random random = new Random(0x51A71A1L + itemCount * 31L + viewerCount);
-        List<Point> items = randomPoints(random, itemCount, 1024.0D);
-        List<Point> viewers = randomPoints(random, viewerCount, 1024.0D);
-        LongSupplier baseline = () -> scanVisibility(items, viewers);
-        LongSupplier candidate = () -> indexedVisibility(items, viewers);
-        long expectedPairs = baseline.getAsLong();
-        long candidatePairs = candidate.getAsLong();
-        if (expectedPairs != candidatePairs) {
-            throw new IllegalStateException("Visibility A/B mismatch: " + expectedPairs + " != " + candidatePairs);
+    private void benchmarkVisibility(int itemCount, int viewerCount, String distribution) {
+        Random random = new Random(0x51A71A1L + itemCount * 31L + viewerCount * 17L + distribution.hashCode());
+        List<Point> items;
+        List<Point> viewers;
+        switch (distribution) {
+            case "uniform" -> {
+                items = randomPoints(random, itemCount, 0.0D, 1024.0D);
+                viewers = randomPoints(random, viewerCount, 0.0D, 1024.0D);
+            }
+            case "hotspot" -> {
+                items = randomPoints(random, itemCount, 448.0D, 128.0D);
+                viewers = randomPoints(random, viewerCount, 448.0D, 128.0D);
+            }
+            case "no-hit" -> {
+                items = randomPoints(random, itemCount, 0.0D, 256.0D);
+                viewers = randomPoints(random, viewerCount, 768.0D, 256.0D);
+            }
+            default -> throw new IllegalArgumentException("Unknown visibility distribution: " + distribution);
         }
+        LongSupplier baseline = () -> linearActiveLabels(items, viewers, VIEW_DISTANCE);
+        LongSupplier candidate = () -> indexedActiveLabels(items, viewers, VIEW_DISTANCE);
+        long expectedLabels = baseline.getAsLong();
+        long candidateLabels = candidate.getAsLong();
+        if (expectedLabels != candidateLabels) {
+            throw new IllegalStateException("Visibility A/B mismatch: " + expectedLabels + " != " + candidateLabels);
+        }
+        boolean candidateUsesGrid = indexedVisibilityUsesGrid(items, viewers, VIEW_DISTANCE);
         Comparison comparison = compare(baseline, candidate);
-        int activeLabels = activeLabels(items, viewers);
-        double reduction = itemCount == 0 ? 0.0D : 100.0D * (itemCount - activeLabels) / itemCount;
+        double reduction = itemCount == 0 ? 0.0D : 100.0D * (itemCount - expectedLabels) / itemCount;
         String result = String.format(Locale.ROOT,
-                "{\"benchmark\":\"visibility\",\"items\":%d,\"viewers\":%d," +
+                "{\"benchmark\":\"visibility\",\"distribution\":\"%s\",\"items\":%d,\"viewers\":%d," +
+                        "\"range\":%.1f,\"baseline\":\"linear-viewer-snapshot-any\"," +
+                        "\"candidate\":\"production-viewer-index\",\"indexRebuiltPerOperation\":true," +
+                        "\"candidateUsesGrid\":%b,\"sampleTargetNs\":%d," +
                         "\"baselineMedianNs\":%d,\"baselineP95Ns\":%d," +
                         "\"candidateMedianNs\":%d,\"candidateP95Ns\":%d,\"speedup\":%.3f," +
-                        "\"visiblePairs\":%d,\"allLabels\":%d,\"activeLabels\":%d," +
+                        "\"allLabels\":%d,\"activeLabels\":%d," +
                         "\"labelReductionPct\":%.3f}",
-                itemCount, viewerCount,
+                distribution, itemCount, viewerCount, VIEW_DISTANCE, candidateUsesGrid, SAMPLE_TARGET_NANOS,
                 comparison.baseline().median(), comparison.baseline().p95(),
                 comparison.candidate().median(), comparison.candidate().p95(), comparison.speedup(),
-                expectedPairs, itemCount, activeLabels, reduction);
+                itemCount, expectedLabels, reduction);
         report(result);
     }
 
-    private static List<Point> randomPoints(Random random, int count, double width) {
+    private static List<Point> randomPoints(Random random, int count, double offset, double width) {
         List<Point> points = new ArrayList<>(count);
         for (int index = 0; index < count; index++) {
-            points.add(new Point(index, random.nextDouble(width), 64.0D + random.nextDouble(32.0D),
-                    random.nextDouble(width)));
+            points.add(new Point(index, offset + random.nextDouble(width), 64.0D + random.nextDouble(32.0D),
+                    offset + random.nextDouble(width)));
         }
         return points;
     }
 
-    private static long scanVisibility(List<Point> items, List<Point> viewers) {
-        long pairs = 0;
-        double rangeSquared = VIEW_DISTANCE * VIEW_DISTANCE;
+    private static long linearActiveLabels(List<Point> items, List<Point> viewers, double range) {
+        List<Point> viewerSnapshot = new ArrayList<>(viewers.size());
         for (Point viewer : viewers) {
-            Set<Integer> desired = new HashSet<>();
-            for (Point item : items) {
-                if (item.distanceSquared(viewer) <= rangeSquared) {
-                    desired.add(item.id());
-                }
-            }
-            pairs += desired.size();
+            viewerSnapshot.add(new Point(viewer.id(), viewer.x(), viewer.y(), viewer.z()));
         }
-        blackhole = pairs;
-        return pairs;
-    }
-
-    private static long indexedVisibility(List<Point> items, List<Point> viewers) {
-        VisibilityIndex index = new VisibilityIndex();
+        long active = 0;
+        double rangeSquared = range * range;
         for (Point item : items) {
-            index.add(item);
-        }
-        long pairs = 0;
-        for (Point viewer : viewers) {
-            pairs += index.nearby(viewer, VIEW_DISTANCE).size();
-        }
-        blackhole = pairs;
-        return pairs;
-    }
-
-    private static int activeLabels(List<Point> items, List<Point> viewers) {
-        int active = 0;
-        double rangeSquared = VIEW_DISTANCE * VIEW_DISTANCE;
-        for (Point item : items) {
-            for (Point viewer : viewers) {
+            for (Point viewer : viewerSnapshot) {
                 if (item.distanceSquared(viewer) <= rangeSquared) {
                     active++;
                     break;
                 }
             }
         }
+        blackhole = active;
         return active;
+    }
+
+    private static long indexedActiveLabels(List<Point> items, List<Point> viewers, double range) {
+        DroppedItemSpatialIndex.ViewerIndex index = createViewerIndex(viewers);
+        long active = 0;
+        for (Point item : items) {
+            if (index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range)) {
+                active++;
+            }
+        }
+        blackhole = active;
+        return active;
+    }
+
+    private static boolean indexedVisibilityUsesGrid(List<Point> items, List<Point> viewers, double range) {
+        DroppedItemSpatialIndex.ViewerIndex index = createViewerIndex(viewers);
+        Point item = items.getFirst();
+        index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range);
+        return index.usesGrid(BENCHMARK_WORLD_ID);
+    }
+
+    private static DroppedItemSpatialIndex.ViewerIndex createViewerIndex(List<Point> viewers) {
+        DroppedItemSpatialIndex.ViewerIndex index = new DroppedItemSpatialIndex.ViewerIndex();
+        for (Point viewer : viewers) {
+            index.addViewer(BENCHMARK_WORLD_ID, viewer.x(), viewer.y(), viewer.z());
+        }
+        return index;
     }
 
     private void reportTokenBucket(int pending, int capacity, int refill) {
@@ -256,11 +278,11 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
     private static Comparison compare(LongSupplier baseline, LongSupplier candidate) {
         for (int round = 0; round < WARMUP_ROUNDS; round++) {
             if ((round & 1) == 0) {
-                baseline.getAsLong();
-                candidate.getAsLong();
+                time(baseline);
+                time(candidate);
             } else {
-                candidate.getAsLong();
-                baseline.getAsLong();
+                time(candidate);
+                time(baseline);
             }
         }
         long[] baselineTimes = new long[MEASUREMENT_ROUNDS];
@@ -282,8 +304,14 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
 
     private static long time(LongSupplier operation) {
         long started = System.nanoTime();
-        operation.getAsLong();
-        return System.nanoTime() - started;
+        int repetitions = 0;
+        long elapsed;
+        do {
+            operation.getAsLong();
+            repetitions++;
+            elapsed = System.nanoTime() - started;
+        } while (elapsed < SAMPLE_TARGET_NANOS && repetitions < MAX_SAMPLE_REPETITIONS);
+        return elapsed / repetitions;
     }
 
     private void report(String result) {
@@ -313,45 +341,4 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         }
     }
 
-    private static final class VisibilityIndex {
-
-        private static final double CELL_SIZE = 16.0D;
-        private final Map<Long, List<Point>> cells = new HashMap<>();
-
-        private void add(Point point) {
-            cells.computeIfAbsent(key(coordinate(point.x()), coordinate(point.z())), ignored -> new ArrayList<>())
-                    .add(point);
-        }
-
-        private Set<Integer> nearby(Point viewer, double range) {
-            int minimumX = coordinate(viewer.x() - range);
-            int maximumX = coordinate(viewer.x() + range);
-            int minimumZ = coordinate(viewer.z() - range);
-            int maximumZ = coordinate(viewer.z() + range);
-            double rangeSquared = range * range;
-            Set<Integer> nearby = new HashSet<>();
-            for (int cellX = minimumX; cellX <= maximumX; cellX++) {
-                for (int cellZ = minimumZ; cellZ <= maximumZ; cellZ++) {
-                    List<Point> points = cells.get(key(cellX, cellZ));
-                    if (points == null) {
-                        continue;
-                    }
-                    for (Point point : points) {
-                        if (point.distanceSquared(viewer) <= rangeSquared) {
-                            nearby.add(point.id());
-                        }
-                    }
-                }
-            }
-            return nearby;
-        }
-
-        private static int coordinate(double value) {
-            return (int) Math.floor(value / CELL_SIZE);
-        }
-
-        private static long key(int x, int z) {
-            return ((long) x << 32) ^ (z & 0xFFFFFFFFL);
-        }
-    }
 }

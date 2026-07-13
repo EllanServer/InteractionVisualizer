@@ -75,49 +75,120 @@ final class DroppedItemSpatialIndex {
 
     static final class ViewerIndex {
 
-        private final Map<ViewerCell, List<Point>> viewerCells = new HashMap<>();
+        static final int DEFAULT_MINIMUM_GRID_VIEWERS = 128;
+        private static final int GRID_PROBE_COST_FACTOR = 2;
+
+        private final int minimumGridViewers;
+        private final Map<UUID, WorldViewerBucket> viewersByWorld = new HashMap<>();
+
+        ViewerIndex() {
+            this(DEFAULT_MINIMUM_GRID_VIEWERS);
+        }
+
+        ViewerIndex(int minimumGridViewers) {
+            if (minimumGridViewers < 0) {
+                throw new IllegalArgumentException("minimumGridViewers must be non-negative");
+            }
+            this.minimumGridViewers = minimumGridViewers;
+        }
 
         void addViewer(UUID worldId, double x, double y, double z) {
-            viewerCells.computeIfAbsent(viewerCell(worldId, x, z), ignored -> new ArrayList<>())
+            viewersByWorld.computeIfAbsent(worldId, ignored -> new WorldViewerBucket())
                     .add(new Point(x, y, z));
         }
 
         boolean isEmpty() {
-            return viewerCells.isEmpty();
+            return viewersByWorld.isEmpty();
         }
 
         boolean hasViewerWithin(UUID worldId, double x, double y, double z, double range) {
             if (range < 0.0D) {
                 return false;
             }
+            WorldViewerBucket viewers = viewersByWorld.get(worldId);
+            return viewers != null && viewers.hasViewerWithin(x, y, z, range, minimumGridViewers);
+        }
 
-            int minimumX = viewerCoordinate(x - range);
-            int maximumX = viewerCoordinate(x + range);
-            int minimumZ = viewerCoordinate(z - range);
-            int maximumZ = viewerCoordinate(z + range);
-            double rangeSquared = range * range;
+        boolean usesGrid(UUID worldId) {
+            WorldViewerBucket viewers = viewersByWorld.get(worldId);
+            return viewers != null && viewers.viewerCells != null;
+        }
 
-            for (int cellX = minimumX; cellX <= maximumX; cellX++) {
-                for (int cellZ = minimumZ; cellZ <= maximumZ; cellZ++) {
-                    List<Point> points = viewerCells.get(new ViewerCell(worldId, cellX, cellZ));
-                    if (points == null) {
-                        continue;
-                    }
-                    for (Point point : points) {
-                        double deltaX = point.x() - x;
-                        double deltaY = point.y() - y;
-                        double deltaZ = point.z() - z;
-                        if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
+        private static final class WorldViewerBucket {
+
+            private final List<Point> viewers = new ArrayList<>();
+            private Map<Long, List<Point>> viewerCells;
+
+            private void add(Point point) {
+                viewers.add(point);
+                if (viewerCells != null) {
+                    addToGrid(point);
+                }
+            }
+
+            private boolean hasViewerWithin(double x, double y, double z, double range,
+                                            int minimumGridViewers) {
+                int minimumX = viewerCoordinate(x - range);
+                int maximumX = viewerCoordinate(x + range);
+                int minimumZ = viewerCoordinate(z - range);
+                int maximumZ = viewerCoordinate(z + range);
+                long cellProbes = ((long) maximumX - minimumX + 1L)
+                        * ((long) maximumZ - minimumZ + 1L);
+                if (viewers.size() <= minimumGridViewers
+                        || viewers.size() <= cellProbes * GRID_PROBE_COST_FACTOR) {
+                    return hasViewerWithinRange(viewers, x, y, z, range);
+                }
+
+                ensureGrid();
+                double rangeSquared = range * range;
+                for (int cellX = minimumX; cellX <= maximumX; cellX++) {
+                    for (int cellZ = minimumZ; cellZ <= maximumZ; cellZ++) {
+                        List<Point> points = viewerCells.get(viewerCellKey(cellX, cellZ));
+                        if (points != null && hasViewerWithinSquared(points, x, y, z, rangeSquared)) {
                             return true;
                         }
                     }
+                }
+                return false;
+            }
+
+            private void ensureGrid() {
+                if (viewerCells != null) {
+                    return;
+                }
+                viewerCells = new HashMap<>();
+                for (Point viewer : viewers) {
+                    addToGrid(viewer);
+                }
+            }
+
+            private void addToGrid(Point point) {
+                viewerCells.computeIfAbsent(viewerCellKey(
+                                viewerCoordinate(point.x()), viewerCoordinate(point.z())),
+                        ignored -> new ArrayList<>()).add(point);
+            }
+        }
+
+        private static boolean hasViewerWithinRange(List<Point> viewers, double x, double y, double z,
+                                                    double range) {
+            return hasViewerWithinSquared(viewers, x, y, z, range * range);
+        }
+
+        private static boolean hasViewerWithinSquared(List<Point> viewers, double x, double y, double z,
+                                                      double rangeSquared) {
+            for (Point point : viewers) {
+                double deltaX = point.x() - x;
+                double deltaY = point.y() - y;
+                double deltaZ = point.z() - z;
+                if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
+                    return true;
                 }
             }
             return false;
         }
 
-        private static ViewerCell viewerCell(UUID worldId, double x, double z) {
-            return new ViewerCell(worldId, viewerCoordinate(x), viewerCoordinate(z));
+        private static long viewerCellKey(int x, int z) {
+            return ((long) x << 32) ^ (z & 0xFFFFFFFFL);
         }
 
         private static int viewerCoordinate(double coordinate) {
@@ -126,9 +197,6 @@ final class DroppedItemSpatialIndex {
     }
 
     private record Cell(UUID worldId, int x, int y, int z) {
-    }
-
-    private record ViewerCell(UUID worldId, int x, int z) {
     }
 
     private record Point(double x, double y, double z) {
