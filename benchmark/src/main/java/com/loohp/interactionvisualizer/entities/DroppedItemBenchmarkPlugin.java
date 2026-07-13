@@ -47,7 +47,12 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
     private static final int VISIBILITY_SEEDS = 3;
     private static final long SAMPLE_TARGET_NANOS = 2_000_000L;
     private static final int MAX_SAMPLE_REPETITIONS = 4_096;
-    private static final double VIEW_DISTANCE = 72.0D;
+    private static final double DEFAULT_VIEW_DISTANCE = 72.0D;
+    private static final List<Double> PRODUCTION_VISIBILITY_RANGES = List.of(64.0D, 80.0D);
+    private static final List<GridPhase> PRODUCTION_GRID_PHASES = List.of(
+            new GridPhase("boundary", 0.0D, 0.0D),
+            new GridPhase("middle", 7.875D, 7.875D),
+            new GridPhase("near-boundary", 15.75D, 15.25D));
     private static final UUID BENCHMARK_WORLD_ID = UUID.fromString("f17968b7-ad29-4e08-bc29-56dc57f74b90");
     private static volatile long blackhole;
 
@@ -78,6 +83,7 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         completionOutput = getDataFolder().toPath().resolve("benchmark-complete.txt");
         Files.writeString(resultsOutput, "");
         Files.deleteIfExists(completionOutput);
+        assertDeterministicProductionRangePaths();
 
         for (int itemCount : List.of(250, 1000, 2500)) {
             benchmarkCramping(world, itemCount, false);
@@ -91,6 +97,30 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                         benchmarkVisibility(itemCount, viewerCount, distribution, seed);
                     }
                 }
+            }
+        }
+        for (double range : PRODUCTION_VISIBILITY_RANGES) {
+            for (String distribution : List.of("diagonal-no-hit", "late-hit")) {
+                for (int viewerCount : List.of(127, 128, 191, 192, 256)) {
+                    for (GridPhase phase : PRODUCTION_GRID_PHASES) {
+                        benchmarkVisibility(2000, viewerCount, distribution, 0,
+                                range, phase, true);
+                    }
+                }
+            }
+        }
+        for (GridPhase phase : PRODUCTION_GRID_PHASES) {
+            for (int seed = 0; seed < VISIBILITY_SEEDS; seed++) {
+                for (int itemCount : List.of(500, 8000)) {
+                    benchmarkVisibility(itemCount, 128, "late-hit", seed,
+                            64.0D, phase, true);
+                    benchmarkVisibility(itemCount, 191, "late-hit", seed,
+                            80.0D, phase, true);
+                }
+            }
+            for (double range : PRODUCTION_VISIBILITY_RANGES) {
+                benchmarkVisibility(8000, 191, "uniform", 0,
+                        range, phase, true);
             }
         }
         for (int pending : List.of(100, 500, 2000, 8000)) {
@@ -177,6 +207,12 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
     }
 
     private void benchmarkVisibility(int itemCount, int viewerCount, String distribution, int seed) {
+        benchmarkVisibility(itemCount, viewerCount, distribution, seed,
+                DEFAULT_VIEW_DISTANCE, new GridPhase("default", 0.0D, 0.0D), false);
+    }
+
+    private void benchmarkVisibility(int itemCount, int viewerCount, String distribution, int seed,
+                                     double range, GridPhase gridPhase, boolean productionRangeProbe) {
         Random random = new Random(0x51A71A1L + itemCount * 31L + viewerCount * 17L
                 + distribution.hashCode() * 13L + seed * 0x9E3779B9L);
         List<Point> items;
@@ -208,10 +244,16 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
             }
             default -> throw new IllegalArgumentException("Unknown visibility distribution: " + distribution);
         }
-        LongSupplier linearReference = () -> linearActiveLabels(items, viewers, VIEW_DISTANCE);
-        LongSupplier legacyProduction = () -> legacyGridActiveLabels(items, viewers, VIEW_DISTANCE);
-        LongSupplier primitiveControl = () -> primitiveControlActiveLabels(items, viewers, VIEW_DISTANCE);
-        LongSupplier candidate = () -> indexedActiveLabels(items, viewers, VIEW_DISTANCE);
+        if (gridPhase.x() != 0.0D || gridPhase.z() != 0.0D) {
+            items = translatePoints(items, gridPhase.x(), gridPhase.z());
+            viewers = translatePoints(viewers, gridPhase.x(), gridPhase.z());
+        }
+        List<Point> benchmarkItems = items;
+        List<Point> benchmarkViewers = viewers;
+        LongSupplier linearReference = () -> linearActiveLabels(benchmarkItems, benchmarkViewers, range);
+        LongSupplier legacyProduction = () -> legacyGridActiveLabels(benchmarkItems, benchmarkViewers, range);
+        LongSupplier primitiveControl = () -> primitiveControlActiveLabels(benchmarkItems, benchmarkViewers, range);
+        LongSupplier candidate = () -> indexedActiveLabels(benchmarkItems, benchmarkViewers, range);
         long expectedLabels = linearReference.getAsLong();
         long legacyLabels = legacyProduction.getAsLong();
         long controlLabels = primitiveControl.getAsLong();
@@ -228,28 +270,45 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         int startingPermutation = Math.floorMod(itemCount * 31 + viewerCount * 17 + seed, 6);
         ThreeWayComparison comparisons = compareThree(
                 legacyProduction, primitiveControl, candidate, startingPermutation);
-        AdaptivePathProbe pathProbe = probeAdaptivePaths(items, viewers, VIEW_DISTANCE);
+        AdaptivePathProbe pathProbe = probeAdaptivePaths(benchmarkItems, benchmarkViewers, range);
         if (pathProbe.activeLabels() != expectedLabels) {
             throw new IllegalStateException("Adaptive path probe mismatch: expected=" + expectedLabels
                     + ", probe=" + pathProbe.activeLabels());
         }
+        if (productionRangeProbe) {
+            boolean mustRejectGrid = distribution.equals("diagonal-no-hit")
+                    || distribution.equals("late-hit") && (viewerCount < 128
+                    || range == 80.0D && viewerCount == 128);
+            if (mustRejectGrid && pathProbe.gridBuilt()) {
+                throw new IllegalStateException("Unexpected production-range grid build: range=" + range
+                        + ", phase=" + gridPhase.name() + ", distribution=" + distribution
+                        + ", viewers=" + viewerCount);
+            }
+        }
         double reduction = itemCount == 0 ? 0.0D : 100.0D * (itemCount - expectedLabels) / itemCount;
-        reportVisibilityComparison("visibility-production-ab", "legacy-production-viewer-grid", true,
+        reportVisibilityComparison(productionRangeProbe
+                        ? "visibility-production-range-ab" : "visibility-production-ab",
+                "legacy-production-viewer-grid", true,
                 distribution, seed, itemCount, viewerCount, comparisons.legacyCandidate(),
-                pathProbe, expectedLabels, reduction);
-        reportVisibilityComparison("visibility-adaptive-control-ab", "pure-primitive-soa-control", false,
+                pathProbe, expectedLabels, reduction, range, gridPhase);
+        reportVisibilityComparison(productionRangeProbe
+                        ? "visibility-adaptive-range-control-ab" : "visibility-adaptive-control-ab",
+                "pure-primitive-soa-control", false,
                 distribution, seed, itemCount, viewerCount, comparisons.controlCandidate(),
-                pathProbe, expectedLabels, reduction);
+                pathProbe, expectedLabels, reduction, range, gridPhase);
     }
 
     private void reportVisibilityComparison(String benchmark, String baseline, boolean baselineUsesGrid,
                                             String distribution, int seed, int itemCount, int viewerCount,
                                             Comparison comparison, AdaptivePathProbe pathProbe,
-                                            long activeLabels, double reduction) {
+                                            long activeLabels, double reduction, double range,
+                                            GridPhase gridPhase) {
         String result = String.format(Locale.ROOT,
                 "{\"benchmark\":\"%s\",\"distribution\":\"%s\",\"seed\":%d," +
                         "\"items\":%d,\"viewers\":%d," +
-                        "\"range\":%.1f,\"baseline\":\"%s\",\"baselineUsesGrid\":%b," +
+                        "\"range\":%.1f,\"gridPhase\":\"%s\"," +
+                        "\"gridPhaseX\":%.3f,\"gridPhaseZ\":%.3f," +
+                        "\"baseline\":\"%s\",\"baselineUsesGrid\":%b," +
                         "\"baselineUsesBounds\":false,\"sharedCandidateSample\":true," +
                         "\"candidate\":\"production-adaptive-primitive-viewer-index\"," +
                         "\"candidateStorage\":\"primitive-soa\"," +
@@ -274,7 +333,8 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                         "\"baselineRoundsNs\":%s,\"candidateRoundsNs\":%s," +
                         "\"allLabels\":%d,\"activeLabels\":%d," +
                         "\"labelReductionPct\":%.3f}",
-                benchmark, distribution, seed, itemCount, viewerCount, VIEW_DISTANCE, baseline, baselineUsesGrid,
+                benchmark, distribution, seed, itemCount, viewerCount, range,
+                gridPhase.name(), gridPhase.x(), gridPhase.z(), baseline, baselineUsesGrid,
                 pathProbe.gridBuilt(), pathProbe.gridActiveAtEnd(), pathProbe.boundsActiveAtEnd(),
                 SAMPLE_TARGET_NANOS, WARMUP_ROUNDS, MEASUREMENT_ROUNDS, comparison.roundOrder(),
                 comparison.baseline().median(), comparison.baseline().p95(),
@@ -290,6 +350,85 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                 Arrays.toString(comparison.baselineRoundsNs()), Arrays.toString(comparison.candidateRoundsNs()),
                 itemCount, activeLabels, reduction);
         report(result);
+    }
+
+    private static List<Point> translatePoints(List<Point> points, double deltaX, double deltaZ) {
+        List<Point> translated = new ArrayList<>(points.size());
+        for (Point point : points) {
+            translated.add(new Point(point.id(), point.x() + deltaX, point.y(), point.z() + deltaZ));
+        }
+        return translated;
+    }
+
+    private static void assertDeterministicProductionRangePaths() {
+        for (GridPhase phase : PRODUCTION_GRID_PHASES) {
+            Random random = new Random(0x26_01_02L);
+            List<Point> items = identicalPoints(2000, 512.0D, 80.0D, 512.0D);
+            items = translatePoints(items, phase.x(), phase.z());
+
+            List<Point> showThresholdViewers = translatePoints(
+                    lateHitPoints(random, 128), phase.x(), phase.z());
+            AdaptivePathProbe showThreshold = probeAdaptivePaths(
+                    items, showThresholdViewers, 64.0D);
+            if (!showThreshold.gridBuilt()) {
+                throw new IllegalStateException("64-block deterministic threshold did not build grid: phase="
+                        + phase.name());
+            }
+
+            List<Point> hideThresholdViewers = translatePoints(
+                    lateHitPoints(random, 191), phase.x(), phase.z());
+            AdaptivePathProbe hideThreshold = probeAdaptivePaths(
+                    items, hideThresholdViewers, 80.0D);
+            if (!hideThreshold.gridBuilt()) {
+                throw new IllegalStateException("80-block deterministic threshold did not build grid: phase="
+                        + phase.name());
+            }
+
+            List<Point> belowThresholdViewers = translatePoints(
+                    lateHitPoints(random, 127), phase.x(), phase.z());
+            if (probeAdaptivePaths(items, belowThresholdViewers, 64.0D).gridBuilt()) {
+                throw new IllegalStateException("Below-threshold deterministic probe built grid: phase="
+                        + phase.name());
+            }
+            if (probeAdaptivePaths(items, showThresholdViewers, 80.0D).gridBuilt()) {
+                throw new IllegalStateException("80-block cost rejection built grid at 128 viewers: phase="
+                        + phase.name());
+            }
+        }
+
+        Random random = new Random(0x26_01_02L);
+        List<Point> boundaryViewers128 = lateHitPoints(random, 128);
+        List<Point> boundaryViewers191 = lateHitPoints(random, 191);
+        List<Point> boundaryViewers192 = lateHitPoints(random, 192);
+        List<Point> boundaryViewers256 = lateHitPoints(random, 256);
+        List<Point> favorableItems = identicalPoints(2000, 516.0D, 80.0D, 516.0D);
+        List<Point> adverseItems = identicalPoints(2000, 508.0D, 80.0D, 508.0D);
+        if (!probeAdaptivePaths(favorableItems, boundaryViewers128, 64.0D).gridBuilt()) {
+            throw new IllegalStateException("64-block favorable boundary fixture did not build at 128 viewers");
+        }
+        if (probeAdaptivePaths(adverseItems, boundaryViewers128, 64.0D).gridBuilt()) {
+            throw new IllegalStateException("64-block adverse boundary fixture built at 128 viewers");
+        }
+        if (!probeAdaptivePaths(adverseItems, boundaryViewers191, 64.0D).gridBuilt()) {
+            throw new IllegalStateException("64-block adverse boundary fixture did not build at 191 viewers");
+        }
+        if (!probeAdaptivePaths(favorableItems, boundaryViewers191, 80.0D).gridBuilt()) {
+            throw new IllegalStateException("80-block favorable boundary fixture did not build at 191 viewers");
+        }
+        if (probeAdaptivePaths(adverseItems, boundaryViewers192, 80.0D).gridBuilt()) {
+            throw new IllegalStateException("80-block adverse boundary fixture built at 192 viewers");
+        }
+        if (!probeAdaptivePaths(adverseItems, boundaryViewers256, 80.0D).gridBuilt()) {
+            throw new IllegalStateException("80-block adverse boundary fixture did not build at 256 viewers");
+        }
+    }
+
+    private static List<Point> identicalPoints(int count, double x, double y, double z) {
+        List<Point> points = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            points.add(new Point(index, x, y, z));
+        }
+        return points;
     }
 
     private static List<Point> randomPoints(Random random, int count, double offset, double width) {
@@ -612,6 +751,9 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
 
     private record AdaptivePathProbe(long activeLabels, boolean gridBuilt,
                                      boolean gridActiveAtEnd, boolean boundsActiveAtEnd) {
+    }
+
+    private record GridPhase(String name, double x, double z) {
     }
 
     /** Strict pure primitive SoA lower-bound control without bounds or an adaptive grid. */
