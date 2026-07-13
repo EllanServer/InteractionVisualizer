@@ -145,7 +145,9 @@ final class DroppedItemSpatialIndex {
                             return true;
                         }
                         int expensiveQueries = ++viewers.expensiveQueries;
-                        if (expensiveQueries >= WorldViewerBucket.EXPENSIVE_QUERIES_BEFORE_GRID) {
+                        if (expensiveQueries >= WorldViewerBucket.EXPENSIVE_QUERIES_BEFORE_GRID
+                                && (viewers.viewerGrid != null
+                                    || remainingQueries >= WorldViewerBucket.MINIMUM_REMAINING_QUERIES)) {
                             viewers.activateGridIfBeneficial(x, z, range, remainingQueries,
                                     matchingViewer, matchingViewer - 1, true);
                         }
@@ -160,7 +162,9 @@ final class DroppedItemSpatialIndex {
                     return false;
                 }
                 int expensiveQueries = ++viewers.expensiveQueries;
-                if (expensiveQueries >= WorldViewerBucket.EXPENSIVE_QUERIES_BEFORE_GRID) {
+                if (expensiveQueries >= WorldViewerBucket.EXPENSIVE_QUERIES_BEFORE_GRID
+                        && (viewers.viewerGrid != null
+                            || remainingQueries >= WorldViewerBucket.MINIMUM_REMAINING_QUERIES)) {
                     viewers.activateGridIfBeneficial(x, z, range, remainingQueries,
                             viewerCount, -1, false);
                 }
@@ -197,7 +201,7 @@ final class DroppedItemSpatialIndex {
             private static final int MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
             private static final double[] EMPTY = new double[0];
             private static final double GRID_CELL_SIZE = 16.0D;
-            private static final int MINIMUM_DEEP_SCAN_VIEWERS = 192;
+            private static final int MINIMUM_DEEP_SCAN_VIEWERS = 128;
             private static final int EXPENSIVE_QUERIES_BEFORE_GRID = 8;
             private static final int MINIMUM_REMAINING_QUERIES = 256;
             private static final int CELL_LOOKUP_EQUIVALENT_VIEWERS = 3;
@@ -298,8 +302,11 @@ final class DroppedItemSpatialIndex {
                     }
                     if (matchingViewer >= MINIMUM_DEEP_SCAN_VIEWERS) {
                         expensiveQueries++;
-                        activateGridIfBeneficial(x, z, range, remainingQueries,
-                                matchingViewer, matchingViewer - 1, true);
+                        if (expensiveQueries >= EXPENSIVE_QUERIES_BEFORE_GRID
+                                && (viewerGrid != null || remainingQueries >= MINIMUM_REMAINING_QUERIES)) {
+                            activateGridIfBeneficial(x, z, range, remainingQueries,
+                                    matchingViewer, matchingViewer - 1, true);
+                        }
                     } else if (expensiveQueries != 0 || persistentGridHits) {
                         expensiveQueries = 0;
                         persistentGridHits = false;
@@ -313,7 +320,10 @@ final class DroppedItemSpatialIndex {
                 }
                 boundsActive = false;
                 expensiveQueries++;
-                activateGridIfBeneficial(x, z, range, remainingQueries, size, -1, false);
+                if (expensiveQueries >= EXPENSIVE_QUERIES_BEFORE_GRID
+                        && (viewerGrid != null || remainingQueries >= MINIMUM_REMAINING_QUERIES)) {
+                    activateGridIfBeneficial(x, z, range, remainingQueries, size, -1, false);
+                }
                 return false;
             }
 

@@ -153,8 +153,8 @@ class DroppedItemSpatialIndexTest {
     @Test
     void lateViewerHitsBuildAndKeepTheAdaptiveGrid() {
         UUID world = UUID.randomUUID();
-        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(192);
-        addViewerRing(viewers, world, 191, 300.0D);
+        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(191);
+        addViewerRing(viewers, world, 190, 300.0D);
         viewers.addViewer(world, 0.0D, 64.0D, 0.0D);
 
         for (int query = 0; query < 8; query++) {
@@ -173,8 +173,8 @@ class DroppedItemSpatialIndexTest {
     @Test
     void viewerBeforeDeepScanThresholdStaysOnThePrimitiveFastPath() {
         UUID world = UUID.randomUUID();
-        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(191);
-        addViewerRing(viewers, world, 190, 300.0D);
+        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(127);
+        addViewerRing(viewers, world, 126, 300.0D);
         viewers.addViewer(world, 0.0D, 64.0D, 0.0D);
 
         for (int query = 0; query < 16; query++) {
@@ -184,6 +184,36 @@ class DroppedItemSpatialIndexTest {
         assertFalse(viewers.hasAdaptiveGrid(world));
         assertFalse(viewers.isUsingAdaptiveGrid(world));
         assertFalse(viewers.hasActiveBounds(world));
+    }
+
+    @Test
+    void viewerAtDeepScanThresholdCanBuildWhenProfitable() {
+        UUID world = UUID.randomUUID();
+        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(128);
+        addViewerRing(viewers, world, 127, 300.0D);
+        viewers.addViewer(world, 0.0D, 64.0D, 0.0D);
+
+        for (int query = 0; query < 8; query++) {
+            assertTrue(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D,
+                    0.0D, 299 - query));
+        }
+        assertTrue(viewers.hasAdaptiveGrid(world));
+        assertTrue(viewers.isUsingAdaptiveGrid(world));
+    }
+
+    @Test
+    void gridCostModelRejectsUnprofitableThresholdHits() {
+        UUID world = UUID.randomUUID();
+        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(128);
+        addViewerRing(viewers, world, 127, 300.0D);
+        viewers.addViewer(world, 0.0D, 64.0D, 0.0D);
+
+        for (int query = 0; query < 72; query++) {
+            assertTrue(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D,
+                    72.0D, 511 - query));
+        }
+        assertFalse(viewers.hasAdaptiveGrid(world));
+        assertFalse(viewers.isUsingAdaptiveGrid(world));
     }
 
     @Test
