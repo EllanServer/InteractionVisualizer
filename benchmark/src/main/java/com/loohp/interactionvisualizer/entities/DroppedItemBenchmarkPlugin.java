@@ -203,11 +203,13 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                         "\"candidateUsesGrid\":false,\"sampleTargetNs\":%d,\"measurementRounds\":%d," +
                         "\"baselineMedianNs\":%d,\"baselineP95Ns\":%d," +
                         "\"candidateMedianNs\":%d,\"candidateP95Ns\":%d,\"speedup\":%.3f," +
+                        "\"baselineRoundsNs\":%s,\"candidateRoundsNs\":%s," +
                         "\"allLabels\":%d,\"activeLabels\":%d," +
                         "\"labelReductionPct\":%.3f}",
                 distribution, seed, itemCount, viewerCount, VIEW_DISTANCE, SAMPLE_TARGET_NANOS, MEASUREMENT_ROUNDS,
                 comparison.baseline().median(), comparison.baseline().p95(),
                 comparison.candidate().median(), comparison.candidate().p95(), comparison.speedup(),
+                Arrays.toString(comparison.baselineRoundsNs()), Arrays.toString(comparison.candidateRoundsNs()),
                 itemCount, expectedLabels, reduction);
         report(result);
     }
@@ -295,7 +297,7 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         }
         Samples baselineSamples = Samples.of(baselineTimes);
         Samples candidateSamples = Samples.of(candidateTimes);
-        return new Comparison(baselineSamples, candidateSamples,
+        return new Comparison(baselineSamples, candidateSamples, baselineTimes, candidateTimes,
                 (double) baselineSamples.median() / Math.max(1L, candidateSamples.median()));
     }
 
@@ -325,7 +327,8 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         }
     }
 
-    private record Comparison(Samples baseline, Samples candidate, double speedup) {
+    private record Comparison(Samples baseline, Samples candidate, long[] baselineRoundsNs,
+                              long[] candidateRoundsNs, double speedup) {
     }
 
     private record Point(int id, double x, double y, double z) {

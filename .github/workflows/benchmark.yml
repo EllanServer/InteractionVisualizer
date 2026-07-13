@@ -64,6 +64,7 @@ jobs:
           view-distance=3
           simulation-distance=3
           max-players=1
+          max-tick-time=-1
           sync-chunk-writes=false
           EOF
 
