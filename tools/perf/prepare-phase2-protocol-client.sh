@@ -77,7 +77,42 @@ packageJson.dependencies['minecraft-data'] = 'file:../node-minecraft-data'
 fs.writeFileSync('package.json', `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8')
 NODE
   npm install --omit=dev --ignore-scripts --package-lock=true --no-audit --no-fund
-  npm ls --omit=dev --all --json > dependency-tree.json
+  # npm ls recursively validates dependencies declared by the linked data
+  # source package, including its generator/test toolchain. Those packages are
+  # intentionally absent from this runtime-only install, so derive a stable
+  # production inventory from the authoritative lockfile instead.
+  node <<'NODE'
+const fs = require('fs')
+const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'))
+if (lock.lockfileVersion !== 3 || lock.packages == null) {
+  throw new Error(`Unsupported package-lock schema: ${lock.lockfileVersion}`)
+}
+const compareText = (a, b) => a < b ? -1 : a > b ? 1 : 0
+const sortedObject = value => Object.fromEntries(Object.entries(value || {}).sort(([a], [b]) => compareText(a, b)))
+const packages = Object.entries(lock.packages)
+  .filter(([, metadata]) => metadata.dev !== true)
+  .sort(([a], [b]) => compareText(a, b))
+  .map(([location, metadata]) => ({
+    location: location || '.',
+    name: metadata.name || null,
+    version: metadata.version || null,
+    resolved: metadata.resolved || null,
+    integrity: metadata.integrity || null,
+    link: metadata.link === true,
+    optional: metadata.optional === true,
+    dependencies: sortedObject(metadata.dependencies),
+    optionalDependencies: sortedObject(metadata.optionalDependencies),
+    peerDependencies: sortedObject(metadata.peerDependencies)
+  }))
+const inventory = {
+  schemaVersion: 1,
+  source: 'package-lock.json production entries',
+  lockfileVersion: lock.lockfileVersion,
+  packageCount: packages.length,
+  packages
+}
+fs.writeFileSync('production-lock-inventory.json', `${JSON.stringify(inventory, null, 2)}\n`, 'utf8')
+NODE
 )
 
 mkdir -p "$output_directory"
@@ -85,9 +120,9 @@ mv "$nmp_directory" "$output_directory/node-minecraft-protocol"
 mv "$wrapper_directory" "$output_directory/node-minecraft-data"
 
 lock_path="$output_directory/node-minecraft-protocol/package-lock.json"
-tree_path="$output_directory/node-minecraft-protocol/dependency-tree.json"
+inventory_path="$output_directory/node-minecraft-protocol/production-lock-inventory.json"
 test -s "$lock_path"
-test -s "$tree_path"
+test -s "$inventory_path"
 
 sha256_file() {
   sha256sum "$1" | awk '{print $1}'
@@ -112,7 +147,7 @@ cat > "$output_directory/client-build-manifest.json" <<EOF
   },
   "installScriptsEnabled": false,
   "packageLockSha256": "$(sha256_file "$lock_path")",
-  "dependencyTreeSha256": "$(sha256_file "$tree_path")"
+  "productionLockInventorySha256": "$(sha256_file "$inventory_path")"
 }
 EOF
 

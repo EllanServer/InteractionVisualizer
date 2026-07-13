@@ -211,6 +211,6 @@ jobs:
             phase2-dependencies/protocol-client/client-build-manifest.json
             phase2-dependencies/protocol-client/client-files.sha256
             phase2-dependencies/protocol-client/node-minecraft-protocol/package-lock.json
-            phase2-dependencies/protocol-client/node-minecraft-protocol/dependency-tree.json
+            phase2-dependencies/protocol-client/node-minecraft-protocol/production-lock-inventory.json
           if-no-files-found: warn
           retention-days: 30
