@@ -42,8 +42,8 @@ import java.util.function.LongSupplier;
  */
 public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
 
-    private static final int WARMUP_ROUNDS = 8;
-    private static final int MEASUREMENT_ROUNDS = 40;
+    private static final int WARMUP_ROUNDS = 12;
+    private static final int MEASUREMENT_ROUNDS = 42;
     private static final int VISIBILITY_SEEDS = 3;
     private static final long SAMPLE_TARGET_NANOS = 2_000_000L;
     private static final int MAX_SAMPLE_REPETITIONS = 4_096;
@@ -83,7 +83,8 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
             benchmarkCramping(world, itemCount, false);
             benchmarkCramping(world, itemCount, true);
         }
-        for (String distribution : List.of("uniform", "hotspot", "no-hit", "enclosed-no-hit")) {
+        for (String distribution : List.of("uniform", "hotspot", "no-hit", "enclosed-no-hit",
+                "diagonal-no-hit", "late-hit")) {
             for (int itemCount : List.of(500, 2000, 8000)) {
                 for (int viewerCount : List.of(1, 8, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024)) {
                     for (int seed = 0; seed < VISIBILITY_SEEDS; seed++) {
@@ -197,36 +198,64 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                 items = randomPoints(random, itemCount, 448.0D, 128.0D);
                 viewers = enclosingRingPoints(random, viewerCount);
             }
+            case "diagonal-no-hit" -> {
+                items = centralPoints(random, itemCount, 4.0D);
+                viewers = diagonalMissPoints(random, viewerCount);
+            }
+            case "late-hit" -> {
+                items = centralPoints(random, itemCount, 4.0D);
+                viewers = lateHitPoints(random, viewerCount);
+            }
             default -> throw new IllegalArgumentException("Unknown visibility distribution: " + distribution);
         }
         LongSupplier linearReference = () -> linearActiveLabels(items, viewers, VIEW_DISTANCE);
         LongSupplier legacyProduction = () -> legacyGridActiveLabels(items, viewers, VIEW_DISTANCE);
+        LongSupplier primitiveControl = () -> primitiveControlActiveLabels(items, viewers, VIEW_DISTANCE);
         LongSupplier candidate = () -> indexedActiveLabels(items, viewers, VIEW_DISTANCE);
         long expectedLabels = linearReference.getAsLong();
         long legacyLabels = legacyProduction.getAsLong();
+        long controlLabels = primitiveControl.getAsLong();
         long candidateLabels = candidate.getAsLong();
-        if (expectedLabels != legacyLabels || expectedLabels != candidateLabels) {
+        if (expectedLabels != legacyLabels || expectedLabels != controlLabels || expectedLabels != candidateLabels) {
             throw new IllegalStateException("Visibility A/B mismatch: linear=" + expectedLabels
-                    + ", legacy=" + legacyLabels + ", candidate=" + candidateLabels);
+                    + ", legacy=" + legacyLabels + ", control=" + controlLabels
+                    + ", candidate=" + candidateLabels);
         }
-        boolean baselineStarts = ((itemCount * 31L + viewerCount * 17L + seed) & 1L) == 0L;
-        Comparison productionComparison = compare(legacyProduction, candidate, baselineStarts);
+        AdaptivePathProbe pathProbe = probeAdaptivePaths(items, viewers, VIEW_DISTANCE);
+        if (pathProbe.activeLabels() != expectedLabels) {
+            throw new IllegalStateException("Adaptive path probe mismatch: expected=" + expectedLabels
+                    + ", probe=" + pathProbe.activeLabels());
+        }
+        if ((distribution.endsWith("no-hit") && expectedLabels != 0L)
+                || (distribution.equals("late-hit") && expectedLabels != itemCount)) {
+            throw new IllegalStateException("Invalid " + distribution + " fixture: active=" + expectedLabels);
+        }
+        int startingPermutation = Math.floorMod(itemCount * 31 + viewerCount * 17 + seed, 6);
+        ThreeWayComparison comparisons = compareThree(
+                legacyProduction, primitiveControl, candidate, startingPermutation);
         double reduction = itemCount == 0 ? 0.0D : 100.0D * (itemCount - expectedLabels) / itemCount;
         reportVisibilityComparison("visibility-production-ab", "legacy-production-viewer-grid", true,
-                distribution, seed, itemCount, viewerCount, productionComparison, expectedLabels, reduction);
+                distribution, seed, itemCount, viewerCount, comparisons.legacyCandidate(),
+                pathProbe, expectedLabels, reduction);
+        reportVisibilityComparison("visibility-adaptive-control-ab", "production-primitive-viewer-index", false,
+                distribution, seed, itemCount, viewerCount, comparisons.controlCandidate(),
+                pathProbe, expectedLabels, reduction);
     }
 
     private void reportVisibilityComparison(String benchmark, String baseline, boolean baselineUsesGrid,
                                             String distribution, int seed, int itemCount, int viewerCount,
-                                            Comparison comparison, long activeLabels, double reduction) {
+                                            Comparison comparison, AdaptivePathProbe pathProbe,
+                                            long activeLabels, double reduction) {
         String result = String.format(Locale.ROOT,
                 "{\"benchmark\":\"%s\",\"distribution\":\"%s\",\"seed\":%d," +
                         "\"items\":%d,\"viewers\":%d," +
                         "\"range\":%.1f,\"baseline\":\"%s\",\"baselineUsesGrid\":%b," +
-                        "\"candidate\":\"production-bounded-primitive-viewer-index\"," +
+                        "\"candidate\":\"production-adaptive-primitive-viewer-index\"," +
                         "\"candidateStorage\":\"primitive-soa\"," +
-                        "\"indexRebuiltPerOperation\":true,\"candidateUsesGrid\":false," +
-                        "\"candidateUsesBounds\":true," +
+                        "\"indexRebuiltPerOperation\":true,\"candidateUsesGrid\":true," +
+                        "\"candidateUsesBounds\":true,\"candidateBuildsIndexesLazily\":true," +
+                        "\"probeGridBuilt\":%b,\"probeGridActiveAtEnd\":%b," +
+                        "\"probeBoundsActiveAtEnd\":%b," +
                         "\"sampleTargetNs\":%d,\"warmupRounds\":%d,\"measurementRounds\":%d," +
                         "\"roundOrder\":\"%s\"," +
                         "\"baselineMedianNs\":%d,\"baselineP95Ns\":%d," +
@@ -245,6 +274,7 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                         "\"allLabels\":%d,\"activeLabels\":%d," +
                         "\"labelReductionPct\":%.3f}",
                 benchmark, distribution, seed, itemCount, viewerCount, VIEW_DISTANCE, baseline, baselineUsesGrid,
+                pathProbe.gridBuilt(), pathProbe.gridActiveAtEnd(), pathProbe.boundsActiveAtEnd(),
                 SAMPLE_TARGET_NANOS, WARMUP_ROUNDS, MEASUREMENT_ROUNDS, comparison.roundOrder(),
                 comparison.baseline().median(), comparison.baseline().p95(),
                 comparison.candidate().median(), comparison.candidate().p95(), comparison.speedup(),
@@ -288,6 +318,40 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         return points;
     }
 
+    private static List<Point> centralPoints(Random random, int count, double radius) {
+        List<Point> points = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            points.add(new Point(index,
+                    512.0D + random.nextDouble(-radius, radius),
+                    80.0D,
+                    512.0D + random.nextDouble(-radius, radius)));
+        }
+        return points;
+    }
+
+    private static List<Point> diagonalMissPoints(Random random, int count) {
+        List<Point> points = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            int quadrant = index & 3;
+            double xSign = (quadrant & 1) == 0 ? -1.0D : 1.0D;
+            double zSign = (quadrant & 2) == 0 ? -1.0D : 1.0D;
+            points.add(new Point(index,
+                    512.0D + xSign * random.nextDouble(60.0D, 64.0D),
+                    80.0D,
+                    512.0D + zSign * random.nextDouble(60.0D, 64.0D)));
+        }
+        return points;
+    }
+
+    private static List<Point> lateHitPoints(Random random, int count) {
+        if (count == 0) {
+            return List.of();
+        }
+        List<Point> points = enclosingRingPoints(random, count - 1);
+        points.add(new Point(count - 1, 512.0D, 80.0D, 512.0D));
+        return points;
+    }
+
     private static long linearActiveLabels(List<Point> items, List<Point> viewers, double range) {
         List<Point> viewerSnapshot = new ArrayList<>(viewers.size());
         for (Point viewer : viewers) {
@@ -323,7 +387,7 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
     }
 
     private static long indexedActiveLabels(List<Point> items, List<Point> viewers, double range) {
-        DroppedItemSpatialIndex.ViewerIndex index = createViewerIndex(viewers);
+        DroppedItemSpatialIndex.ViewerIndex index = createViewerIndex(viewers, items.size());
         long active = 0;
         for (Point item : items) {
             if (index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range)) {
@@ -334,8 +398,38 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
         return active;
     }
 
-    private static DroppedItemSpatialIndex.ViewerIndex createViewerIndex(List<Point> viewers) {
-        DroppedItemSpatialIndex.ViewerIndex index = new DroppedItemSpatialIndex.ViewerIndex(viewers.size());
+    private static long primitiveControlActiveLabels(List<Point> items, List<Point> viewers, double range) {
+        DroppedItemSpatialIndex.ViewerIndex index =
+                new DroppedItemSpatialIndex.ViewerIndex(viewers.size(), items.size(), false);
+        for (Point viewer : viewers) {
+            index.addViewer(BENCHMARK_WORLD_ID, viewer.x(), viewer.y(), viewer.z());
+        }
+        long active = 0;
+        for (Point item : items) {
+            if (index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range)) {
+                active++;
+            }
+        }
+        blackhole = active;
+        return active;
+    }
+
+    private static AdaptivePathProbe probeAdaptivePaths(List<Point> items, List<Point> viewers, double range) {
+        DroppedItemSpatialIndex.ViewerIndex index = createViewerIndex(viewers, items.size());
+        long active = 0;
+        for (Point item : items) {
+            if (index.hasViewerWithin(BENCHMARK_WORLD_ID, item.x(), item.y(), item.z(), range)) {
+                active++;
+            }
+        }
+        return new AdaptivePathProbe(active, index.hasAdaptiveGrid(BENCHMARK_WORLD_ID),
+                index.isUsingAdaptiveGrid(BENCHMARK_WORLD_ID),
+                index.hasActiveBounds(BENCHMARK_WORLD_ID));
+    }
+
+    private static DroppedItemSpatialIndex.ViewerIndex createViewerIndex(List<Point> viewers, int expectedQueries) {
+        DroppedItemSpatialIndex.ViewerIndex index =
+                new DroppedItemSpatialIndex.ViewerIndex(viewers.size(), expectedQueries);
         for (Point viewer : viewers) {
             index.addViewer(BENCHMARK_WORLD_ID, viewer.x(), viewer.y(), viewer.z());
         }
@@ -389,6 +483,58 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
                 OrderStratum.of(baselineTimes, candidateTimes, baselineFirstRounds, true),
                 OrderStratum.of(baselineTimes, candidateTimes, baselineFirstRounds, false),
                 baselineStarts ? "ABBA" : "BAAB", baselineTimes, candidateTimes,
+                (double) baselineSamples.median() / Math.max(1L, candidateSamples.median()));
+    }
+
+    private static ThreeWayComparison compareThree(LongSupplier legacy, LongSupplier control,
+                                                   LongSupplier candidate, int startingPermutation) {
+        LongSupplier[] operations = {legacy, control, candidate};
+        int[][] permutations = {
+                {0, 1, 2}, {0, 2, 1}, {1, 0, 2},
+                {1, 2, 0}, {2, 0, 1}, {2, 1, 0}
+        };
+        for (int round = 0; round < WARMUP_ROUNDS; round++) {
+            int[] order = permutations[(startingPermutation + round) % permutations.length];
+            for (int operation : order) {
+                time(operations[operation]);
+            }
+        }
+        long[][] times = new long[operations.length][MEASUREMENT_ROUNDS];
+        boolean[] legacyFirst = new boolean[MEASUREMENT_ROUNDS];
+        boolean[] controlFirst = new boolean[MEASUREMENT_ROUNDS];
+        for (int round = 0; round < MEASUREMENT_ROUNDS; round++) {
+            int[] order = permutations[(startingPermutation + round) % permutations.length];
+            int legacyPosition = 0;
+            int controlPosition = 0;
+            int candidatePosition = 0;
+            for (int position = 0; position < order.length; position++) {
+                int operation = order[position];
+                times[operation][round] = time(operations[operation]);
+                if (operation == 0) {
+                    legacyPosition = position;
+                } else if (operation == 1) {
+                    controlPosition = position;
+                } else {
+                    candidatePosition = position;
+                }
+            }
+            legacyFirst[round] = legacyPosition < candidatePosition;
+            controlFirst[round] = controlPosition < candidatePosition;
+        }
+        String roundOrder = "BALANCED-6@" + startingPermutation;
+        return new ThreeWayComparison(
+                comparisonOf(times[0], times[2], legacyFirst, roundOrder),
+                comparisonOf(times[1], times[2], controlFirst, roundOrder));
+    }
+
+    private static Comparison comparisonOf(long[] baselineTimes, long[] candidateTimes,
+                                           boolean[] baselineFirstRounds, String roundOrder) {
+        Samples baselineSamples = Samples.of(baselineTimes);
+        Samples candidateSamples = Samples.of(candidateTimes);
+        return new Comparison(baselineSamples, candidateSamples,
+                OrderStratum.of(baselineTimes, candidateTimes, baselineFirstRounds, true),
+                OrderStratum.of(baselineTimes, candidateTimes, baselineFirstRounds, false),
+                roundOrder, baselineTimes, candidateTimes,
                 (double) baselineSamples.median() / Math.max(1L, candidateSamples.median()));
     }
 
@@ -453,6 +599,13 @@ public final class DroppedItemBenchmarkPlugin extends JavaPlugin {
     private record Comparison(Samples baseline, Samples candidate, OrderStratum baselineFirst,
                               OrderStratum candidateFirst, String roundOrder, long[] baselineRoundsNs,
                               long[] candidateRoundsNs, double speedup) {
+    }
+
+    private record ThreeWayComparison(Comparison legacyCandidate, Comparison controlCandidate) {
+    }
+
+    private record AdaptivePathProbe(long activeLabels, boolean gridBuilt,
+                                     boolean gridActiveAtEnd, boolean boundsActiveAtEnd) {
     }
 
     /** Exact copy of the viewer-grid strategy used by production before the optimized candidate. */

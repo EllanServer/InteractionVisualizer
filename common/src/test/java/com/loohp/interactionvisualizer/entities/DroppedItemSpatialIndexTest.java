@@ -72,6 +72,8 @@ class DroppedItemSpatialIndexTest {
     void rejectsNegativeExpectedViewerCapacity() {
         assertThrows(IllegalArgumentException.class,
                 () -> new DroppedItemSpatialIndex.ViewerIndex(-1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DroppedItemSpatialIndex.ViewerIndex(1, -1));
     }
 
     @Test
@@ -101,6 +103,76 @@ class DroppedItemSpatialIndexTest {
     }
 
     @Test
+    void internalMissesBuildAndLaterHitsRetireTheAdaptiveGrid() {
+        UUID world = UUID.randomUUID();
+        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(768, 300);
+        addViewerRing(viewers, world, 768, 300.0D);
+
+        for (int query = 0; query < 8; query++) {
+            assertFalse(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 72.0D));
+        }
+        assertTrue(viewers.hasAdaptiveGrid(world));
+        assertTrue(viewers.isUsingAdaptiveGrid(world));
+        assertTrue(viewers.hasViewerWithin(world, 300.0D, 64.0D, 0.0D, 0.0D));
+        assertFalse(viewers.isUsingAdaptiveGrid(world));
+        assertTrue(viewers.hasAdaptiveGrid(world));
+
+        viewers.addViewer(world, 0.0D, 64.0D, 0.0D);
+        assertFalse(viewers.hasAdaptiveGrid(world));
+        assertTrue(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 0.0D));
+    }
+
+    @Test
+    void adaptiveGridIsNotBuiltWithoutEnoughRemainingQueries() {
+        UUID world = UUID.randomUUID();
+        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(768, 8);
+        addViewerRing(viewers, world, 768, 300.0D);
+
+        for (int query = 0; query < 8; query++) {
+            assertFalse(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 72.0D));
+        }
+        assertFalse(viewers.hasAdaptiveGrid(world));
+    }
+
+    @Test
+    void adaptiveGridRechecksChangingQueryRanges() {
+        UUID world = UUID.randomUUID();
+        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(768, 300);
+        addViewerRing(viewers, world, 768, 300.0D);
+        for (int query = 0; query < 8; query++) {
+            assertFalse(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 72.0D));
+        }
+
+        assertTrue(viewers.isUsingAdaptiveGrid(world));
+        assertFalse(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, 80.0D));
+        assertFalse(viewers.isUsingAdaptiveGrid(world));
+        assertTrue(viewers.hasAdaptiveGrid(world));
+        assertTrue(viewers.hasViewerWithin(world, 0.0D, 64.0D, 0.0D, Double.MAX_VALUE));
+    }
+
+    @Test
+    void adaptiveGridUsesPerWorldQueryBudgets() {
+        UUID shortWorld = UUID.randomUUID();
+        UUID longWorld = UUID.randomUUID();
+        DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex(1536);
+        for (int query = 0; query < 8; query++) {
+            viewers.expectQuery(shortWorld);
+        }
+        for (int query = 0; query < 300; query++) {
+            viewers.expectQuery(longWorld);
+        }
+        addViewerRing(viewers, shortWorld, 768, 300.0D);
+        addViewerRing(viewers, longWorld, 768, 300.0D);
+
+        for (int query = 0; query < 8; query++) {
+            assertFalse(viewers.hasViewerWithin(shortWorld, 0.0D, 64.0D, 0.0D, 72.0D));
+            assertFalse(viewers.hasViewerWithin(longWorld, 0.0D, 64.0D, 0.0D, 72.0D));
+        }
+        assertFalse(viewers.hasAdaptiveGrid(shortWorld));
+        assertTrue(viewers.hasAdaptiveGrid(longWorld));
+    }
+
+    @Test
     void upgradesFromSingleWorldFastPathAndKeepsWorldsIsolated() {
         UUID firstWorld = UUID.randomUUID();
         UUID secondWorld = UUID.randomUUID();
@@ -116,5 +188,14 @@ class DroppedItemSpatialIndexTest {
         assertFalse(viewers.hasViewerWithin(firstWorld, 0.0D, 90.0D, 0.0D, 0.0D));
         assertTrue(viewers.hasViewerWithin(firstWorld, 32.0D, 72.0D, 32.0D, 0.0D));
         assertFalse(viewers.hasViewerWithin(firstWorld, 32.0D, 73.0001D, 32.0D, 1.0D));
+    }
+
+    private static void addViewerRing(DroppedItemSpatialIndex.ViewerIndex viewers, UUID world,
+                                      int count, double radius) {
+        for (int index = 0; index < count; index++) {
+            double angle = 2.0D * Math.PI * index / count;
+            viewers.addViewer(world, Math.cos(angle) * radius, 64.0D,
+                    Math.sin(angle) * radius);
+        }
     }
 }
