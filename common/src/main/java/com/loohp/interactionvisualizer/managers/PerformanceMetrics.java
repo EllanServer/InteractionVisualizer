@@ -13,6 +13,7 @@ package com.loohp.interactionvisualizer.managers;
 
 import com.destroystokyo.paper.event.server.ServerTickEndEvent;
 import com.loohp.interactionvisualizer.InteractionVisualizer;
+import com.loohp.interactionvisualizer.utils.LegacyTextComponentCache;
 import org.bukkit.Bukkit;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -117,6 +118,7 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.blockUpdateChecks = 0;
         INSTANCE.blockUpdateNanos = 0;
         INSTANCE.slowestTickTracker.reset();
+        LegacyTextComponentCache.startMeasurement();
         INSTANCE.collecting = true;
         return true;
     }
@@ -126,13 +128,16 @@ public final class PerformanceMetrics implements Listener {
             return null;
         }
         INSTANCE.collecting = false;
-        Snapshot snapshot = INSTANCE.createSnapshot();
+        LegacyTextComponentCache.CacheMetrics textCache = LegacyTextComponentCache.stopMeasurement();
+        Snapshot snapshot = INSTANCE.createSnapshot(textCache);
         InteractionVisualizer.plugin.getLogger().info("IV_PERF " + snapshot.json());
         return snapshot;
     }
 
     public static Snapshot snapshot() {
-        return INSTANCE.collecting ? INSTANCE.createSnapshot() : null;
+        return INSTANCE.collecting
+                ? INSTANCE.createSnapshot(LegacyTextComponentCache.metrics())
+                : null;
     }
 
     public static void virtualSpawnBundle() {
@@ -267,7 +272,7 @@ public final class PerformanceMetrics implements Listener {
         }
     }
 
-    private Snapshot createSnapshot() {
+    private Snapshot createSnapshot(LegacyTextComponentCache.CacheMetrics textCache) {
         int samples = tickCount;
         double[] sorted = Arrays.copyOf(tickDurations, samples);
         Arrays.sort(sorted);
@@ -283,7 +288,8 @@ public final class PerformanceMetrics implements Listener {
         long elapsedNanos = Math.max(1L, System.nanoTime() - startedNanos);
         return new Snapshot(label, configStaticAnchor, configPacketOnlyStatic, configVisibilityRateLimit,
                 configVisibilityBucketSize, configVisibilityRestorePerTick, configEventDrivenBlockUpdates,
-                configBlockUpdateMaxDirtyPerTick, elapsedNanos, samples, tickSamplesDropped,
+                configBlockUpdateMaxDirtyPerTick, LegacyTextComponentCache.isEnabled(),
+                elapsedNanos, samples, tickSamplesDropped,
                 percentile(sorted, 0.50D), percentile(sorted, 0.95D), percentile(sorted, 0.99D),
                 percentile(sorted, 0.999D), samples == 0 ? 0.0D : sorted[samples - 1],
                 slowestTickTracker.slowestBukkitTick(), slowestTickTracker.slowestEndEpochMillis(),
@@ -293,7 +299,8 @@ public final class PerformanceMetrics implements Listener {
                 virtualPickupPackets, bukkitEntitySpawns, bukkitEntityRemoves, bukkitEntityTeleports,
                 bukkitShowCalls, bukkitHideCalls, displaySyncs, itemSyncs, packetOnlyItemSyncs,
                 virtualViewerChecks, visibilityShowsQueued, visibilityShowsDrained,
-                itemAnimationNanos, droppedItemNanos, blockUpdateChecks, blockUpdateNanos);
+                itemAnimationNanos, droppedItemNanos, blockUpdateChecks, blockUpdateNanos,
+                textCache.requests(), textCache.misses(), textCache.sameRawFastPaths());
     }
 
     private static double percentile(double[] sorted, double percentile) {
@@ -321,6 +328,7 @@ public final class PerformanceMetrics implements Listener {
             int visibilityRestorePerTick,
             boolean eventDrivenBlockUpdates,
             int blockUpdateMaxDirtyPerTick,
+            boolean legacyTextComponentCache,
             long elapsedNanos,
             int tickSamples,
             long droppedTickSamples,
@@ -354,7 +362,10 @@ public final class PerformanceMetrics implements Listener {
             long itemAnimationNanos,
             long droppedItemNanos,
             long blockUpdateChecks,
-            long blockUpdateNanos) {
+            long blockUpdateNanos,
+            long legacyTextCacheRequests,
+            long legacyTextCacheMisses,
+            long legacyTextSameRawFastPaths) {
 
         public double seconds() {
             return elapsedNanos / 1_000_000_000.0D;
@@ -372,11 +383,21 @@ public final class PerformanceMetrics implements Listener {
                     + virtualRemovePackets + virtualPickupPackets;
         }
 
+        public long legacyTextCacheHits() {
+            return Math.max(0L, legacyTextCacheRequests - legacyTextCacheMisses);
+        }
+
+        public double legacyTextCacheHitRate() {
+            return legacyTextCacheRequests == 0L
+                    ? 0.0D
+                    : (double) legacyTextCacheHits() / (double) legacyTextCacheRequests;
+        }
+
         public String summary() {
             return String.format(Locale.ROOT,
-                    "label=%s modes=%s/%s/%s/%s samples=%d tps=%.3f p50/p95/p99=%.3f/%.3f/%.3fms virtualPackets=%d anchors=%d/%d/%d",
+                    "label=%s modes=%s/%s/%s/%s textCache=%s/%.1f%% samples=%d tps=%.3f p50/p95/p99=%.3f/%.3f/%.3fms virtualPackets=%d anchors=%d/%d/%d",
                     label, staticAnchorDuringAnimation, packetOnlyStatic, visibilityRateLimit,
-                    eventDrivenBlockUpdates,
+                    eventDrivenBlockUpdates, legacyTextComponentCache, legacyTextCacheHitRate() * 100.0D,
                     tickSamples, observedTps(), msptP50, msptP95, msptP99, knownVirtualPackets(),
                     bukkitEntitySpawns, bukkitEntityTeleports, bukkitEntityRemoves);
         }
@@ -387,6 +408,7 @@ public final class PerformanceMetrics implements Listener {
                             "\"packetOnlyStatic\":%b,\"visibilityRateLimit\":%b," +
                             "\"visibilityBucketSize\":%d,\"visibilityRestorePerTick\":%d," +
                             "\"eventDrivenBlockUpdates\":%b,\"blockUpdateMaxDirtyPerTick\":%d," +
+                            "\"legacyTextComponentCache\":%b," +
                             "\"seconds\":%.3f,\"tickSamples\":%d,\"observedTps\":%.6f," +
                             "\"droppedTickSamples\":%d,\"msptP50\":%.6f,\"msptP95\":%.6f," +
                             "\"msptP99\":%.6f,\"msptP999\":%.6f,\"msptMax\":%.6f," +
@@ -403,10 +425,14 @@ public final class PerformanceMetrics implements Listener {
                             "\"packetOnlyItemSyncs\":%d,\"virtualViewerChecks\":%d," +
                             "\"visibilityShowsQueued\":%d,\"visibilityShowsDrained\":%d," +
                             "\"itemAnimationMs\":%.6f,\"droppedItemMs\":%.6f," +
-                            "\"blockUpdateChecks\":%d,\"blockUpdateMs\":%.6f}",
+                            "\"blockUpdateChecks\":%d,\"blockUpdateMs\":%.6f," +
+                            "\"legacyTextCacheRequests\":%d,\"legacyTextCacheMisses\":%d," +
+                            "\"legacyTextCacheHits\":%d,\"legacyTextCacheHitRate\":%.6f," +
+                            "\"legacyTextSameRawFastPaths\":%d}",
                     label, staticAnchorDuringAnimation, packetOnlyStatic, visibilityRateLimit,
                     visibilityBucketSize, visibilityRestorePerTick, eventDrivenBlockUpdates,
-                    blockUpdateMaxDirtyPerTick, seconds(), tickSamples, observedTps(), droppedTickSamples,
+                    blockUpdateMaxDirtyPerTick, legacyTextComponentCache,
+                    seconds(), tickSamples, observedTps(), droppedTickSamples,
                     msptP50, msptP95, msptP99,
                     msptP999, msptMax, msptMaxBukkitTick, msptMaxEndEpochMillis, msptMaxBlockUpdateChecks,
                     msptMaxBlockUpdateNanos / 1_000_000.0D, msptMean, ticksOver50ms, virtualSpawnBundles,
@@ -415,7 +441,9 @@ public final class PerformanceMetrics implements Listener {
                     bukkitShowCalls, bukkitHideCalls, displaySyncs, itemSyncs, packetOnlyItemSyncs,
                     virtualViewerChecks, visibilityShowsQueued, visibilityShowsDrained,
                     itemAnimationNanos / 1_000_000.0D, droppedItemNanos / 1_000_000.0D,
-                    blockUpdateChecks, blockUpdateNanos / 1_000_000.0D);
+                    blockUpdateChecks, blockUpdateNanos / 1_000_000.0D,
+                    legacyTextCacheRequests, legacyTextCacheMisses, legacyTextCacheHits(),
+                    legacyTextCacheHitRate(), legacyTextSameRawFastPaths);
         }
     }
 

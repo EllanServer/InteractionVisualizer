@@ -34,7 +34,6 @@ import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -242,15 +241,11 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                                 symbol += emptyColor + progressBarCharacter;
                             }
 
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand1.getCustomName()).equals(symbol) || !stand1.isCustomNameVisible()) {
-                                stand1.setCustomNameVisible(true);
-                                stand1.setCustomName(symbol);
+                            if (stand1.updateCustomName(symbol, true)) {
                                 DisplayManager.updateDisplay(stand1);
                             }
                         } else {
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand1.getCustomName()).equals("") || stand1.isCustomNameVisible()) {
-                                stand1.setCustomNameVisible(false);
-                                stand1.setCustomName("");
+                            if (stand1.updateCustomName("", false)) {
                                 DisplayManager.updateDisplay(stand1);
                             }
                         }
@@ -275,15 +270,11 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                                 symbol += emptyColor + progressBarCharacter;
                             }
 
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand2.getCustomName()).equals(symbol) || !stand2.isCustomNameVisible()) {
-                                stand2.setCustomNameVisible(true);
-                                stand2.setCustomName(symbol);
+                            if (stand2.updateCustomName(symbol, true)) {
                                 DisplayManager.updateDisplay(stand2);
                             }
                         } else {
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand2.getCustomName()).equals("") || stand2.isCustomNameVisible()) {
-                                stand2.setCustomNameVisible(false);
-                                stand2.setCustomName("");
+                            if (stand2.updateCustomName("", false)) {
                                 DisplayManager.updateDisplay(stand2);
                             }
                         }
@@ -308,15 +299,11 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                                 symbol += emptyColor + progressBarCharacter;
                             }
 
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand3.getCustomName()).equals(symbol) || !stand3.isCustomNameVisible()) {
-                                stand3.setCustomNameVisible(true);
-                                stand3.setCustomName(symbol);
+                            if (stand3.updateCustomName(symbol, true)) {
                                 DisplayManager.updateDisplay(stand3);
                             }
                         } else {
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand3.getCustomName()).equals("") || stand3.isCustomNameVisible()) {
-                                stand3.setCustomNameVisible(false);
-                                stand3.setCustomName("");
+                            if (stand3.updateCustomName("", false)) {
                                 DisplayManager.updateDisplay(stand3);
                             }
                         }
@@ -341,15 +328,11 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                                 symbol += emptyColor + progressBarCharacter;
                             }
 
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand4.getCustomName()).equals(symbol) || !stand4.isCustomNameVisible()) {
-                                stand4.setCustomNameVisible(true);
-                                stand4.setCustomName(symbol);
+                            if (stand4.updateCustomName(symbol, true)) {
                                 DisplayManager.updateDisplay(stand4);
                             }
                         } else {
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand4.getCustomName()).equals("") || stand4.isCustomNameVisible()) {
-                                stand4.setCustomNameVisible(false);
-                                stand4.setCustomName("");
+                            if (stand4.updateCustomName("", false)) {
                                 DisplayManager.updateDisplay(stand4);
                             }
                         }

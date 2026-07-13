@@ -35,7 +35,6 @@ import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -193,25 +192,17 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
                                     .replace("{Author}", meta.getAuthor() == null ? "" : meta.getAuthor())
                                     .replace("{Page}", lectern.getPage() + "");
 
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand1.getCustomName()).equals(line1) || !stand1.isCustomNameVisible()) {
-                                stand1.setCustomNameVisible(true);
-                                stand1.setCustomName(line1);
+                            if (stand1.updateCustomName(line1, true)) {
                                 DisplayManager.updateDisplay(stand1);
                             }
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand2.getCustomName()).equals(line2) || !stand2.isCustomNameVisible()) {
-                                stand2.setCustomNameVisible(true);
-                                stand2.setCustomName(line2);
+                            if (stand2.updateCustomName(line2, true)) {
                                 DisplayManager.updateDisplay(stand2);
                             }
                         } else {
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand1.getCustomName()).equals("") || stand1.isCustomNameVisible()) {
-                                stand1.setCustomNameVisible(false);
-                                stand1.setCustomName("");
+                            if (stand1.updateCustomName("", false)) {
                                 DisplayManager.updateDisplay(stand1);
                             }
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand2.getCustomName()).equals("") || stand2.isCustomNameVisible()) {
-                                stand2.setCustomNameVisible(false);
-                                stand2.setCustomName("");
+                            if (stand2.updateCustomName("", false)) {
                                 DisplayManager.updateDisplay(stand2);
                             }
                         }

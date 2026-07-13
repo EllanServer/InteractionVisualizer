@@ -39,7 +39,6 @@ import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -450,14 +449,10 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
             }
             String str1 = beeCountText.replace("{Current}", beehiveState.getEntityCount() + "").replace("{Max}", beehiveState.getMaxEntities() + "");
 
-            if (!PlainTextComponentSerializer.plainText().serialize(line0.getCustomName()).equals(str0)) {
-                line0.setCustomName(str0);
-                line0.setCustomNameVisible(true);
+            if (line0.updateCustomName(str0, true)) {
                 DisplayManager.updateDisplay(line0);
             }
-            if (!PlainTextComponentSerializer.plainText().serialize(line1.getCustomName()).equals(str1)) {
-                line1.setCustomName(str1);
-                line1.setCustomNameVisible(true);
+            if (line1.updateCustomName(str1, true)) {
                 DisplayManager.updateDisplay(line1);
             }
         }

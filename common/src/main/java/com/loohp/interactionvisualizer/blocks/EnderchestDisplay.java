@@ -294,7 +294,6 @@ public class EnderchestDisplay implements Listener, VisualizerDisplay {
                     Vector vector = loc.clone().add(0.5, 1, 0.5).toVector().subtract(event.getWhoClicked().getEyeLocation().clone().add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector()).multiply(0.15).add(offset);
                     item.setVelocity(vector);
                     item.setItemStack(itemstack);
-                    item.setCustomName(System.currentTimeMillis() + "");
                     item.setPickupDelay(32767);
                     item.setGravity(true);
                     DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);

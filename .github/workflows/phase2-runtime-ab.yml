@@ -5,8 +5,14 @@ on:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
+      ab_factor:
+        description: "Independent A/B factor (text cache requires block-active)"
+        required: true
+        default: "scenario-config"
+        type: choice
+        options: ["scenario-config", "legacy-text-component-cache"]
       scenario:
-        description: "Runtime workload"
+        description: "Runtime workload (choose block-active for text cache)"
         required: true
         default: "static-steady"
         type: choice
@@ -57,6 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 130
     env:
+      CAMPAIGN_AB_FACTOR: ${{ github.event_name == 'workflow_dispatch' && inputs.ab_factor || 'scenario-config' }}
       CAMPAIGN_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario || 'static-steady' }}
       CAMPAIGN_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || github.event.action == 'labeled' && '12' || '4' }}
       CAMPAIGN_ITEMS: ${{ github.event_name == 'workflow_dispatch' && inputs.items || github.event.action == 'labeled' && '4096' || '1024' }}
@@ -116,6 +123,7 @@ jobs:
 
       - name: Run restart-isolated runtime campaign
         env:
+          AB_FACTOR: ${{ env.CAMPAIGN_AB_FACTOR }}
           SCENARIO: ${{ env.CAMPAIGN_SCENARIO }}
           RUNS: ${{ env.CAMPAIGN_RUNS }}
           ITEMS: ${{ env.CAMPAIGN_ITEMS }}
@@ -126,6 +134,7 @@ jobs:
           EVIDENCE_KIND: ${{ env.CAMPAIGN_EVIDENCE_KIND }}
         run: |
           set -euo pipefail
+          [[ "$AB_FACTOR" == scenario-config || "$AB_FACTOR" == legacy-text-component-cache ]]
           [[ "$SCENARIO" == static-steady || "$SCENARIO" == block-idle || \
              "$SCENARIO" == block-active || "$SCENARIO" == block-direct-write ]]
           [[ "$RUNS" =~ ^(4|8|12)$ ]]
@@ -142,6 +151,24 @@ jobs:
           [[ "$SETTLE_SECONDS" =~ ^[0-9]+$ ]] && (( SETTLE_SECONDS >= 5 ))
           [[ "$MEASURE_SECONDS" =~ ^[0-9]+$ ]] && (( MEASURE_SECONDS >= 10 ))
           [[ "$SPARK_PROFILE_MODE" =~ ^(none|cpu|cpu-all|alloc)$ ]]
+          if [[ "$AB_FACTOR" == legacy-text-component-cache ]]; then
+            if [[ "$SCENARIO" != block-active ]]; then
+              echo "legacy-text-component-cache A/B is isolated to block-active" >&2
+              exit 64
+            fi
+            if [[ "$SPARK_PROFILE_MODE" == none && "$RUNS" != 12 ]]; then
+              echo "clean legacy-text-component-cache evidence is formal-only and requires runs=12" >&2
+              exit 64
+            fi
+            if [[ "$SPARK_PROFILE_MODE" != none && "$RUNS" != 4 ]]; then
+              echo "profiled legacy-text-component-cache diagnostics require runs=4" >&2
+              exit 64
+            fi
+            if (( ITEMS < 100 )); then
+              echo "legacy-text-component-cache A/B requires at least 100 workload blocks" >&2
+              exit 64
+            fi
+          fi
           if [[ "$SPARK_PROFILE_MODE" == cpu-all && \
                 "$SCENARIO" != block-active && "$SCENARIO" != block-direct-write ]]; then
             echo "Spark cpu-all profiling is isolated to block-active or block-direct-write" >&2
@@ -175,7 +202,7 @@ jobs:
           EVIDENCE_ROOT="phase2-results/$EVIDENCE_KIND"
           mkdir -p "$EVIDENCE_ROOT"
           MANIFEST="$EVIDENCE_ROOT/abba-manifest.csv"
-          printf 'Scenario,Block,Position,Variant,RunId,StackSha256,ArtifactSha256,CaptureMethod,SourcePath\n' > "$MANIFEST"
+          printf 'Scenario,Block,Position,Variant,RunId,AbFactor,LegacyTextComponentCacheDisableProperty,LegacyTextComponentCacheEnabled,LegacyTextCacheRequests,LegacyTextCacheMisses,LegacyTextCacheHits,LegacyTextCacheHitRate,LegacyTextSameRawFastPaths,ConfigSha256,JvmArgumentsSha256,JvmArgumentsNormalizedSha256,StackSha256,ArtifactSha256,CaptureMethod,SourcePath\n' > "$MANIFEST"
           ARTIFACT_SHA=$(sha256sum "$PLUGIN_JAR" | awk '{print $1}')
           STACK_SHA=$(
             {
@@ -184,8 +211,7 @@ jobs:
               sha256sum tools/perf/run-phase2-runtime-once.sh
               java -version 2>&1
               printf '%s\n' \
-                'java=-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch -Dinteractionvisualizer.performance.allowBlockScene=true -Xlog:gc*=info,safepoint=info:file=jvm-gc-safepoint.log:time,uptime,level,tags:filecount=0 -Dfile.encoding=UTF-8' \
-                "scenario=$SCENARIO" "sparkProfile=$SPARK_PROFILE_MODE"
+                "abFactor=$AB_FACTOR" "scenario=$SCENARIO" "sparkProfile=$SPARK_PROFILE_MODE"
             } | sha256sum | awk '{print $1}'
           )
 
@@ -194,7 +220,11 @@ jobs:
             position=$(( (run_number - 1) % 4 + 1 ))
             if (( block % 2 == 1 )); then pattern=ABBA; else pattern=BAAB; fi
             variant=${pattern:$((position - 1)):1}
-            run_id=$(printf '%s_%s_%02d' "${SCENARIO//-/_}" "$variant" "$run_number")
+            if [[ "$AB_FACTOR" == scenario-config ]]; then
+              run_id=$(printf '%s_%s_%02d' "${SCENARIO//-/_}" "$variant" "$run_number")
+            else
+              run_id=$(printf '%s_text_cache_%s_%02d' "${SCENARIO//-/_}" "$variant" "$run_number")
+            fi
 
             PHASE2_PLUGIN_JAR="$PLUGIN_JAR" \
             PHASE2_PAPER_JAR=phase2-dependencies/paper.jar \
@@ -203,6 +233,7 @@ jobs:
             PHASE2_RUN_ID="$run_id" \
             PHASE2_SCENARIO="$SCENARIO" \
             PHASE2_VARIANT="$variant" \
+            PHASE2_AB_FACTOR="$AB_FACTOR" \
             PHASE2_ITEM_COUNT="$ITEMS" \
             PHASE2_WARMUP_SECONDS="$WARMUP_SECONDS" \
             PHASE2_SETTLE_SECONDS="$SETTLE_SECONDS" \
@@ -212,17 +243,96 @@ jobs:
             PHASE2_SPARK_PROFILE_MODE="$SPARK_PROFILE_MODE" \
             bash tools/perf/run-phase2-runtime-once.sh
 
-            printf '%s,%d,%d,%s,%s,%s,%s,%s,%s/iv-perf.json\n' \
-              "$SCENARIO" "$block" "$position" "$variant" "$run_id" "$STACK_SHA" "$ARTIFACT_SHA" \
-              "$CAPTURE_METHOD" "$run_id" \
-              >> "$MANIFEST"
+            python3 - "$MANIFEST" "$EVIDENCE_ROOT" "$SCENARIO" "$block" "$position" \
+              "$variant" "$run_id" "$AB_FACTOR" "$STACK_SHA" "$ARTIFACT_SHA" \
+              "$CAPTURE_METHOD" <<'PY'
+          import csv
+          import json
+          from pathlib import Path
+          import sys
+
+          (
+              manifest_text,
+              evidence_root_text,
+              scenario,
+              block,
+              position,
+              variant,
+              run_id,
+              ab_factor,
+              stack_sha,
+              artifact_sha,
+              capture_method,
+          ) = sys.argv[1:]
+          manifest_path = Path(manifest_text)
+          evidence_root = Path(evidence_root_text)
+          metrics_path = evidence_root / run_id / "iv-perf.json"
+          run_manifest_path = evidence_root / run_id / "run-manifest.json"
+          metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+          provenance = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+          cache = provenance.get("legacyTextComponentCache", {})
+          if provenance.get("abFactor") != ab_factor or metrics.get("abFactor") != ab_factor:
+              raise SystemExit(f"A/B factor provenance mismatch for {run_id}")
+          cache_metric_mapping = {
+              "enabled": "legacyTextComponentCache",
+              "requests": "legacyTextCacheRequests",
+              "misses": "legacyTextCacheMisses",
+              "hits": "legacyTextCacheHits",
+              "hitRate": "legacyTextCacheHitRate",
+              "sameRawFastPaths": "legacyTextSameRawFastPaths",
+          }
+          for provenance_field, metrics_field in cache_metric_mapping.items():
+              if cache.get(provenance_field) != metrics.get(metrics_field):
+                  raise SystemExit(
+                      f"cache provenance mismatch for {run_id}: {provenance_field}/{metrics_field}"
+                  )
+          if cache.get("disableProperty") != metrics.get("legacyTextComponentCacheDisableProperty"):
+              raise SystemExit(f"cache property provenance mismatch for {run_id}")
+          if provenance.get("jvmArgumentsSha256") != metrics.get("jvmArgumentsSha256"):
+              raise SystemExit(f"JVM argument provenance mismatch for {run_id}")
+          if (provenance.get("jvmArgumentsNormalizedSha256")
+                  != metrics.get("jvmArgumentsNormalizedSha256")):
+              raise SystemExit(f"normalized JVM argument provenance mismatch for {run_id}")
+          process_command_line = provenance.get("jvmDiagnostics", {}).get("processCommandLine", {})
+          if (process_command_line.get("formalEvidenceReady") is not True
+                  or process_command_line.get("capturedFromProcCmdline") is not True
+                  or process_command_line.get("jvmArgumentsSha256")
+                  != provenance.get("jvmArgumentsSha256")
+                  or process_command_line.get("jvmArgumentsNormalizedSha256")
+                  != provenance.get("jvmArgumentsNormalizedSha256")):
+              raise SystemExit(f"live JVM process command-line provenance mismatch for {run_id}")
+          row = [
+              scenario,
+              block,
+              position,
+              variant,
+              run_id,
+              ab_factor,
+              str(cache.get("disableProperty")).lower(),
+              str(cache.get("enabled")).lower(),
+              cache.get("requests"),
+              cache.get("misses"),
+              cache.get("hits"),
+              cache.get("hitRate"),
+              cache.get("sameRawFastPaths"),
+              provenance.get("configSha256"),
+              provenance.get("jvmArgumentsSha256"),
+              provenance.get("jvmArgumentsNormalizedSha256"),
+              stack_sha,
+              artifact_sha,
+              capture_method,
+              f"{run_id}/iv-perf.json",
+          ]
+          with manifest_path.open("a", encoding="utf-8", newline="") as stream:
+              csv.writer(stream, lineterminator="\n").writerow(row)
+          PY
           done
 
           if [[ "$SPARK_PROFILE_MODE" == none ]]; then
             minimum_seconds=$(( MEASURE_SECONDS - 2 ))
             incomplete=()
             if [[ "$RUNS" != 12 ]]; then incomplete=(-AllowIncomplete); fi
-            for metric in msptP95 msptP99 msptMean; do
+            for metric in msptP95 msptP99 msptP999 msptMean; do
               pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$MANIFEST" \
                 -Scenario "$SCENARIO" -Metric "$metric" -Direction LowerIsBetter \
                 -MinimumSeconds "$minimum_seconds" "${incomplete[@]}" \
@@ -249,13 +359,14 @@ jobs:
                 -OutputJson "$EVIDENCE_ROOT/blockUpdateMs.analysis.json" -Overwrite
             fi
 
-            python3 - "$MANIFEST" "$SCENARIO" "$RUNS" "$ITEMS" "$CAPTURE_METHOD" \
+            python3 - "$MANIFEST" "$SCENARIO" "$RUNS" "$ITEMS" "$CAPTURE_METHOD" "$AB_FACTOR" \
               "$EVIDENCE_ROOT/blockUpdateChecks.evidence.json" <<'PY'
           from pathlib import Path
           import csv
           import json
           import math
           import os
+          import re
           import statistics
           import sys
 
@@ -264,12 +375,29 @@ jobs:
           expected_runs = int(sys.argv[3])
           expected_items = int(sys.argv[4])
           capture_method = sys.argv[5]
-          output_path = Path(sys.argv[6])
+          ab_factor = sys.argv[6]
+          output_path = Path(sys.argv[7])
           records = []
           with manifest_path.open(encoding="utf-8", newline="") as stream:
               rows = list(csv.DictReader(stream))
           if len(rows) != expected_runs:
               raise SystemExit(f"block evidence expected {expected_runs} runs, found {len(rows)}")
+
+          def parse_bool(value, field, run_id):
+              if value == "true":
+                  return True
+              if value == "false":
+                  return False
+              raise SystemExit(f"invalid {field} for {run_id}: {value!r}")
+
+          def parse_nonnegative_int(value, field, run_id):
+              try:
+                  parsed = int(value)
+              except (TypeError, ValueError) as error:
+                  raise SystemExit(f"invalid {field} for {run_id}: {value!r}") from error
+              if parsed < 0:
+                  raise SystemExit(f"invalid {field} for {run_id}: {parsed!r}")
+              return parsed
 
           for row in rows:
               if row["Scenario"] != scenario:
@@ -278,6 +406,8 @@ jobs:
                   raise SystemExit(
                       f"manifest capture-method drift: {row['CaptureMethod']} != {capture_method}"
                   )
+              if row["AbFactor"] != ab_factor:
+                  raise SystemExit(f"manifest A/B factor drift: {row['AbFactor']} != {ab_factor}")
               source_path = manifest_path.parent / row["SourcePath"]
               metrics = json.loads(source_path.read_text(encoding="utf-8"))
               run_id = row["RunId"]
@@ -295,14 +425,111 @@ jobs:
               tick_samples = metrics.get("tickSamples")
               if isinstance(tick_samples, bool) or not isinstance(tick_samples, int) or tick_samples <= 0:
                   raise SystemExit(f"invalid tickSamples for {run_id}: {tick_samples!r}")
-              expected_event_driven = row["Variant"] == "B"
+              variant = row["Variant"]
+              expected_event_driven = (
+                  ab_factor == "legacy-text-component-cache" or variant == "B"
+              )
               if metrics.get("eventDrivenBlockUpdates") is not expected_event_driven:
                   raise SystemExit(f"event-driven config mismatch for {run_id}")
+              disable_property = parse_bool(
+                  row["LegacyTextComponentCacheDisableProperty"],
+                  "LegacyTextComponentCacheDisableProperty",
+                  run_id,
+              )
+              cache_enabled = parse_bool(
+                  row["LegacyTextComponentCacheEnabled"],
+                  "LegacyTextComponentCacheEnabled",
+                  run_id,
+              )
+              expected_disable_property = (
+                  ab_factor == "legacy-text-component-cache" and variant == "A"
+              )
+              if disable_property is not expected_disable_property:
+                  raise SystemExit(f"legacy text cache property mismatch for {run_id}")
+              if cache_enabled is not (not disable_property):
+                  raise SystemExit(f"legacy text cache enabled state mismatch for {run_id}")
+              requests = parse_nonnegative_int(row["LegacyTextCacheRequests"], "requests", run_id)
+              misses = parse_nonnegative_int(row["LegacyTextCacheMisses"], "misses", run_id)
+              hits = parse_nonnegative_int(row["LegacyTextCacheHits"], "hits", run_id)
+              same_raw_fast_paths = parse_nonnegative_int(
+                  row["LegacyTextSameRawFastPaths"], "sameRawFastPaths", run_id
+              )
+              try:
+                  hit_rate = float(row["LegacyTextCacheHitRate"])
+              except ValueError as error:
+                  raise SystemExit(f"invalid cache hit rate for {run_id}") from error
+              if (not math.isfinite(hit_rate) or not 0.0 <= hit_rate <= 1.0
+                      or misses > requests or hits != requests - misses):
+                  raise SystemExit(f"inconsistent legacy text cache metrics for {run_id}")
+              derived_hit_rate = hits / requests if requests else 0.0
+              if not math.isclose(hit_rate, derived_hit_rate, rel_tol=0.0, abs_tol=0.000001):
+                  raise SystemExit(f"legacy text cache hit rate mismatch for {run_id}")
+              metric_expectations = {
+                  "abFactor": ab_factor,
+                  "jvmArgumentsSha256": row["JvmArgumentsSha256"],
+                  "jvmArgumentsNormalizedSha256": row["JvmArgumentsNormalizedSha256"],
+                  "legacyTextComponentCacheDisableProperty": disable_property,
+                  "legacyTextComponentCache": cache_enabled,
+                  "legacyTextCacheRequests": requests,
+                  "legacyTextCacheMisses": misses,
+                  "legacyTextCacheHits": hits,
+                  "legacyTextSameRawFastPaths": same_raw_fast_paths,
+              }
+              for field, expected in metric_expectations.items():
+                  if metrics.get(field) != expected:
+                      raise SystemExit(f"{field} evidence mismatch for {run_id}")
+              if not math.isclose(
+                  metrics.get("legacyTextCacheHitRate", -1), hit_rate,
+                  rel_tol=0.0, abs_tol=0.000001,
+              ):
+                  raise SystemExit(f"legacyTextCacheHitRate evidence mismatch for {run_id}")
+              config_sha = row["ConfigSha256"]
+              jvm_arguments_sha = row["JvmArgumentsSha256"]
+              jvm_arguments_normalized_sha = row["JvmArgumentsNormalizedSha256"]
+              for field, value in (
+                  ("ConfigSha256", config_sha),
+                  ("JvmArgumentsSha256", jvm_arguments_sha),
+                  ("JvmArgumentsNormalizedSha256", jvm_arguments_normalized_sha),
+              ):
+                  if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                      raise SystemExit(f"invalid {field} for {run_id}: {value!r}")
+              provenance_path = source_path.parent / "run-manifest.json"
+              provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+              if (provenance.get("abFactor") != ab_factor
+                      or provenance.get("configSha256") != config_sha
+                      or provenance.get("jvmArgumentsSha256") != jvm_arguments_sha
+                      or provenance.get("jvmArgumentsNormalizedSha256")
+                      != jvm_arguments_normalized_sha):
+                  raise SystemExit(f"run provenance mismatch for {run_id}")
+              cache_provenance = provenance.get("legacyTextComponentCache", {})
+              expected_cache_provenance = {
+                  "propertyName": "interactionvisualizer.disableLegacyTextComponentCache",
+                  "disableProperty": disable_property,
+                  "enabled": cache_enabled,
+                  "requests": requests,
+                  "misses": misses,
+                  "hits": hits,
+                  "hitRate": hit_rate,
+                  "sameRawFastPaths": same_raw_fast_paths,
+              }
+              if cache_provenance != expected_cache_provenance:
+                  raise SystemExit(f"legacy text cache provenance mismatch for {run_id}")
               records.append({
                   "block": int(row["Block"]),
                   "position": int(row["Position"]),
-                  "variant": row["Variant"],
+                  "variant": variant,
                   "runId": run_id,
+                  "abFactor": ab_factor,
+                  "configSha256": config_sha,
+                  "jvmArgumentsSha256": jvm_arguments_sha,
+                  "jvmArgumentsNormalizedSha256": jvm_arguments_normalized_sha,
+                  "legacyTextComponentCacheDisableProperty": disable_property,
+                  "legacyTextComponentCacheEnabled": cache_enabled,
+                  "legacyTextCacheRequests": requests,
+                  "legacyTextCacheMisses": misses,
+                  "legacyTextCacheHits": hits,
+                  "legacyTextCacheHitRate": hit_rate,
+                  "legacyTextSameRawFastPaths": same_raw_fast_paths,
                   "blockUpdateChecks": checks,
                   "tickSamples": tick_samples,
                   "checksPerTick": checks / tick_samples,
@@ -316,6 +543,11 @@ jobs:
               checks = [record["blockUpdateChecks"] for record in selected]
               checks_per_tick = [record["checksPerTick"] for record in selected]
               times = [record["blockUpdateMs"] for record in selected]
+              cache_requests = [record["legacyTextCacheRequests"] for record in selected]
+              cache_misses = [record["legacyTextCacheMisses"] for record in selected]
+              cache_hits = [record["legacyTextCacheHits"] for record in selected]
+              cache_hit_rates = [record["legacyTextCacheHitRate"] for record in selected]
+              same_raw_fast_paths = [record["legacyTextSameRawFastPaths"] for record in selected]
               return {
                   "runCount": len(selected),
                   "blockUpdateChecks": {
@@ -333,9 +565,67 @@ jobs:
                       "median": statistics.median(times),
                       "mean": statistics.fmean(times),
                   },
+                  "legacyTextComponentCache": {
+                      "enabled": sorted({record["legacyTextComponentCacheEnabled"] for record in selected}),
+                      "disableProperty": sorted({
+                          record["legacyTextComponentCacheDisableProperty"] for record in selected
+                      }),
+                      "requests": cache_requests,
+                      "misses": cache_misses,
+                      "hits": cache_hits,
+                      "hitRates": cache_hit_rates,
+                      "sameRawFastPaths": same_raw_fast_paths,
+                      "meanHitRate": statistics.fmean(cache_hit_rates),
+                  },
               }
 
           by_variant = {"A": summarize("A"), "B": summarize("B")}
+          config_hashes = sorted({record["configSha256"] for record in records})
+          config_hashes_by_variant = {
+              variant: sorted({
+                  record["configSha256"]
+                  for record in records if record["variant"] == variant
+              })
+              for variant in ("A", "B")
+          }
+          jvm_hashes_by_variant = {
+              variant: sorted({
+                  record["jvmArgumentsSha256"]
+                  for record in records if record["variant"] == variant
+              })
+              for variant in ("A", "B")
+          }
+          normalized_jvm_hashes = sorted({
+              record["jvmArgumentsNormalizedSha256"] for record in records
+          })
+          if any(len(hashes) != 1 for hashes in jvm_hashes_by_variant.values()):
+              raise SystemExit("JVM argument SHA drifted within a variant")
+          if any(len(hashes) != 1 for hashes in config_hashes_by_variant.values()):
+              raise SystemExit("config SHA drifted within a variant")
+          if len(normalized_jvm_hashes) != 1:
+              raise SystemExit("normalized JVM argument SHA drifted across the campaign")
+          if ab_factor == "legacy-text-component-cache":
+              if len(config_hashes) != 1:
+                  raise SystemExit("cache A/B variants do not share the same config SHA")
+              if jvm_hashes_by_variant["A"] == jvm_hashes_by_variant["B"]:
+                  raise SystemExit("cache A/B variants unexpectedly share one JVM argument SHA")
+              for record in records:
+                  if record["legacyTextCacheRequests"] <= 0:
+                      raise SystemExit(f"cache A/B workload was not exercised in {record['runId']}")
+                  if (record["variant"] == "A"
+                          and record["legacyTextCacheMisses"] != record["legacyTextCacheRequests"]):
+                      raise SystemExit(f"disabled cache reported hits in {record['runId']}")
+                  if (record["variant"] == "B"
+                          and record["legacyTextCacheHitRate"] < 0.90):
+                      raise SystemExit(
+                          "enabled cache missed the 90% steady-state hit-rate guard in "
+                          f"{record['runId']}: {record['legacyTextCacheHitRate']:.6f}"
+                      )
+          else:
+              if jvm_hashes_by_variant["A"] != jvm_hashes_by_variant["B"]:
+                  raise SystemExit("scenario-config variants unexpectedly changed JVM arguments")
+              if config_hashes_by_variant["A"] == config_hashes_by_variant["B"]:
+                  raise SystemExit("scenario-config variants unexpectedly share one config SHA")
           cadence_guard = {
               "evaluated": False,
               "reason": "only block-active workloads with at least 100 blocks have a stable mixed-type cadence",
@@ -346,17 +636,27 @@ jobs:
               if baseline <= 0:
                   raise SystemExit("block-active baseline recorded no checks")
               ratio = candidate / baseline
+              if ab_factor == "legacy-text-component-cache":
+                  minimum_ratio = 0.95
+                  maximum_ratio = 1.05
+                  cadence_interpretation = (
+                      "Both cache variants use the same event-driven configuration, so their executed "
+                      "block-check cadence must remain equivalent."
+                  )
+              else:
+                  minimum_ratio = 0.60
+                  maximum_ratio = 0.85
+                  cadence_interpretation = (
+                      "The active candidate aggregate rate must remain consistent with all three furnace "
+                      "cadences while eliminating idle bee polling and noisy level-event invalidations."
+                  )
               cadence_guard = {
                   "evaluated": True,
-                  "minimumCandidateToBaselineRatio": 0.60,
-                  "maximumCandidateToBaselineRatio": 0.85,
+                  "minimumCandidateToBaselineRatio": minimum_ratio,
+                  "maximumCandidateToBaselineRatio": maximum_ratio,
                   "candidateToBaselineRatio": ratio,
-                  "passed": 0.60 <= ratio <= 0.85,
-                  "interpretation": (
-                      "The active candidate aggregate rate must remain consistent with all three furnace "
-                      "cadences while eliminating "
-                      "idle bee polling and noisy level-event invalidations."
-                  ),
+                  "passed": minimum_ratio <= ratio <= maximum_ratio,
+                  "interpretation": cadence_interpretation,
               }
 
           if capture_method == "none":
@@ -376,9 +676,10 @@ jobs:
               )
 
           evidence = {
-              "schemaVersion": 1,
+              "schemaVersion": 2,
               "analysisType": "diagnostic-work-evidence",
               "scenario": scenario,
+              "abFactor": ab_factor,
               "requestedRuns": expected_runs,
               "expectedItems": expected_items,
               "captureMethod": capture_method,
@@ -390,6 +691,19 @@ jobs:
               ),
               "interpretation": interpretation,
               "activeCadenceGuard": cadence_guard,
+              "provenance": {
+                  "configSha256": config_hashes,
+                  "configSha256ByVariant": config_hashes_by_variant,
+                  "jvmArgumentsSha256ByVariant": jvm_hashes_by_variant,
+                  "jvmArgumentsNormalizedSha256": normalized_jvm_hashes[0],
+                  "legacyTextComponentCacheProperty": (
+                      "interactionvisualizer.disableLegacyTextComponentCache"
+                  ),
+                  "legacyTextProcessingTreatmentScope": [
+                      "sharedComponentCache",
+                      "perEntitySameRawFastPath",
+                  ],
+              },
               "byVariant": by_variant,
               "runs": records,
           }
@@ -401,29 +715,33 @@ jobs:
           step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
           if step_summary:
               with open(step_summary, "a", encoding="utf-8", newline="\n") as stream:
-                  stream.write(f"### {scenario} block update evidence\n\n")
+                  stream.write(f"### {scenario} / {ab_factor} block update evidence\n\n")
                   stream.write(
                       f"Capture method: `{capture_method}`; clean performance evidence ready: "
                       f"`{str(capture_method == 'none').lower()}`.\n\n"
                   )
                   stream.write("`blockUpdateChecks` is diagnostic work evidence (no universal direction).\n\n")
-                  stream.write("| Run | Variant | Checks | Checks/tick | Update ms | ms/check |\n")
-                  stream.write("|---|---:|---:|---:|---:|---:|\n")
+                  stream.write(
+                      "| Run | Variant | Checks/tick | Cache | Requests | Misses | Hits | Hit rate | Same raw |\n"
+                  )
+                  stream.write("|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
                   for record in records:
-                      per_check = record["msPerCheck"]
-                      per_check_text = "n/a" if per_check is None else f"{per_check:.9f}"
                       stream.write(
                           f"| {record['runId']} | {record['variant']} | "
-                          f"{record['blockUpdateChecks']} | {record['checksPerTick']:.6f} | "
-                          f"{record['blockUpdateMs']:.6f} | "
-                          f"{per_check_text} |\n"
+                          f"{record['checksPerTick']:.6f} | "
+                          f"{'on' if record['legacyTextComponentCacheEnabled'] else 'off'} | "
+                          f"{record['legacyTextCacheRequests']} | {record['legacyTextCacheMisses']} | "
+                          f"{record['legacyTextCacheHits']} | "
+                          f"{record['legacyTextCacheHitRate']:.6f} | "
+                          f"{record['legacyTextSameRawFastPaths']} |\n"
                       )
                   if cadence_guard["evaluated"]:
                       stream.write(
                           "\nActive cadence guard: "
                           f"`{'pass' if cadence_guard['passed'] else 'fail'}`; "
                           f"candidate/baseline=`{cadence_guard['candidateToBaselineRatio']:.6f}` "
-                          "(required `0.60..0.85`).\n"
+                          f"(required `{cadence_guard['minimumCandidateToBaselineRatio']:.2f}.."
+                          f"{cadence_guard['maximumCandidateToBaselineRatio']:.2f}`).\n"
                       )
 
           if cadence_guard["evaluated"] and not cadence_guard["passed"]:
@@ -438,7 +756,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase2-${{ env.CAMPAIGN_EVIDENCE_KIND }}-runtime-${{ env.CAMPAIGN_SCENARIO }}-${{ github.sha }}-${{ github.run_id }}
+          name: phase2-${{ env.CAMPAIGN_EVIDENCE_KIND }}-runtime-${{ env.CAMPAIGN_SCENARIO }}-${{ env.CAMPAIGN_AB_FACTOR }}-${{ github.sha }}-${{ github.run_id }}
           path: |
             phase2-results/${{ env.CAMPAIGN_EVIDENCE_KIND }}
             phase2-dependencies/protocol-client/client-build-manifest.json

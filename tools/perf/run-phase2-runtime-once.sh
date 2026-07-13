@@ -39,6 +39,7 @@ capture_enabled="${PHASE2_CAPTURE_ENABLED:-0}"
 capture_snaplen="${PHASE2_CAPTURE_SNAPLEN:-128}"
 protocol_trace_enabled="${PHASE2_PROTOCOL_TRACE_ENABLED:-$capture_enabled}"
 spark_profile_mode="${PHASE2_SPARK_PROFILE_MODE:-none}"
+ab_factor="${PHASE2_AB_FACTOR:-scenario-config}"
 
 [[ "$run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
   || { echo "PHASE2_RUN_ID contains unsafe characters" >&2; exit 64; }
@@ -51,6 +52,14 @@ case "$scenario" in
   static-steady|static-spawn|visibility-return|visibility-itemdisplay-return|visibility-textdisplay-return|block-idle|block-active|block-direct-write) ;;
   *) echo "Unsupported PHASE2_SCENARIO: $scenario" >&2; exit 64 ;;
 esac
+case "$ab_factor" in
+  scenario-config|legacy-text-component-cache) ;;
+  *) echo "PHASE2_AB_FACTOR must be scenario-config or legacy-text-component-cache" >&2; exit 64 ;;
+esac
+if [[ "$ab_factor" == legacy-text-component-cache && "$scenario" != block-active ]]; then
+  echo "legacy-text-component-cache A/B is isolated to block-active" >&2
+  exit 64
+fi
 for value in "$server_port" "$item_count" "$warmup_seconds" "$settle_seconds" \
   "$measure_seconds" "$capture_snaplen"; do
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "Numeric input is invalid: $value" >&2; exit 64; }
@@ -63,6 +72,10 @@ if [[ "$scenario" == block-* ]]; then
 fi
 (( item_count >= 1 && item_count <= maximum_item_count )) \
   || { echo "PHASE2_ITEM_COUNT is outside 1..$maximum_item_count for $scenario" >&2; exit 64; }
+if [[ "$ab_factor" == legacy-text-component-cache ]] && (( item_count < 100 )); then
+  echo "legacy-text-component-cache A/B requires at least 100 workload blocks" >&2
+  exit 64
+fi
 (( warmup_seconds >= 10 && settle_seconds >= 5 && measure_seconds >= 5 )) \
   || { echo "Warmup/settle/measure windows are too short" >&2; exit 64; }
 (( warmup_seconds + settle_seconds + measure_seconds + 120 <= 600 )) \
@@ -129,23 +142,55 @@ protocol_trace_path="$run_directory/$run_id.protocol-trace.json"
 protocol_trace_analysis_path="$run_directory/$run_id.protocol-trace-analysis.json"
 jvm_gc_safepoint_log_name="jvm-gc-safepoint.log"
 jvm_gc_safepoint_log="$run_directory/$jvm_gc_safepoint_log_name"
+jvm_command_line_metadata="$run_directory/jvm-command-line.json"
 jvm_diagnostics_metadata="$run_directory/jvm-diagnostics.json"
 spark_profile_output="$run_directory/$run_id.spark-$spark_profile_mode.sparkprofile"
 spark_profile_metadata="$run_directory/spark-profile.json"
 jvm_gc_safepoint_xlog="-Xlog:gc*=info,safepoint=info:file=$jvm_gc_safepoint_log_name:time,uptime,level,tags:filecount=0"
-jvm_arguments_fingerprint="-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch -Dinteractionvisualizer.performance.allowBlockScene=true $jvm_gc_safepoint_xlog -Dfile.encoding=UTF-8"
+legacy_text_cache_disable_property=false
+if [[ "$ab_factor" == legacy-text-component-cache && "$variant" == A ]]; then
+  legacy_text_cache_disable_property=true
+fi
+legacy_text_cache_enabled=true
+if [[ "$legacy_text_cache_disable_property" == true ]]; then
+  legacy_text_cache_enabled=false
+fi
+legacy_text_cache_jvm_argument="-Dinteractionvisualizer.disableLegacyTextComponentCache=$legacy_text_cache_disable_property"
+legacy_text_cache_jvm_argument_template="-Dinteractionvisualizer.disableLegacyTextComponentCache=<ab-variant>"
+jvm_arguments=(
+  -Xms2G
+  -Xmx2G
+  -XX:+UseG1GC
+  -XX:+AlwaysPreTouch
+  -Dinteractionvisualizer.performance.allowBlockScene=true
+  "$legacy_text_cache_jvm_argument"
+  "$jvm_gc_safepoint_xlog"
+  -Dfile.encoding=UTF-8
+)
+legacy_text_cache_jvm_argument_index=5
+[[ "${jvm_arguments[$legacy_text_cache_jvm_argument_index]}" == "$legacy_text_cache_jvm_argument" ]] || {
+  echo "legacy text cache JVM treatment index is stale" >&2
+  exit 1
+}
+jvm_arguments_normalized=("${jvm_arguments[@]}")
+jvm_arguments_normalized[$legacy_text_cache_jvm_argument_index]="$legacy_text_cache_jvm_argument_template"
+jvm_arguments_fingerprint="$(IFS=' '; printf '%s' "${jvm_arguments[*]}")"
+jvm_arguments_sha256="$(printf '%s' "$jvm_arguments_fingerprint" | sha256sum | awk '{print $1}')"
+jvm_arguments_normalized_fingerprint="$(IFS=' '; printf '%s' "${jvm_arguments_normalized[*]}")"
+jvm_arguments_normalized_sha256="$(printf '%s' "$jvm_arguments_normalized_fingerprint" | sha256sum | awk '{print $1}')"
 
 cp "$paper_jar" "$run_directory/server.jar"
 cp "$plugin_jar" "$run_directory/plugins/InteractionVisualizer.jar"
 unzip -p "$plugin_jar" config.yml > "$run_directory/plugins/InteractionVisualizer/config.yml"
 
-python3 - "$run_directory/plugins/InteractionVisualizer/config.yml" "$scenario" "$variant" <<'PY'
+python3 - "$run_directory/plugins/InteractionVisualizer/config.yml" "$scenario" "$variant" "$ab_factor" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
 scenario = sys.argv[2]
 variant = sys.argv[3]
+ab_factor = sys.argv[4]
 text = path.read_text(encoding="utf-8")
 
 def replace_once(old: str, new: str) -> None:
@@ -159,7 +204,9 @@ packet_only = scenario == "visibility-return" or (
     scenario in {"static-steady", "static-spawn"} and variant == "B"
 )
 visibility_limit = scenario.startswith("visibility-") and variant == "B"
-event_driven = scenario.startswith("block-") and variant == "B"
+event_driven = scenario.startswith("block-") and (
+    ab_factor == "legacy-text-component-cache" or variant == "B"
+)
 replace_once("      PacketOnlyStatic: false",
              f"      PacketOnlyStatic: {str(packet_only).lower()}")
 replace_once("      Enabled: false\n      BucketSize: 128\n      RestorePerTick: 32",
@@ -491,17 +538,81 @@ PY
 mkfifo "$console_fifo"
 exec 3<>"$console_fifo"
 console_open=1
+if [[ -n "${JAVA_TOOL_OPTIONS:-}" || -n "${_JAVA_OPTIONS:-}" || -n "${JDK_JAVA_OPTIONS:-}" ]]; then
+  echo "Inherited Java option environment variables would invalidate JVM argument provenance" >&2
+  exit 1
+fi
 (
   cd "$run_directory"
-  exec java -Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch \
-    -Dinteractionvisualizer.performance.allowBlockScene=true \
-    "$jvm_gc_safepoint_xlog" \
-    -Dfile.encoding=UTF-8 -jar server.jar --nogui < console.pipe
+  exec java "${jvm_arguments[@]}" -jar server.jar --nogui < console.pipe
 ) > "$server_log" 2>&1 &
 server_pid=$!
 
 wait_for_log "[InteractionVisualizer] Enabled for Paper 26.1.2!" 240
 wait_for_log "Done (" 240
+
+python3 - "/proc/$server_pid/cmdline" "$jvm_command_line_metadata" "$server_pid" \
+  "$jvm_arguments_fingerprint" "$jvm_arguments_sha256" \
+  "$jvm_arguments_normalized_fingerprint" "$jvm_arguments_normalized_sha256" <<'PY'
+from pathlib import Path
+import hashlib
+import json
+import sys
+
+(
+    proc_path_text,
+    output_path_text,
+    process_id_text,
+    expected_fingerprint,
+    expected_sha256,
+    normalized_fingerprint,
+    normalized_sha256,
+) = sys.argv[1:]
+proc_path = Path(proc_path_text)
+output_path = Path(output_path_text)
+raw = proc_path.read_bytes()
+if not raw or not raw.endswith(b"\0"):
+    raise SystemExit("live JVM /proc cmdline is missing or malformed")
+try:
+    arguments = [part.decode("utf-8") for part in raw[:-1].split(b"\0")]
+except UnicodeDecodeError as error:
+    raise SystemExit("live JVM /proc cmdline is not UTF-8") from error
+if not arguments or arguments.count("-jar") != 1:
+    raise SystemExit(f"live JVM command line must have exactly one -jar boundary: {arguments!r}")
+jar_index = arguments.index("-jar")
+jvm_arguments = arguments[1:jar_index]
+application_arguments = arguments[jar_index:]
+expected_arguments = expected_fingerprint.split(" ")
+if jvm_arguments != expected_arguments:
+    raise SystemExit(
+        "live JVM arguments differ from the treatment fingerprint: "
+        f"expected={expected_arguments!r} actual={jvm_arguments!r}"
+    )
+if application_arguments != ["-jar", "server.jar", "--nogui"]:
+    raise SystemExit(f"unexpected Java application arguments: {application_arguments!r}")
+actual_fingerprint = " ".join(jvm_arguments)
+actual_sha256 = hashlib.sha256(actual_fingerprint.encode("utf-8")).hexdigest()
+if actual_sha256 != expected_sha256:
+    raise SystemExit("live JVM argument SHA does not match the expected treatment SHA")
+if hashlib.sha256(normalized_fingerprint.encode("utf-8")).hexdigest() != normalized_sha256:
+    raise SystemExit("normalized JVM argument SHA does not match its fingerprint")
+metadata = {
+    "schemaVersion": 1,
+    "formalEvidenceReady": True,
+    "capturedFromProcCmdline": True,
+    "processId": int(process_id_text),
+    "executable": arguments[0],
+    "jvmArguments": jvm_arguments,
+    "jvmArgumentsFingerprint": actual_fingerprint,
+    "jvmArgumentsSha256": actual_sha256,
+    "jvmArgumentsNormalizedFingerprint": normalized_fingerprint,
+    "jvmArgumentsNormalizedSha256": normalized_sha256,
+    "applicationArguments": application_arguments,
+    "inheritedJavaOptionEnvironment": False,
+    "rawCmdlineSha256": hashlib.sha256(raw).hexdigest(),
+}
+output_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
 if grep -Fq -- "No key layers in MapLike" "$server_log"; then
   echo "Paper rejected the flat-world generator settings" >&2
   exit 1
@@ -798,12 +909,29 @@ if analysis.get("formalEvidenceReady") is not True:
 PY
 fi
 
-python3 - "$server_log" "$run_id" "$run_directory/iv-perf.json" "$scenario" "$variant" "$item_count" <<'PY'
+python3 - "$server_log" "$run_id" "$run_directory/iv-perf.json" "$scenario" "$variant" \
+  "$item_count" "$ab_factor" "$legacy_text_cache_disable_property" \
+  "$legacy_text_cache_enabled" "$jvm_arguments_sha256" \
+  "$jvm_arguments_normalized_sha256" <<'PY'
 import json
 import math
 import sys
-log_path, run_id, output_path, scenario, variant, item_count_text = sys.argv[1:]
+(
+    log_path,
+    run_id,
+    output_path,
+    scenario,
+    variant,
+    item_count_text,
+    ab_factor,
+    disable_property_text,
+    expected_cache_enabled_text,
+    jvm_arguments_sha256,
+    jvm_arguments_normalized_sha256,
+) = sys.argv[1:]
 item_count = int(item_count_text)
+disable_property = disable_property_text == "true"
+expected_cache_enabled = expected_cache_enabled_text == "true"
 matches = []
 with open(log_path, encoding="utf-8", errors="replace") as stream:
     for line in stream:
@@ -854,13 +982,58 @@ expected_packet_only = scenario == "visibility-return" or (
     scenario in {"static-steady", "static-spawn"} and variant == "B"
 )
 expected_limiter = visibility_scenario and variant == "B"
-expected_event_driven = block_scenario and variant == "B"
+expected_event_driven = block_scenario and (
+    ab_factor == "legacy-text-component-cache" or variant == "B"
+)
 if metrics.get("packetOnlyStatic") is not expected_packet_only:
     raise SystemExit(f"packetOnlyStatic does not match {scenario}/{variant}")
 if metrics.get("visibilityRateLimit") is not expected_limiter:
     raise SystemExit(f"visibilityRateLimit does not match {scenario}/{variant}")
 if metrics.get("eventDrivenBlockUpdates") is not expected_event_driven:
     raise SystemExit(f"eventDrivenBlockUpdates does not match {scenario}/{variant}")
+if metrics.get("legacyTextComponentCache") is not expected_cache_enabled:
+    raise SystemExit(
+        "legacyTextComponentCache does not match the injected disable property: "
+        f"property={disable_property} enabled={metrics.get('legacyTextComponentCache')!r}"
+    )
+cache_integer_fields = (
+    "legacyTextCacheRequests",
+    "legacyTextCacheMisses",
+    "legacyTextCacheHits",
+    "legacyTextSameRawFastPaths",
+)
+for field in cache_integer_fields:
+    value = metrics.get(field)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise SystemExit(f"invalid {field}={value!r}")
+cache_requests = metrics["legacyTextCacheRequests"]
+cache_misses = metrics["legacyTextCacheMisses"]
+cache_hits = metrics["legacyTextCacheHits"]
+cache_hit_rate = metrics.get("legacyTextCacheHitRate")
+if cache_misses > cache_requests or cache_hits != cache_requests - cache_misses:
+    raise SystemExit(
+        "legacy text cache request/miss/hit counters are inconsistent: "
+        f"requests={cache_requests} misses={cache_misses} hits={cache_hits}"
+    )
+if (isinstance(cache_hit_rate, bool) or not isinstance(cache_hit_rate, (int, float))
+        or not math.isfinite(cache_hit_rate) or not 0.0 <= cache_hit_rate <= 1.0):
+    raise SystemExit(f"invalid legacyTextCacheHitRate={cache_hit_rate!r}")
+derived_hit_rate = cache_hits / cache_requests if cache_requests else 0.0
+if not math.isclose(cache_hit_rate, derived_hit_rate, rel_tol=0.0, abs_tol=0.000001):
+    raise SystemExit(
+        "legacy text cache hit rate disagrees with its counters: "
+        f"recorded={cache_hit_rate} derived={derived_hit_rate}"
+    )
+if ab_factor == "legacy-text-component-cache":
+    if cache_requests <= 0:
+        raise SystemExit("cache A/B workload did not exercise legacy text parsing")
+    if disable_property and cache_misses != cache_requests:
+        raise SystemExit("disabled legacy text cache unexpectedly reported hits")
+    if not disable_property and cache_hit_rate < 0.90:
+        raise SystemExit(
+            "enabled legacy text cache missed the 90% steady-state hit-rate guard: "
+            f"hitRate={cache_hit_rate:.6f}"
+        )
 if block_scenario:
     block_checks = metrics.get("blockUpdateChecks")
     block_ms = metrics.get("blockUpdateMs")
@@ -900,6 +1073,10 @@ elif scenario in {"visibility-itemdisplay-return", "visibility-textdisplay-retur
         raise SystemExit("generic display visibility scenario leaked into the virtual-item branch")
     if metrics.get("bukkitShowCalls") != item_count:
         raise SystemExit(f"generic display visibility restored {metrics.get('bukkitShowCalls')} of {item_count} entities")
+metrics["abFactor"] = ab_factor
+metrics["legacyTextComponentCacheDisableProperty"] = disable_property
+metrics["jvmArgumentsSha256"] = jvm_arguments_sha256
+metrics["jvmArgumentsNormalizedSha256"] = jvm_arguments_normalized_sha256
 with open(output_path, "w", encoding="utf-8", newline="\n") as stream:
     json.dump(metrics, stream, ensure_ascii=False, indent=2)
     stream.write("\n")
@@ -1154,8 +1331,12 @@ fi
 python3 - \
   "$jvm_gc_safepoint_log" \
   "$jvm_diagnostics_metadata" \
+  "$jvm_command_line_metadata" \
   "$jvm_gc_safepoint_log_name" \
   "$jvm_arguments_fingerprint" \
+  "$jvm_arguments_sha256" \
+  "$jvm_arguments_normalized_fingerprint" \
+  "$jvm_arguments_normalized_sha256" \
   "$jvm_gc_safepoint_xlog" <<'PY'
 from pathlib import Path
 import hashlib
@@ -1165,9 +1346,37 @@ import sys
 
 log_path = Path(sys.argv[1])
 metadata_path = Path(sys.argv[2])
-log_name = sys.argv[3]
-jvm_arguments_fingerprint = sys.argv[4]
-unified_logging_option = sys.argv[5]
+command_line_metadata_path = Path(sys.argv[3])
+log_name = sys.argv[4]
+jvm_arguments_fingerprint = sys.argv[5]
+jvm_arguments_sha256 = sys.argv[6]
+jvm_arguments_normalized_fingerprint = sys.argv[7]
+jvm_arguments_normalized_sha256 = sys.argv[8]
+unified_logging_option = sys.argv[9]
+
+if hashlib.sha256(jvm_arguments_fingerprint.encode("utf-8")).hexdigest() != jvm_arguments_sha256:
+    raise SystemExit("JVM argument SHA does not match the exact argument fingerprint")
+if (hashlib.sha256(jvm_arguments_normalized_fingerprint.encode("utf-8")).hexdigest()
+        != jvm_arguments_normalized_sha256):
+    raise SystemExit("normalized JVM argument SHA does not match its fingerprint")
+
+if not command_line_metadata_path.is_file():
+    raise SystemExit(f"live JVM command-line metadata is missing: {command_line_metadata_path}")
+command_line_metadata_raw = command_line_metadata_path.read_bytes()
+command_line_metadata = json.loads(command_line_metadata_raw.decode("utf-8"))
+if (command_line_metadata.get("formalEvidenceReady") is not True
+        or command_line_metadata.get("capturedFromProcCmdline") is not True):
+    raise SystemExit("live JVM command-line metadata is not formal-evidence ready")
+if command_line_metadata.get("jvmArgumentsFingerprint") != jvm_arguments_fingerprint:
+    raise SystemExit("live JVM command-line fingerprint differs from the expected fingerprint")
+if command_line_metadata.get("jvmArgumentsSha256") != jvm_arguments_sha256:
+    raise SystemExit("live JVM command-line SHA differs from the expected SHA")
+if (command_line_metadata.get("jvmArgumentsNormalizedFingerprint")
+        != jvm_arguments_normalized_fingerprint):
+    raise SystemExit("live JVM normalized argument fingerprint mismatch")
+if (command_line_metadata.get("jvmArgumentsNormalizedSha256")
+        != jvm_arguments_normalized_sha256):
+    raise SystemExit("live JVM normalized argument SHA mismatch")
 
 if not log_path.is_file():
     raise SystemExit(f"finalized JVM diagnostic log is missing: {log_path}")
@@ -1221,12 +1430,20 @@ if safepoint_tagged_line_count <= 0:
     raise SystemExit("finalized JVM diagnostic log contains no safepoint-tagged records")
 
 metadata = {
-    "schemaVersion": 1,
+    "schemaVersion": 3,
     "formalEvidenceReady": True,
     "finalizedAfterServerExit": True,
     "serverStoppedCleanly": True,
     "jvmArgumentsFingerprint": jvm_arguments_fingerprint,
+    "jvmArgumentsSha256": jvm_arguments_sha256,
+    "jvmArgumentsNormalizedFingerprint": jvm_arguments_normalized_fingerprint,
+    "jvmArgumentsNormalizedSha256": jvm_arguments_normalized_sha256,
     "unifiedLoggingOption": unified_logging_option,
+    "processCommandLine": {
+        **command_line_metadata,
+        "metadataPath": "jvm-command-line.json",
+        "metadataSha256": hashlib.sha256(command_line_metadata_raw).hexdigest(),
+    },
     "gcSafepointLog": {
         "path": log_name,
         "sha256": hashlib.sha256(raw).hexdigest(),
@@ -1247,24 +1464,61 @@ metadata_path.write_text(
 PY
 
 test -s "$jvm_diagnostics_metadata"
+test -s "$jvm_command_line_metadata"
 jvm_gc_safepoint_sha="$(sha256sum "$jvm_gc_safepoint_log" | awk '{print $1}')"
+jvm_command_line_metadata_sha="$(sha256sum "$jvm_command_line_metadata" | awk '{print $1}')"
 python3 - \
   "$jvm_diagnostics_metadata" \
+  "$jvm_command_line_metadata" \
+  "$jvm_command_line_metadata_sha" \
   "$jvm_gc_safepoint_sha" \
   "$jvm_arguments_fingerprint" \
+  "$jvm_arguments_sha256" \
+  "$jvm_arguments_normalized_fingerprint" \
+  "$jvm_arguments_normalized_sha256" \
   "$jvm_gc_safepoint_xlog" <<'PY'
 import json
 import sys
 
-metadata_path, expected_log_sha, expected_arguments, expected_logging_option = sys.argv[1:]
+(
+    metadata_path,
+    command_line_metadata_path,
+    expected_command_line_metadata_sha,
+    expected_log_sha,
+    expected_arguments,
+    expected_arguments_sha,
+    expected_normalized_arguments,
+    expected_normalized_arguments_sha,
+    expected_logging_option,
+) = sys.argv[1:]
 with open(metadata_path, encoding="utf-8") as stream:
     metadata = json.load(stream)
+with open(command_line_metadata_path, encoding="utf-8") as stream:
+    command_line_metadata = json.load(stream)
 if metadata.get("formalEvidenceReady") is not True:
     raise SystemExit("JVM diagnostic metadata is not formal-evidence ready")
 if metadata.get("finalizedAfterServerExit") is not True:
     raise SystemExit("JVM diagnostic metadata was not finalized after server exit")
 if metadata.get("jvmArgumentsFingerprint") != expected_arguments:
     raise SystemExit("JVM argument fingerprint mismatch in diagnostic metadata")
+if metadata.get("jvmArgumentsSha256") != expected_arguments_sha:
+    raise SystemExit("JVM argument SHA mismatch in diagnostic metadata")
+if metadata.get("jvmArgumentsNormalizedFingerprint") != expected_normalized_arguments:
+    raise SystemExit("normalized JVM argument fingerprint mismatch in diagnostic metadata")
+if metadata.get("jvmArgumentsNormalizedSha256") != expected_normalized_arguments_sha:
+    raise SystemExit("normalized JVM argument SHA mismatch in diagnostic metadata")
+embedded_command_line = metadata.get("processCommandLine")
+if not isinstance(embedded_command_line, dict):
+    raise SystemExit("JVM diagnostic metadata has no process command-line evidence")
+if embedded_command_line.get("metadataPath") != "jvm-command-line.json":
+    raise SystemExit("JVM command-line metadata path mismatch")
+if embedded_command_line.get("metadataSha256") != expected_command_line_metadata_sha:
+    raise SystemExit("JVM command-line metadata SHA mismatch")
+embedded_command_line = dict(embedded_command_line)
+embedded_command_line.pop("metadataPath")
+embedded_command_line.pop("metadataSha256")
+if embedded_command_line != command_line_metadata:
+    raise SystemExit("embedded JVM command-line evidence differs from jvm-command-line.json")
 if metadata.get("unifiedLoggingOption") != expected_logging_option:
     raise SystemExit("JVM unified-logging option mismatch in diagnostic metadata")
 recorded_log_sha = metadata.get("gcSafepointLog", {}).get("sha256")
@@ -1340,13 +1594,45 @@ metadata["metadataSha256"] = hashlib.sha256(metadata_path.read_bytes()).hexdiges
 print(json.dumps(metadata, ensure_ascii=False, separators=(",", ":")))
 PY
 )"
+legacy_text_cache_manifest_json="$(python3 - \
+  "$run_directory/iv-perf.json" \
+  "$ab_factor" \
+  "$legacy_text_cache_disable_property" \
+  "$legacy_text_cache_enabled" <<'PY'
+import json
+import sys
+
+metrics_path, ab_factor, disable_property_text, expected_enabled_text = sys.argv[1:]
+with open(metrics_path, encoding="utf-8") as stream:
+    metrics = json.load(stream)
+disable_property = disable_property_text == "true"
+expected_enabled = expected_enabled_text == "true"
+if metrics.get("abFactor") != ab_factor:
+    raise SystemExit("IV_PERF A/B factor drifted before manifest creation")
+if metrics.get("legacyTextComponentCacheDisableProperty") is not disable_property:
+    raise SystemExit("IV_PERF legacy text cache property drifted before manifest creation")
+if metrics.get("legacyTextComponentCache") is not expected_enabled:
+    raise SystemExit("IV_PERF legacy text cache state drifted before manifest creation")
+print(json.dumps({
+    "propertyName": "interactionvisualizer.disableLegacyTextComponentCache",
+    "disableProperty": disable_property,
+    "enabled": metrics["legacyTextComponentCache"],
+    "requests": metrics["legacyTextCacheRequests"],
+    "misses": metrics["legacyTextCacheMisses"],
+    "hits": metrics["legacyTextCacheHits"],
+    "hitRate": metrics["legacyTextCacheHitRate"],
+    "sameRawFastPaths": metrics["legacyTextSameRawFastPaths"],
+}, ensure_ascii=False, separators=(",", ":")))
+PY
+)"
 
 cat > "$run_directory/run-manifest.json" <<EOF
 {
-  "schemaVersion": 4,
+  "schemaVersion": 6,
   "runId": "$run_id",
   "scenario": "$scenario",
   "variant": "$variant",
+  "abFactor": "$ab_factor",
   "blockSceneMutationOptIn": true,
   "captureEnabled": $([[ "$capture_enabled" == 1 ]] && echo true || echo false),
   "captureSnaplen": $capture_snaplen,
@@ -1362,6 +1648,9 @@ cat > "$run_directory/run-manifest.json" <<EOF
   "paperSha256": "$paper_sha",
   "clientManifestSha256": "$client_manifest_sha",
   "configSha256": "$config_sha",
+  "jvmArgumentsSha256": "$jvm_arguments_sha256",
+  "jvmArgumentsNormalizedSha256": "$jvm_arguments_normalized_sha256",
+  "legacyTextComponentCache": $legacy_text_cache_manifest_json,
   "protocolTrace": {
     "enabled": $protocol_trace_manifest_enabled,
     "path": $protocol_trace_manifest_path,
@@ -1388,6 +1677,12 @@ python3 - \
   "$jvm_diagnostics_metadata" \
   "$jvm_diagnostics_metadata_sha" \
   "$jvm_gc_safepoint_sha" \
+  "$run_directory/iv-perf.json" \
+  "$ab_factor" \
+  "$legacy_text_cache_disable_property" \
+  "$legacy_text_cache_enabled" \
+  "$jvm_arguments_sha256" \
+  "$jvm_arguments_normalized_sha256" \
   "$spark_profile_mode" \
   "$spark_profile_metadata" \
   "$spark_profile_output" <<'PY'
@@ -1400,13 +1695,21 @@ manifest_path = Path(sys.argv[1])
 metadata_path = Path(sys.argv[2])
 expected_metadata_sha = sys.argv[3]
 expected_log_sha = sys.argv[4]
-spark_mode = sys.argv[5]
-spark_metadata_path = Path(sys.argv[6])
-spark_profile_path = Path(sys.argv[7])
+metrics_path = Path(sys.argv[5])
+expected_ab_factor = sys.argv[6]
+expected_disable_property = sys.argv[7] == "true"
+expected_cache_enabled = sys.argv[8] == "true"
+expected_jvm_arguments_sha = sys.argv[9]
+expected_jvm_arguments_normalized_sha = sys.argv[10]
+spark_mode = sys.argv[11]
+spark_metadata_path = Path(sys.argv[12])
+spark_profile_path = Path(sys.argv[13])
 with manifest_path.open(encoding="utf-8") as stream:
     manifest = json.load(stream)
 with metadata_path.open(encoding="utf-8") as stream:
     metadata = json.load(stream)
+with metrics_path.open(encoding="utf-8") as stream:
+    metrics = json.load(stream)
 
 actual_metadata_sha = hashlib.sha256(metadata_path.read_bytes()).hexdigest()
 if actual_metadata_sha != expected_metadata_sha:
@@ -1425,6 +1728,46 @@ if embedded_metadata != metadata:
     raise SystemExit("run manifest JVM diagnostics do not match jvm-diagnostics.json")
 if embedded.get("gcSafepointLog", {}).get("sha256") != expected_log_sha:
     raise SystemExit("run manifest has the wrong finalized JVM diagnostic log SHA")
+if manifest.get("abFactor") != expected_ab_factor:
+    raise SystemExit("run manifest has the wrong A/B factor")
+if manifest.get("jvmArgumentsSha256") != expected_jvm_arguments_sha:
+    raise SystemExit("run manifest has the wrong JVM argument SHA")
+if embedded.get("jvmArgumentsSha256") != expected_jvm_arguments_sha:
+    raise SystemExit("JVM diagnostics have the wrong JVM argument SHA")
+if metrics.get("jvmArgumentsSha256") != expected_jvm_arguments_sha:
+    raise SystemExit("IV_PERF evidence has the wrong JVM argument SHA")
+if manifest.get("jvmArgumentsNormalizedSha256") != expected_jvm_arguments_normalized_sha:
+    raise SystemExit("run manifest has the wrong normalized JVM argument SHA")
+if embedded.get("jvmArgumentsNormalizedSha256") != expected_jvm_arguments_normalized_sha:
+    raise SystemExit("JVM diagnostics have the wrong normalized JVM argument SHA")
+if metrics.get("jvmArgumentsNormalizedSha256") != expected_jvm_arguments_normalized_sha:
+    raise SystemExit("IV_PERF evidence has the wrong normalized JVM argument SHA")
+process_command_line = embedded.get("processCommandLine")
+if not isinstance(process_command_line, dict):
+    raise SystemExit("JVM diagnostics have no live process command-line evidence")
+if (process_command_line.get("formalEvidenceReady") is not True
+        or process_command_line.get("capturedFromProcCmdline") is not True):
+    raise SystemExit("live JVM process command-line evidence is not formal-evidence ready")
+if process_command_line.get("jvmArgumentsSha256") != expected_jvm_arguments_sha:
+    raise SystemExit("live JVM process command line has the wrong JVM argument SHA")
+if (process_command_line.get("jvmArgumentsNormalizedSha256")
+        != expected_jvm_arguments_normalized_sha):
+    raise SystemExit("live JVM process command line has the wrong normalized JVM argument SHA")
+embedded_cache = manifest.get("legacyTextComponentCache")
+if not isinstance(embedded_cache, dict):
+    raise SystemExit("run manifest has no legacy text cache provenance")
+expected_cache = {
+    "propertyName": "interactionvisualizer.disableLegacyTextComponentCache",
+    "disableProperty": expected_disable_property,
+    "enabled": expected_cache_enabled,
+    "requests": metrics.get("legacyTextCacheRequests"),
+    "misses": metrics.get("legacyTextCacheMisses"),
+    "hits": metrics.get("legacyTextCacheHits"),
+    "hitRate": metrics.get("legacyTextCacheHitRate"),
+    "sameRawFastPaths": metrics.get("legacyTextSameRawFastPaths"),
+}
+if embedded_cache != expected_cache:
+    raise SystemExit("run manifest legacy text cache provenance does not match IV_PERF")
 
 embedded_spark = manifest.get("sparkProfile")
 if not isinstance(embedded_spark, dict):

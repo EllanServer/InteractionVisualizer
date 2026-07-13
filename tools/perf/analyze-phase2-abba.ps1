@@ -11,6 +11,10 @@ paired bootstrap produces a 95% confidence interval.
 Required manifest columns:
 Scenario,Block,Position,Variant,RunId,StackSha256,ArtifactSha256,CaptureMethod,SourcePath
 
+Optional provenance columns (all-or-none):
+AbFactor,ConfigSha256,JvmArgumentsSha256,JvmArgumentsNormalizedSha256,
+LegacyTextComponentCacheDisableProperty,LegacyTextComponentCacheEnabled
+
 SourcePath may point to a metrics JSON file (IV_PERF, PresentMon, or the vanilla
 debug-profile analyzer) or a server log containing exactly one IV_PERF JSON with
 the matching RunId label. Relative paths are resolved from the manifest folder.
@@ -70,6 +74,38 @@ function Resolve-Column {
         throw "Manifest must contain exactly one '$Expected' column; found $($matches.Count)."
     }
     return $matches[0]
+}
+
+function Resolve-OptionalColumn {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Headers,
+        [Parameter(Mandatory = $true)][string]$Expected
+    )
+
+    $matches = @($Headers | Where-Object {
+        [string]::Equals($_.TrimStart([char]0xFEFF), $Expected, [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($matches.Count -gt 1) {
+        throw "Manifest must contain at most one '$Expected' column; found $($matches.Count)."
+    }
+    if ($matches.Count -eq 0) {
+        return $null
+    }
+    return $matches[0]
+}
+
+function ConvertTo-ManifestBoolean {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Field,
+        [Parameter(Mandatory = $true)][int]$RowNumber
+    )
+
+    switch ($Value.Trim().ToLowerInvariant()) {
+        "true" { return $true }
+        "false" { return $false }
+        default { throw "Manifest row $RowNumber $Field must be true or false, but was '$Value'." }
+    }
 }
 
 function Get-CellValue {
@@ -298,6 +334,27 @@ function Convert-ManifestRows {
     foreach ($name in $required) {
         $columns[$name] = Resolve-Column -Headers $headers -Expected $name
     }
+    $provenanceNames = @(
+        "AbFactor",
+        "ConfigSha256",
+        "JvmArgumentsSha256",
+        "JvmArgumentsNormalizedSha256",
+        "LegacyTextComponentCacheDisableProperty",
+        "LegacyTextComponentCacheEnabled"
+    )
+    $provenanceColumns = @{}
+    foreach ($name in $provenanceNames) {
+        $provenanceColumns[$name] = Resolve-OptionalColumn -Headers $headers -Expected $name
+    }
+    $presentProvenanceColumns = @($provenanceNames | Where-Object {
+        $null -ne $provenanceColumns[$_]
+    })
+    if ($presentProvenanceColumns.Count -ne 0 -and
+            $presentProvenanceColumns.Count -ne $provenanceNames.Count) {
+        $missing = @($provenanceNames | Where-Object { $null -eq $provenanceColumns[$_] })
+        throw "Manifest provenance columns are all-or-none; missing: $($missing -join ', ')."
+    }
+    $hasExtendedProvenance = $presentProvenanceColumns.Count -eq $provenanceNames.Count
 
     $runs = New-Object 'System.Collections.Generic.List[object]'
     $runIds = @{}
@@ -326,6 +383,40 @@ function Convert-ManifestRows {
         }
         $runIds[$runId] = $rowNumber
 
+        $abFactor = $null
+        $configSha256 = $null
+        $jvmArgumentsSha256 = $null
+        $jvmArgumentsNormalizedSha256 = $null
+        $legacyTextComponentCacheDisableProperty = $null
+        $legacyTextComponentCacheEnabled = $null
+        if ($hasExtendedProvenance) {
+            $abFactor = (Get-CellValue -Row $row -Column $provenanceColumns["AbFactor"]).Trim().ToLowerInvariant()
+            if ($abFactor -ne "scenario-config" -and $abFactor -ne "legacy-text-component-cache") {
+                throw "Manifest row $rowNumber AbFactor must be scenario-config or legacy-text-component-cache, but was '$abFactor'."
+            }
+            $configSha256 = (Get-CellValue -Row $row -Column $provenanceColumns["ConfigSha256"]).Trim().ToLowerInvariant()
+            $jvmArgumentsSha256 = (Get-CellValue -Row $row -Column $provenanceColumns["JvmArgumentsSha256"]).Trim().ToLowerInvariant()
+            $jvmArgumentsNormalizedSha256 = (Get-CellValue -Row $row -Column $provenanceColumns["JvmArgumentsNormalizedSha256"]).Trim().ToLowerInvariant()
+            foreach ($hash in @(
+                    @{ Name = "ConfigSha256"; Value = $configSha256 },
+                    @{ Name = "JvmArgumentsSha256"; Value = $jvmArgumentsSha256 },
+                    @{ Name = "JvmArgumentsNormalizedSha256"; Value = $jvmArgumentsNormalizedSha256 }
+                )) {
+                if ($hash.Value -notmatch '^[0-9a-f]{64}$') {
+                    throw "Manifest row $rowNumber $($hash.Name) must be a 64 hexadecimal SHA-256 value."
+                }
+            }
+            $legacyTextComponentCacheDisableProperty = ConvertTo-ManifestBoolean `
+                -Value (Get-CellValue -Row $row -Column $provenanceColumns["LegacyTextComponentCacheDisableProperty"]) `
+                -Field "LegacyTextComponentCacheDisableProperty" -RowNumber $rowNumber
+            $legacyTextComponentCacheEnabled = ConvertTo-ManifestBoolean `
+                -Value (Get-CellValue -Row $row -Column $provenanceColumns["LegacyTextComponentCacheEnabled"]) `
+                -Field "LegacyTextComponentCacheEnabled" -RowNumber $rowNumber
+            if ($legacyTextComponentCacheDisableProperty -eq $legacyTextComponentCacheEnabled) {
+                throw "Manifest row $rowNumber cache enabled state must be the inverse of its disable property."
+            }
+        }
+
         [int]$block = 0
         [int]$position = 0
         if (-not [int]::TryParse((Get-CellValue -Row $row -Column $columns["Block"]).Trim(),
@@ -352,6 +443,13 @@ function Convert-ManifestRows {
             ArtifactSha256 = $artifactHash
             CaptureMethod = $captureMethod
             SourcePath = $sourcePath
+            HasExtendedProvenance = $hasExtendedProvenance
+            AbFactor = $abFactor
+            ConfigSha256 = $configSha256
+            JvmArgumentsSha256 = $jvmArgumentsSha256
+            JvmArgumentsNormalizedSha256 = $jvmArgumentsNormalizedSha256
+            LegacyTextComponentCacheDisableProperty = $legacyTextComponentCacheDisableProperty
+            LegacyTextComponentCacheEnabled = $legacyTextComponentCacheEnabled
         })
     }
     return $runs
@@ -368,6 +466,119 @@ function Get-ScenarioResult {
         [Parameter(Mandatory = $true)][int]$RandomSeed,
         [switch]$Prepared
     )
+
+    $provenanceStates = @($Runs | ForEach-Object {
+        $property = $_.PSObject.Properties["HasExtendedProvenance"]
+        if ($null -eq $property) { $false } else { [bool]$property.Value }
+    } | Sort-Object -Unique)
+    if ($provenanceStates.Count -ne 1) {
+        throw "Scenario '$ScenarioName' mixes legacy and extended provenance rows."
+    }
+    $hasExtendedProvenance = [bool]$provenanceStates[0]
+    $abFactor = $null
+    $configHashes = @()
+    $configHashesByVariant = [ordered]@{ A = @(); B = @() }
+    $jvmArgumentsNormalizedSha256 = $null
+    $jvmArgumentsHashesByVariant = [ordered]@{ A = @(); B = @() }
+    $legacyTextComponentCacheTreatment = [ordered]@{
+        provenancePresent = $hasExtendedProvenance
+        propertyName = "interactionvisualizer.disableLegacyTextComponentCache"
+        treatmentScope = @("sharedComponentCache", "perEntitySameRawFastPath")
+        byVariant = [ordered]@{
+            A = [ordered]@{ disableProperty = @(); enabled = @() }
+            B = [ordered]@{ disableProperty = @(); enabled = @() }
+        }
+    }
+    if ($hasExtendedProvenance) {
+        foreach ($run in $Runs) {
+            if ($run.AbFactor -ne "scenario-config" -and
+                    $run.AbFactor -ne "legacy-text-component-cache") {
+                throw "Scenario '$ScenarioName' run '$($run.RunId)' has invalid AbFactor '$($run.AbFactor)'."
+            }
+            foreach ($hash in @(
+                    @{ Name = "ConfigSha256"; Value = $run.ConfigSha256 },
+                    @{ Name = "JvmArgumentsSha256"; Value = $run.JvmArgumentsSha256 },
+                    @{ Name = "JvmArgumentsNormalizedSha256"; Value = $run.JvmArgumentsNormalizedSha256 }
+                )) {
+                if ([string]$hash.Value -notmatch '^[0-9a-f]{64}$') {
+                    throw "Scenario '$ScenarioName' run '$($run.RunId)' has invalid $($hash.Name)."
+                }
+            }
+            if ($run.LegacyTextComponentCacheDisableProperty -isnot [bool] -or
+                    $run.LegacyTextComponentCacheEnabled -isnot [bool]) {
+                throw "Scenario '$ScenarioName' run '$($run.RunId)' cache provenance must use booleans."
+            }
+            if ($run.LegacyTextComponentCacheDisableProperty -eq
+                    $run.LegacyTextComponentCacheEnabled) {
+                throw "Scenario '$ScenarioName' run '$($run.RunId)' cache enabled state is not the inverse of its disable property."
+            }
+        }
+
+        $abFactors = @($Runs.AbFactor | Sort-Object -Unique)
+        if ($abFactors.Count -ne 1) {
+            throw "Scenario '$ScenarioName' mixes AbFactor values: $($abFactors -join ', ')."
+        }
+        $abFactor = $abFactors[0]
+        $configHashes = @($Runs.ConfigSha256 | Sort-Object -Unique)
+        $normalizedJvmHashes = @($Runs.JvmArgumentsNormalizedSha256 | Sort-Object -Unique)
+        if ($normalizedJvmHashes.Count -ne 1) {
+            throw "Scenario '$ScenarioName' must use exactly one JvmArgumentsNormalizedSha256, found $($normalizedJvmHashes.Count)."
+        }
+        $jvmArgumentsNormalizedSha256 = $normalizedJvmHashes[0]
+        foreach ($variant in @("A", "B")) {
+            $configHashesByVariant[$variant] = @($Runs | Where-Object Variant -eq $variant |
+                ForEach-Object ConfigSha256 | Sort-Object -Unique)
+            $jvmArgumentsHashesByVariant[$variant] = @($Runs | Where-Object Variant -eq $variant |
+                ForEach-Object JvmArgumentsSha256 | Sort-Object -Unique)
+            $legacyTextComponentCacheTreatment.byVariant[$variant].disableProperty = @($Runs |
+                Where-Object Variant -eq $variant |
+                ForEach-Object LegacyTextComponentCacheDisableProperty | Sort-Object -Unique)
+            $legacyTextComponentCacheTreatment.byVariant[$variant].enabled = @($Runs |
+                Where-Object Variant -eq $variant |
+                ForEach-Object LegacyTextComponentCacheEnabled | Sort-Object -Unique)
+        }
+
+        if ($abFactor -eq "scenario-config") {
+            $allJvmArgumentHashes = @($Runs.JvmArgumentsSha256 | Sort-Object -Unique)
+            if ($allJvmArgumentHashes.Count -ne 1) {
+                throw "Scenario '$ScenarioName' scenario-config factor must keep JvmArgumentsSha256 identical across all runs."
+            }
+            foreach ($variant in @("A", "B")) {
+                if ($configHashesByVariant[$variant].Count -ne 1) {
+                    throw "Scenario '$ScenarioName' scenario-config variant $variant must use exactly one ConfigSha256."
+                }
+                $disableValues = $legacyTextComponentCacheTreatment.byVariant[$variant].disableProperty
+                $enabledValues = $legacyTextComponentCacheTreatment.byVariant[$variant].enabled
+                if ($disableValues.Count -ne 1 -or $enabledValues.Count -ne 1 -or
+                        [bool]$disableValues[0] -ne $false -or [bool]$enabledValues[0] -ne $true) {
+                    throw "Scenario '$ScenarioName' scenario-config variant $variant must keep the legacy text cache enabled."
+                }
+            }
+            if ($configHashesByVariant.A[0] -eq $configHashesByVariant.B[0]) {
+                throw "Scenario '$ScenarioName' scenario-config variants A and B must use different ConfigSha256 values."
+            }
+        } else {
+            if ($configHashes.Count -ne 1) {
+                throw "Scenario '$ScenarioName' legacy-text-component-cache factor must keep ConfigSha256 identical across all runs."
+            }
+            foreach ($variant in @("A", "B")) {
+                if ($jvmArgumentsHashesByVariant[$variant].Count -ne 1) {
+                    throw "Scenario '$ScenarioName' legacy-text-component-cache variant $variant must use exactly one JvmArgumentsSha256."
+                }
+            }
+            if ($jvmArgumentsHashesByVariant.A[0] -eq $jvmArgumentsHashesByVariant.B[0]) {
+                throw "Scenario '$ScenarioName' legacy-text-component-cache variants A and B must use different JvmArgumentsSha256 values."
+            }
+            foreach ($run in $Runs) {
+                $expectedDisable = $run.Variant -eq "A"
+                $expectedEnabled = $run.Variant -eq "B"
+                if ($run.LegacyTextComponentCacheDisableProperty -ne $expectedDisable -or
+                        $run.LegacyTextComponentCacheEnabled -ne $expectedEnabled) {
+                    throw "Scenario '$ScenarioName' cache treatment mismatch in run '$($run.RunId)': A must be disabled and B enabled."
+                }
+            }
+        }
+    }
 
     $stackHashes = @($Runs.StackSha256 | Sort-Object -Unique)
     $captureMethods = @($Runs.CaptureMethod | Sort-Object -Unique)
@@ -422,7 +633,7 @@ function Get-ScenarioResult {
                 $sourceHash = (Get-FileHash -LiteralPath $run.SourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
             }
             $run | Add-Member -NotePropertyName ResolvedMetricValue -NotePropertyValue $metricsValue -Force
-            $evidenceRuns.Add([ordered]@{
+            $evidenceRun = [ordered]@{
                 block = $run.Block
                 position = $run.Position
                 variant = $run.Variant
@@ -430,7 +641,18 @@ function Get-ScenarioResult {
                 value = Round-Metric $metricsValue
                 sourcePath = $run.SourcePath
                 sourceSha256 = $sourceHash
-            })
+            }
+            if ($hasExtendedProvenance) {
+                $evidenceRun["abFactor"] = $run.AbFactor
+                $evidenceRun["configSha256"] = $run.ConfigSha256
+                $evidenceRun["jvmArgumentsSha256"] = $run.JvmArgumentsSha256
+                $evidenceRun["jvmArgumentsNormalizedSha256"] = $run.JvmArgumentsNormalizedSha256
+                $evidenceRun["legacyTextComponentCacheDisableProperty"] =
+                    $run.LegacyTextComponentCacheDisableProperty
+                $evidenceRun["legacyTextComponentCacheEnabled"] =
+                    $run.LegacyTextComponentCacheEnabled
+            }
+            $evidenceRuns.Add($evidenceRun)
         }
 
         foreach ($indices in @(@(0, 1), @(2, 3))) {
@@ -469,6 +691,12 @@ function Get-ScenarioResult {
 
     return [ordered]@{
         scenario = $ScenarioName
+        abFactor = $abFactor
+        configSha256 = @($configHashes)
+        configSha256ByVariant = $configHashesByVariant
+        jvmArgumentsSha256ByVariant = $jvmArgumentsHashesByVariant
+        jvmArgumentsNormalizedSha256 = $jvmArgumentsNormalizedSha256
+        legacyTextComponentCache = $legacyTextComponentCacheTreatment
         metric = $MetricPath
         direction = $MetricDirection
         formalComplete = (-not $PermitIncomplete -and $blocks.Count -eq 3)
@@ -499,29 +727,92 @@ function Get-ScenarioResult {
     }
 }
 
-function Invoke-AnalyzerSelfTest {
+function Assert-CampaignProvenance {
+    param([Parameter(Mandatory = $true)][object[]]$Runs)
+
+    $extendedRuns = @($Runs | Where-Object HasExtendedProvenance)
+    if ($extendedRuns.Count -eq 0) {
+        return
+    }
+    $normalizedJvmHashes = @($extendedRuns.JvmArgumentsNormalizedSha256 | Sort-Object -Unique)
+    if ($normalizedJvmHashes.Count -ne 1) {
+        throw "Extended provenance campaign must use exactly one JvmArgumentsNormalizedSha256, found $($normalizedJvmHashes.Count)."
+    }
+    $abFactors = @($extendedRuns.AbFactor | Sort-Object -Unique)
+    if ($abFactors.Count -ne 1) {
+        throw "Extended provenance campaign must use exactly one AbFactor, found: $($abFactors -join ', ')."
+    }
+}
+
+function New-SelfTestPreparedRuns {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScenarioName,
+        [switch]$Extended,
+        [ValidateSet("scenario-config", "legacy-text-component-cache")]
+        [string]$AbFactor = "legacy-text-component-cache"
+    )
+
     $runs = New-Object 'System.Collections.Generic.List[object]'
     $patterns = @("ABBA", "BAAB", "ABBA")
     for ($block = 1; $block -le 3; $block++) {
         for ($position = 1; $position -le 4; $position++) {
             $variant = [string]$patterns[$block - 1][$position - 1]
             $value = if ($variant -eq "A") { 10.0 } else { 8.0 }
-            $runs.Add([pscustomobject]@{
-                Scenario = "SELFTEST"
+            $run = [ordered]@{
+                Scenario = $ScenarioName
                 Block = $block
                 Position = $position
                 Variant = $variant
-                RunId = "SELFTEST_${block}_${position}_$variant"
+                RunId = "${ScenarioName}_${block}_${position}_$variant"
                 StackSha256 = ('1' * 64)
                 ArtifactSha256 = if ($variant -eq "A") { ('a' * 64) } else { ('b' * 64) }
                 CaptureMethod = "selftest"
                 SourcePath = $null
                 SourceSha256 = ('c' * 64)
                 MetricValue = $value
-            })
+            }
+            if ($Extended) {
+                $run["HasExtendedProvenance"] = $true
+                $run["AbFactor"] = $AbFactor
+                $run["ConfigSha256"] = if ($AbFactor -eq "scenario-config" -and $variant -eq "B") {
+                    ('4' * 64)
+                } else {
+                    ('3' * 64)
+                }
+                $run["JvmArgumentsSha256"] = if ($AbFactor -eq "legacy-text-component-cache" -and
+                        $variant -eq "B") { ('6' * 64) } else { ('5' * 64) }
+                $run["JvmArgumentsNormalizedSha256"] = ('7' * 64)
+                $run["LegacyTextComponentCacheDisableProperty"] =
+                    ($AbFactor -eq "legacy-text-component-cache" -and $variant -eq "A")
+                $run["LegacyTextComponentCacheEnabled"] =
+                    -not $run["LegacyTextComponentCacheDisableProperty"]
+            }
+            $runs.Add([pscustomobject]$run)
         }
     }
-    $result = Get-ScenarioResult -Runs $runs.ToArray() -ScenarioName "SELFTEST" `
+    return $runs.ToArray()
+}
+
+function Assert-SelfTestRejected {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $rejected = $false
+    try {
+        & $Action
+    } catch {
+        $rejected = $true
+    }
+    if (-not $rejected) {
+        throw "Self-test failed to reject $Description."
+    }
+}
+
+function Invoke-AnalyzerSelfTest {
+    $runs = @(New-SelfTestPreparedRuns -ScenarioName "SELFTEST")
+    $result = Get-ScenarioResult -Runs $runs -ScenarioName "SELFTEST" `
         -MetricPath "metric" -MetricDirection "LowerIsBetter" -PermitIncomplete $false `
         -Iterations 1000 -RandomSeed 7 -Prepared
     if (-not $result.formalComplete -or $result.runCount -ne 12 -or $result.pairCount -ne 6) {
@@ -531,6 +822,158 @@ function Invoke-AnalyzerSelfTest {
             [math]::Abs($result.improvementPercent - 20.0) -gt 0.000001) {
         throw "Self-test paired log-ratio failed."
     }
+    if ($null -ne $result.abFactor -or $result.configSha256.Count -ne 0 -or
+            $result.legacyTextComponentCache.provenancePresent) {
+        throw "Self-test legacy manifest compatibility failed."
+    }
+
+    $legacyManifestRow = [pscustomobject][ordered]@{
+        Scenario = "LEGACY_MANIFEST"
+        Block = "1"
+        Position = "1"
+        Variant = "A"
+        RunId = "LEGACY_MANIFEST_1_1_A"
+        StackSha256 = ('1' * 64)
+        ArtifactSha256 = ('a' * 64)
+        CaptureMethod = "selftest"
+        SourcePath = "selftest.json"
+    }
+    $convertedLegacyRows = @(Convert-ManifestRows -Rows @($legacyManifestRow) `
+        -ManifestDirectory ([IO.Path]::GetTempPath()))
+    if ($convertedLegacyRows.Count -ne 1 -or $convertedLegacyRows[0].HasExtendedProvenance) {
+        throw "Self-test failed to accept a legacy nine-column manifest."
+    }
+
+    $partialProvenanceRow = [pscustomobject][ordered]@{
+        Scenario = "PARTIAL"
+        Block = "1"
+        Position = "1"
+        Variant = "A"
+        RunId = "PARTIAL_1_1_A"
+        StackSha256 = ('1' * 64)
+        ArtifactSha256 = ('a' * 64)
+        CaptureMethod = "selftest"
+        SourcePath = "selftest.json"
+        AbFactor = "legacy-text-component-cache"
+    }
+    Assert-SelfTestRejected -Description "a partial provenance column group" -Action {
+        Convert-ManifestRows -Rows @($partialProvenanceRow) `
+            -ManifestDirectory ([IO.Path]::GetTempPath()) | Out-Null
+    }
+
+    $cacheRuns = @(New-SelfTestPreparedRuns -ScenarioName "CACHE" -Extended `
+        -AbFactor "legacy-text-component-cache")
+    $cacheResult = Get-ScenarioResult -Runs $cacheRuns -ScenarioName "CACHE" `
+        -MetricPath "metric" -MetricDirection "LowerIsBetter" -PermitIncomplete $false `
+        -Iterations 1000 -RandomSeed 11 -Prepared
+    if ($cacheResult.abFactor -ne "legacy-text-component-cache" -or
+            $cacheResult.configSha256.Count -ne 1 -or
+            $cacheResult.jvmArgumentsSha256ByVariant.A.Count -ne 1 -or
+            $cacheResult.jvmArgumentsSha256ByVariant.B.Count -ne 1 -or
+            $cacheResult.jvmArgumentsSha256ByVariant.A[0] -eq
+                $cacheResult.jvmArgumentsSha256ByVariant.B[0] -or
+            $cacheResult.jvmArgumentsNormalizedSha256 -ne ('7' * 64) -or
+            -not $cacheResult.legacyTextComponentCache.provenancePresent -or
+            $cacheResult.runs[0].abFactor -ne "legacy-text-component-cache") {
+        throw "Self-test failed to accept and preserve cache-factor provenance."
+    }
+
+    $badCacheConfig = @(New-SelfTestPreparedRuns -ScenarioName "BAD_CACHE_CONFIG" -Extended)
+    $badCacheConfig[0].ConfigSha256 = ('8' * 64)
+    Assert-SelfTestRejected -Description "cache-factor config drift" -Action {
+        Get-ScenarioResult -Runs $badCacheConfig -ScenarioName "BAD_CACHE_CONFIG" `
+            -MetricPath "metric" -MetricDirection "LowerIsBetter" -PermitIncomplete $false `
+            -Iterations 1000 -RandomSeed 13 -Prepared | Out-Null
+    }
+
+    $badCacheJvm = @(New-SelfTestPreparedRuns -ScenarioName "BAD_CACHE_JVM" -Extended)
+    foreach ($run in $badCacheJvm | Where-Object Variant -eq "B") {
+        $run.JvmArgumentsSha256 = ('5' * 64)
+    }
+    Assert-SelfTestRejected -Description "identical cache-factor A/B JVM hashes" -Action {
+        Get-ScenarioResult -Runs $badCacheJvm -ScenarioName "BAD_CACHE_JVM" `
+            -MetricPath "metric" -MetricDirection "LowerIsBetter" -PermitIncomplete $false `
+            -Iterations 1000 -RandomSeed 17 -Prepared | Out-Null
+    }
+
+    $badCacheTreatment = @(New-SelfTestPreparedRuns -ScenarioName "BAD_CACHE_TREATMENT" -Extended)
+    $badCacheTreatment[0].LegacyTextComponentCacheDisableProperty = $false
+    $badCacheTreatment[0].LegacyTextComponentCacheEnabled = $true
+    Assert-SelfTestRejected -Description "a reversed cache-factor treatment" -Action {
+        Get-ScenarioResult -Runs $badCacheTreatment -ScenarioName "BAD_CACHE_TREATMENT" `
+            -MetricPath "metric" -MetricDirection "LowerIsBetter" -PermitIncomplete $false `
+            -Iterations 1000 -RandomSeed 19 -Prepared | Out-Null
+    }
+
+    $badNormalizedJvm = @(New-SelfTestPreparedRuns -ScenarioName "BAD_NORMALIZED_JVM" -Extended)
+    $badNormalizedJvm[0].JvmArgumentsNormalizedSha256 = ('8' * 64)
+    Assert-SelfTestRejected -Description "normalized JVM argument drift" -Action {
+        Get-ScenarioResult -Runs $badNormalizedJvm -ScenarioName "BAD_NORMALIZED_JVM" `
+            -MetricPath "metric" -MetricDirection "LowerIsBetter" -PermitIncomplete $false `
+            -Iterations 1000 -RandomSeed 23 -Prepared | Out-Null
+    }
+
+    $badScenarioConfigJvm = @(New-SelfTestPreparedRuns -ScenarioName "BAD_SCENARIO_CONFIG" `
+        -Extended -AbFactor "scenario-config")
+    $badScenarioConfigJvm[0].JvmArgumentsSha256 = ('8' * 64)
+    Assert-SelfTestRejected -Description "scenario-config JVM argument drift" -Action {
+        Get-ScenarioResult -Runs $badScenarioConfigJvm -ScenarioName "BAD_SCENARIO_CONFIG" `
+            -MetricPath "metric" -MetricDirection "LowerIsBetter" -PermitIncomplete $false `
+            -Iterations 1000 -RandomSeed 29 -Prepared | Out-Null
+    }
+
+    $scenarioConfigRuns = @(New-SelfTestPreparedRuns -ScenarioName "SCENARIO_CONFIG" `
+        -Extended -AbFactor "scenario-config")
+    $scenarioConfigResult = Get-ScenarioResult -Runs $scenarioConfigRuns `
+        -ScenarioName "SCENARIO_CONFIG" -MetricPath "metric" -MetricDirection "LowerIsBetter" `
+        -PermitIncomplete $false -Iterations 1000 -RandomSeed 31 -Prepared
+    if ($scenarioConfigResult.configSha256ByVariant.A.Count -ne 1 -or
+            $scenarioConfigResult.configSha256ByVariant.B.Count -ne 1 -or
+            $scenarioConfigResult.configSha256ByVariant.A[0] -eq
+                $scenarioConfigResult.configSha256ByVariant.B[0]) {
+        throw "Self-test failed to accept and preserve scenario-config provenance."
+    }
+
+    $badScenarioConfigDrift = @(New-SelfTestPreparedRuns -ScenarioName "BAD_SCENARIO_DRIFT" `
+        -Extended -AbFactor "scenario-config")
+    $badScenarioConfigDrift[0].ConfigSha256 = ('8' * 64)
+    Assert-SelfTestRejected -Description "scenario-config config drift" -Action {
+        Get-ScenarioResult -Runs $badScenarioConfigDrift -ScenarioName "BAD_SCENARIO_DRIFT" `
+            -MetricPath "metric" -MetricDirection "LowerIsBetter" -PermitIncomplete $false `
+            -Iterations 1000 -RandomSeed 37 -Prepared | Out-Null
+    }
+
+    $badScenarioConfigSame = @(New-SelfTestPreparedRuns -ScenarioName "BAD_SCENARIO_SAME" `
+        -Extended -AbFactor "scenario-config")
+    foreach ($run in $badScenarioConfigSame | Where-Object Variant -eq "B") {
+        $run.ConfigSha256 = ('3' * 64)
+    }
+    Assert-SelfTestRejected -Description "identical scenario-config A/B config hashes" -Action {
+        Get-ScenarioResult -Runs $badScenarioConfigSame -ScenarioName "BAD_SCENARIO_SAME" `
+            -MetricPath "metric" -MetricDirection "LowerIsBetter" -PermitIncomplete $false `
+            -Iterations 1000 -RandomSeed 41 -Prepared | Out-Null
+    }
+
+    $badScenarioConfigTreatment = @(New-SelfTestPreparedRuns `
+        -ScenarioName "BAD_SCENARIO_TREATMENT" -Extended -AbFactor "scenario-config")
+    $badScenarioConfigTreatment[0].LegacyTextComponentCacheDisableProperty = $true
+    $badScenarioConfigTreatment[0].LegacyTextComponentCacheEnabled = $false
+    Assert-SelfTestRejected -Description "scenario-config cache treatment drift" -Action {
+        Get-ScenarioResult -Runs $badScenarioConfigTreatment `
+            -ScenarioName "BAD_SCENARIO_TREATMENT" -MetricPath "metric" `
+            -MetricDirection "LowerIsBetter" -PermitIncomplete $false `
+            -Iterations 1000 -RandomSeed 43 -Prepared | Out-Null
+    }
+
+    $mixedFactorCampaign = @(
+        $cacheRuns
+        (New-SelfTestPreparedRuns -ScenarioName "MIXED_SCENARIO" -Extended `
+            -AbFactor "scenario-config")
+    )
+    Assert-SelfTestRejected -Description "mixed campaign A/B factors" -Action {
+        Assert-CampaignProvenance -Runs $mixedFactorCampaign
+    }
+
     $rejectedJfrDataLoss = $false
     try {
         Assert-MetricsIntegrity -Metrics ([pscustomobject]@{ jfrDataLossBytes = 1 }) -RunId "SELFTEST_BAD_JFR"
@@ -551,6 +994,14 @@ function Invoke-AnalyzerSelfTest {
         enforcesFormalOrder = $true
         enforcesSameStackAndArtifacts = $true
         rejectsJfrDataLoss = $rejectedJfrDataLoss
+        acceptsLegacyNineColumnManifest = $true
+        acceptsCacheFactorProvenance = $true
+        acceptsScenarioConfigProvenance = $true
+        rejectsPartialProvenanceColumns = $true
+        enforcesConfigAndJvmProvenance = $true
+        enforcesNormalizedJvmArguments = $true
+        enforcesCacheTreatment = $true
+        enforcesSingleCampaignFactor = $true
     })
 }
 
@@ -568,6 +1019,7 @@ if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
 }
 $manifestRows = @(Import-Csv -LiteralPath $manifestPath)
 $runs = @(Convert-ManifestRows -Rows $manifestRows -ManifestDirectory (Split-Path -Parent $manifestPath))
+Assert-CampaignProvenance -Runs $runs
 if (-not [string]::IsNullOrWhiteSpace($Scenario)) {
     $runs = @($runs | Where-Object {
         [string]::Equals($_.Scenario, $Scenario, [StringComparison]::Ordinal)
@@ -586,8 +1038,60 @@ for ($index = 0; $index -lt $scenarioGroups.Count; $index++) {
         -Iterations $BootstrapIterations -RandomSeed ($Seed + $index)))
 }
 
+$extendedRuns = @($runs | Where-Object HasExtendedProvenance)
+$abFactors = @($extendedRuns.AbFactor | Sort-Object -Unique)
+$rootAbFactor = if ($abFactors.Count -eq 0) {
+    $null
+} else {
+    $abFactors[0]
+}
+$rootConfigHashes = @($extendedRuns.ConfigSha256 | Sort-Object -Unique)
+$rootConfigHashesByVariant = [ordered]@{
+    A = @($extendedRuns | Where-Object Variant -eq "A" |
+        ForEach-Object ConfigSha256 | Sort-Object -Unique)
+    B = @($extendedRuns | Where-Object Variant -eq "B" |
+        ForEach-Object ConfigSha256 | Sort-Object -Unique)
+}
+$rootJvmArgumentsHashesByVariant = [ordered]@{
+    A = @($extendedRuns | Where-Object Variant -eq "A" |
+        ForEach-Object JvmArgumentsSha256 | Sort-Object -Unique)
+    B = @($extendedRuns | Where-Object Variant -eq "B" |
+        ForEach-Object JvmArgumentsSha256 | Sort-Object -Unique)
+}
+$rootNormalizedJvmHashes = @($extendedRuns.JvmArgumentsNormalizedSha256 | Sort-Object -Unique)
+$rootNormalizedJvmHash = if ($rootNormalizedJvmHashes.Count -eq 1) {
+    $rootNormalizedJvmHashes[0]
+} else {
+    $null
+}
+$rootCacheTreatment = [ordered]@{
+    provenancePresent = $extendedRuns.Count -gt 0
+    propertyName = "interactionvisualizer.disableLegacyTextComponentCache"
+    treatmentScope = @("sharedComponentCache", "perEntitySameRawFastPath")
+    byVariant = [ordered]@{
+        A = [ordered]@{
+            disableProperty = @($extendedRuns | Where-Object Variant -eq "A" |
+                ForEach-Object LegacyTextComponentCacheDisableProperty | Sort-Object -Unique)
+            enabled = @($extendedRuns | Where-Object Variant -eq "A" |
+                ForEach-Object LegacyTextComponentCacheEnabled | Sort-Object -Unique)
+        }
+        B = [ordered]@{
+            disableProperty = @($extendedRuns | Where-Object Variant -eq "B" |
+                ForEach-Object LegacyTextComponentCacheDisableProperty | Sort-Object -Unique)
+            enabled = @($extendedRuns | Where-Object Variant -eq "B" |
+                ForEach-Object LegacyTextComponentCacheEnabled | Sort-Object -Unique)
+        }
+    }
+}
+
 Write-JsonResult ([ordered]@{
-    schemaVersion = 1
+    schemaVersion = 2
+    abFactor = $rootAbFactor
+    configSha256 = $rootConfigHashes
+    configSha256ByVariant = $rootConfigHashesByVariant
+    jvmArgumentsSha256ByVariant = $rootJvmArgumentsHashesByVariant
+    jvmArgumentsNormalizedSha256 = $rootNormalizedJvmHash
+    legacyTextComponentCache = $rootCacheTreatment
     analyzer = "analyze-phase2-abba.ps1"
     manifest = [ordered]@{
         path = $manifestPath

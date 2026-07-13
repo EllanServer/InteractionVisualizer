@@ -12,9 +12,8 @@
 
 package com.loohp.interactionvisualizer.entityholders;
 
-import com.loohp.interactionvisualizer.utils.ComponentFont;
+import com.loohp.interactionvisualizer.utils.LegacyTextComponentCache;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
@@ -31,6 +30,8 @@ public class Item extends VisualizerEntity {
     private boolean glowing;
     private int pickupDelay;
     private Component customName;
+    private String customNameRawSource;
+    private boolean customNameRawSourceKnown;
     private boolean customNameVisible;
     private Vector velocity;
 
@@ -46,15 +47,37 @@ public class Item extends VisualizerEntity {
     }
 
     public void setCustomName(String name) {
-        setCustomName(name == null ? null : ComponentFont.parseFont(
-                LegacyComponentSerializer.legacySection().deserialize(name)));
+        updateCustomName(name);
     }
 
     public void setCustomName(Component name) {
+        customNameRawSource = null;
+        customNameRawSourceKnown = false;
+        assignCustomName(name);
+    }
+
+    public boolean updateCustomName(String name) {
+        if (LegacyTextComponentCache.isEnabled() && customNameRawSourceKnown
+                && java.util.Objects.equals(customNameRawSource, name)) {
+            if (name != null) {
+                LegacyTextComponentCache.recordSameRawFastPath();
+            }
+            return false;
+        }
+        Component parsed = name == null ? null : LegacyTextComponentCache.parse(name);
+        boolean changed = assignCustomName(parsed);
+        customNameRawSource = LegacyTextComponentCache.isEnabled() ? name : null;
+        customNameRawSourceKnown = LegacyTextComponentCache.isEnabled();
+        return changed;
+    }
+
+    private boolean assignCustomName(Component name) {
         if (!java.util.Objects.equals(customName, name)) {
             customName = name;
             markDirty();
+            return true;
         }
+        return false;
     }
 
     public boolean isGlowing() {

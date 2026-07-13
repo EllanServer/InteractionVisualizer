@@ -36,7 +36,6 @@ import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -219,17 +218,17 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
                         if (brewingstand.getFuelLevel() == 0) {
                             DisplayEntity stand = (DisplayEntity) entry.getValue().get("Stand");
                             if (hasPotion(brewingstand)) {
-                                stand.setCustomNameVisible(true);
                                 String name = noFuelColor;
                                 for (int i = 0; i < progressBarLength; i++) {
                                     name += progressBarCharacter;
                                 }
-                                stand.setCustomName(name);
-                                DisplayManager.updateDisplay(stand);
+                                if (stand.updateCustomName(name, true)) {
+                                    DisplayManager.updateDisplay(stand);
+                                }
                             } else {
-                                stand.setCustomNameVisible(false);
-                                stand.setCustomName("");
-                                DisplayManager.updateDisplay(stand);
+                                if (stand.updateCustomName("", false)) {
+                                    DisplayManager.updateDisplay(stand);
+                                }
                             }
                         } else {
                             DisplayEntity stand = (DisplayEntity) entry.getValue().get("Stand");
@@ -252,15 +251,11 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
                                 for (i = progressBarLength - 1; i >= percentagescaled; i--) {
                                     symbol += emptyColor + progressBarCharacter;
                                 }
-                                if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals(symbol) || !stand.isCustomNameVisible()) {
-                                    stand.setCustomNameVisible(true);
-                                    stand.setCustomName(symbol);
+                                if (stand.updateCustomName(symbol, true)) {
                                     DisplayManager.updateDisplay(stand);
                                 }
                             } else {
-                                if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals("") || stand.isCustomNameVisible()) {
-                                    stand.setCustomNameVisible(false);
-                                    stand.setCustomName("");
+                                if (stand.updateCustomName("", false)) {
                                     DisplayManager.updateDisplay(stand);
                                 }
                             }

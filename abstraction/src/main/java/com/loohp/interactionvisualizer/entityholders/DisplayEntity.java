@@ -12,9 +12,8 @@
 
 package com.loohp.interactionvisualizer.entityholders;
 
-import com.loohp.interactionvisualizer.utils.ComponentFont;
+import com.loohp.interactionvisualizer.utils.LegacyTextComponentCache;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.entity.Display;
@@ -39,6 +38,8 @@ public class DisplayEntity extends VisualizerEntity {
     private ItemStack helmet;
     private ItemStack mainHand;
     private Component customName;
+    private String customNameRawSource;
+    private boolean customNameRawSourceKnown;
     private boolean customNameVisible;
     private Vector velocity;
     private Display.Billboard billboard;
@@ -67,15 +68,46 @@ public class DisplayEntity extends VisualizerEntity {
     }
 
     public void setCustomName(String customName) {
-        setCustomName(customName == null ? null : ComponentFont.parseFont(
-                LegacyComponentSerializer.legacySection().deserialize(customName)));
+        updateCustomName(customName);
     }
 
     public void setCustomName(Component customName) {
+        customNameRawSource = null;
+        customNameRawSourceKnown = false;
+        assignCustomName(customName);
+    }
+
+    public boolean updateCustomName(String customName) {
+        if (LegacyTextComponentCache.isEnabled() && customNameRawSourceKnown
+                && java.util.Objects.equals(customNameRawSource, customName)) {
+            if (customName != null) {
+                LegacyTextComponentCache.recordSameRawFastPath();
+            }
+            return false;
+        }
+        Component parsed = customName == null ? null : LegacyTextComponentCache.parse(customName);
+        boolean changed = assignCustomName(parsed);
+        customNameRawSource = LegacyTextComponentCache.isEnabled() ? customName : null;
+        customNameRawSourceKnown = LegacyTextComponentCache.isEnabled();
+        return changed;
+    }
+
+    public boolean updateCustomName(String customName, boolean visible) {
+        boolean changed = updateCustomName(customName);
+        if (customNameVisible != visible) {
+            setCustomNameVisible(visible);
+            return true;
+        }
+        return changed;
+    }
+
+    private boolean assignCustomName(Component customName) {
         if (!java.util.Objects.equals(this.customName, customName)) {
             this.customName = customName;
             markDirty();
+            return true;
         }
+        return false;
     }
 
     public boolean isCustomNameVisible() {

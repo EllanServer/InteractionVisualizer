@@ -14,6 +14,7 @@ val paper26_1Version = "26.1.2.build.74-stable"
 val paper26_2Version = "26.2.build.56-alpha"
 val craftEngineVersion = "26.7.2"
 val sparrowHeartVersion = "0.72"
+val caffeineVersion = "3.2.3"
 
 val paper26_2CompileClasspath = configurations.create("paper26_2CompileClasspath") {
     isCanBeConsumed = false
@@ -37,6 +38,7 @@ dependencies {
 
     implementation("net.momirealms:sparrow-yaml:1.0.7")
     implementation("net.momirealms:sparrow-heart:$sparrowHeartVersion")
+    implementation("com.github.ben-manes.caffeine:caffeine:$caffeineVersion")
 
     testImplementation(platform("org.junit:junit-bom:5.13.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -119,6 +121,22 @@ tasks.withType<Test>().configureEach {
     useJUnitPlatform()
     dependsOn(testClasspathJar)
     classpath = files(testClasspathJar.flatMap { it.archiveFile })
+}
+
+val legacyTextCacheDisableProperty = "interactionvisualizer.disableLegacyTextComponentCache"
+
+tasks.named<Test>("test") {
+    systemProperty(legacyTextCacheDisableProperty, "false")
+    exclude("**/LegacyTextComponentCacheDisabledTest.class")
+}
+
+val testLegacyTextComponentCacheDisabled = tasks.register<Test>("testLegacyTextComponentCacheDisabled") {
+    description = "Verifies the isolated JVM rollback path for legacy text component caching."
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    include("**/LegacyTextComponentCacheDisabledTest.class")
+    systemProperty(legacyTextCacheDisableProperty, "true")
+    dependsOn(tasks.testClasses)
 }
 
 val compilePaper26_2 = tasks.register<JavaCompile>("compilePaper26_2") {
@@ -214,6 +232,7 @@ tasks.check {
     dependsOn(compilePaper26_2)
     dependsOn(verifyPaperOnlyArchitecture)
     dependsOn(verifyCustomContentIsolation)
+    dependsOn(testLegacyTextComponentCacheDisabled)
 }
 
 tasks.named<ShadowJar>("shadowJar") {
@@ -222,6 +241,9 @@ tasks.named<ShadowJar>("shadowJar") {
 
     relocate("net.momirealms.sparrow.yaml", "com.loohp.interactionvisualizer.libs.sparrow.yaml")
     relocate("net.momirealms.sparrow.heart", "com.loohp.interactionvisualizer.libs.sparrow.heart")
+    relocate("com.github.benmanes.caffeine", "com.loohp.interactionvisualizer.libs.caffeine")
+    relocate("org.jspecify", "com.loohp.interactionvisualizer.libs.jspecify")
+    relocate("com.google.errorprone.annotations", "com.loohp.interactionvisualizer.libs.errorprone.annotations")
 
     isPreserveFileTimestamps = false
     isReproducibleFileOrder = true
@@ -255,6 +277,49 @@ tasks.named<ShadowJar>("shadowJar") {
             }
             check(jar.getEntry("META-INF/licenses/sparrow-heart.txt") != null) {
                 "The Sparrow Heart MIT license notice is missing"
+            }
+            check(jar.getEntry("META-INF/licenses/caffeine.txt") != null) {
+                "The Caffeine Apache-2.0 license notice is missing"
+            }
+            check(jar.getEntry("META-INF/licenses/jspecify.txt") != null) {
+                "The JSpecify Apache-2.0 license notice is missing"
+            }
+            check(jar.getEntry("META-INF/licenses/error-prone-annotations.txt") != null) {
+                "The Error Prone Annotations Apache-2.0 license notice is missing"
+            }
+            check(jar.getEntry(
+                "com/loohp/interactionvisualizer/libs/caffeine/cache/Caffeine.class",
+            ) != null) {
+                "The shaded Caffeine runtime is missing"
+            }
+            val unrelocatedCaffeine = jar.entries().asSequence()
+                .map { it.name }
+                .filter { it.startsWith("com/github/benmanes/caffeine/") }
+                .toList()
+            check(unrelocatedCaffeine.isEmpty()) {
+                "Unrelocated Caffeine classes were bundled:\n" +
+                    unrelocatedCaffeine.joinToString("\n")
+            }
+            val unrelocatedAnnotationDependencies = jar.entries().asSequence()
+                .map { it.name }
+                .filter {
+                    it.startsWith("org/jspecify/") ||
+                        it.startsWith("com/google/errorprone/annotations/")
+                }
+                .toList()
+            check(unrelocatedAnnotationDependencies.isEmpty()) {
+                "Unrelocated Caffeine annotation dependencies were bundled:\n" +
+                    unrelocatedAnnotationDependencies.joinToString("\n")
+            }
+            check(jar.getEntry(
+                "com/loohp/interactionvisualizer/libs/jspecify/annotations/NullMarked.class",
+            ) != null) {
+                "The relocated JSpecify annotations are missing"
+            }
+            check(jar.getEntry(
+                "com/loohp/interactionvisualizer/libs/errorprone/annotations/CanIgnoreReturnValue.class",
+            ) != null) {
+                "The relocated Error Prone annotations are missing"
             }
         }
     }

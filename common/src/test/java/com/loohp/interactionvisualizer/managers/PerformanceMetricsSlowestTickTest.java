@@ -76,7 +76,7 @@ class PerformanceMetricsSlowestTickTest {
     @Test
     void snapshotJsonPublishesSlowestTickAttributionInMilliseconds() {
         PerformanceMetrics.Snapshot snapshot = new PerformanceMetrics.Snapshot(
-                "diagnostic", false, false, false, 128, 32, true, 64,
+                "diagnostic", false, false, false, 128, 32, true, 64, true,
                 1_000_000_000L, 20, 0L,
                 1.0D, 2.0D, 3.0D, 4.0D, 50.25D,
                 4242, 1_783_951_200_123L, 7L, 12_345_678L,
@@ -84,7 +84,7 @@ class PerformanceMetricsSlowestTickTest {
                 0L, 0L, 0L, 0L, 0L,
                 0L, 0L, 0L, 0L, 0L,
                 0L, 0L, 0L, 0L, 0L, 0L,
-                0L, 0L, 7L, 12_345_678L);
+                0L, 0L, 7L, 12_345_678L, 100L, 5L, 200L);
 
         String json = snapshot.json();
 
@@ -93,6 +93,9 @@ class PerformanceMetricsSlowestTickTest {
         assertTrue(json.contains("\"msptMaxEndEpochMillis\":1783951200123"));
         assertTrue(json.contains("\"msptMaxBlockUpdateChecks\":7"));
         assertTrue(json.contains("\"msptMaxBlockUpdateMs\":12.345678"));
+        assertTrue(json.contains("\"legacyTextCacheHits\":95"));
+        assertTrue(json.contains("\"legacyTextCacheHitRate\":0.950000"));
+        assertTrue(json.contains("\"legacyTextSameRawFastPaths\":200"));
     }
 
     private static void assertSlowest(PerformanceMetrics.SlowestTickTracker tracker,

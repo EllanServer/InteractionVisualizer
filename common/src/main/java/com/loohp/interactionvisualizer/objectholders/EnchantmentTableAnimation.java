@@ -28,13 +28,13 @@ import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.utils.ComponentFont;
+import com.loohp.interactionvisualizer.utils.LegacyTextComponentCache;
 import com.loohp.interactionvisualizer.utils.RomanNumberUtils;
 import com.loohp.interactionvisualizer.utils.TranslationUtils;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TranslatableComponent;
 import net.kyori.adventure.text.format.NamedTextColor;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
@@ -186,7 +186,7 @@ public class EnchantmentTableAnimation {
                         .get(EnchantmentTableDisplay.getEnchantmentIdOrKey(ench));
                 Component enchantmentName = customName == null || customName.isBlank()
                         ? ench.description()
-                        : ComponentFont.parseFont(LegacyComponentSerializer.legacySection().deserialize(customName));
+                        : LegacyTextComponentCache.parse(customName);
                 DisplayEntity stand = new DisplayEntity(standloc);
                 if (ench.getMaxLevel() != 1 || level != 1) {
                     enchantmentName = enchantmentName.append(ComponentFont.parseFont(Component.text(" " + RomanNumberUtils.toRoman(entry.getValue()), NamedTextColor.AQUA)));

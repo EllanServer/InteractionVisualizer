@@ -1,0 +1,5 @@
+Error Prone Annotations 2.43.0
+https://github.com/google/error-prone
+
+Licensed under the Apache License, Version 2.0.
+The complete Apache-2.0 terms are included in META-INF/licenses/caffeine.txt.
