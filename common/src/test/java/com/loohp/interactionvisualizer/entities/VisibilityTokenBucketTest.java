@@ -43,4 +43,24 @@ class VisibilityTokenBucketTest {
 
         assertEquals(List.of(1), bucket.drain(4, 0, value -> value != 3));
     }
+
+    @Test
+    void drainsImmediatelyWhenRateLimitingIsDisabled() {
+        VisibilityTokenBucket<Integer> bucket = new VisibilityTokenBucket<>(0);
+        bucket.request(1);
+        bucket.request(2);
+        bucket.request(3);
+        bucket.cancel(2);
+
+        assertEquals(List.of(1, 3), bucket.drainAll(ignored -> true));
+        assertEquals(List.of(), bucket.drainAll(ignored -> true));
+    }
+
+    @Test
+    void largeConfiguredLimitsDoNotOverflowTokenRefill() {
+        VisibilityTokenBucket<Integer> bucket = new VisibilityTokenBucket<>(Integer.MAX_VALUE);
+        bucket.request(1);
+
+        assertEquals(List.of(1), bucket.drain(Integer.MAX_VALUE, Integer.MAX_VALUE, ignored -> true));
+    }
 }

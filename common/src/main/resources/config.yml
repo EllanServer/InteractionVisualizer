@@ -281,11 +281,15 @@ Entities:
       #This is in ticks (20 ticks = 1 second)
       #Setting this too low might impact performance
       UpdateRate: 20
-      #Maximum distance in blocks at which a dropped-item label is kept active
-      #Labels outside every eligible player's range are not spawned server-side
-      ViewDistance: 64
-      #Smooth label visibility bursts when entering areas with many dropped items
+      #Experimental server-side distance culling for dropped-item labels
+      VisibilityCulling:
+        #Preserves the legacy label lifecycle unless explicitly enabled after validation
+        Enabled: false
+        ViewDistance: 64
+      #Experimental smoothing for label visibility bursts
       VisibilityRateLimit:
+        #Independent from Settings.Performance.VisibilityRateLimit and disabled by default
+        Enabled: false
         BucketSize: 128
         RestorePerTick: 32
       #Paper does not expose its internal per-item despawn rate. This value

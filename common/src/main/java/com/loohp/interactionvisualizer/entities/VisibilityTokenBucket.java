@@ -41,7 +41,9 @@ final class VisibilityTokenBucket<T> {
     }
 
     List<T> drain(int capacity, int refill, Predicate<T> stillWanted) {
-        tokens = Math.min(Math.max(1, capacity), tokens + Math.max(0, refill));
+        int safeCapacity = Math.max(1, capacity);
+        long replenished = (long) tokens + Math.max(0, refill);
+        tokens = (int) Math.min(safeCapacity, replenished);
         if (tokens == 0 || pending.isEmpty()) {
             return List.of();
         }
@@ -54,6 +56,21 @@ final class VisibilityTokenBucket<T> {
             }
             ready.add(value);
             tokens--;
+        }
+        return ready;
+    }
+
+    List<T> drainAll(Predicate<T> stillWanted) {
+        if (pending.isEmpty()) {
+            return List.of();
+        }
+
+        List<T> ready = new ArrayList<>(pending.size());
+        while (!pending.isEmpty()) {
+            T value = pending.removeFirst();
+            if (queued.remove(value) && stillWanted.test(value)) {
+                ready.add(value);
+            }
         }
         return ready;
     }

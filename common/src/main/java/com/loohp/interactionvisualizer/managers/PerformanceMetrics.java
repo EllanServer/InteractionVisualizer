@@ -45,6 +45,9 @@ public final class PerformanceMetrics implements Listener {
     private boolean configVisibilityRateLimit;
     private int configVisibilityBucketSize;
     private int configVisibilityRestorePerTick;
+    private DroppedLabelVisibilityConfig droppedLabelVisibilityConfig =
+            new DroppedLabelVisibilityConfig(false, 64, false, 128, 32);
+    private DroppedLabelVisibilityConfig configDroppedLabelVisibility = droppedLabelVisibilityConfig;
     private boolean configEventDrivenBlockUpdates;
     private int configBlockUpdateMaxDirtyPerTick;
     private long startedNanos;
@@ -82,6 +85,15 @@ public final class PerformanceMetrics implements Listener {
         return INSTANCE.collecting;
     }
 
+    public static void droppedLabelVisibilityConfig(boolean cullingEnabled,
+                                                     int viewDistance,
+                                                     boolean rateLimitEnabled,
+                                                     int bucketSize,
+                                                     int restorePerTick) {
+        INSTANCE.droppedLabelVisibilityConfig = new DroppedLabelVisibilityConfig(
+                cullingEnabled, viewDistance, rateLimitEnabled, bucketSize, restorePerTick);
+    }
+
     public static boolean start(String requestedLabel) {
         if (INSTANCE.collecting) {
             return false;
@@ -92,6 +104,7 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.configVisibilityRateLimit = InteractionVisualizer.visibilityRateLimiting;
         INSTANCE.configVisibilityBucketSize = InteractionVisualizer.visibilityRateLimitBucketSize;
         INSTANCE.configVisibilityRestorePerTick = InteractionVisualizer.visibilityRateLimitRestorePerTick;
+        INSTANCE.configDroppedLabelVisibility = INSTANCE.droppedLabelVisibilityConfig;
         INSTANCE.configEventDrivenBlockUpdates = InteractionVisualizer.eventDrivenBlockUpdates;
         INSTANCE.configBlockUpdateMaxDirtyPerTick = InteractionVisualizer.blockUpdateMaxDirtyPerTick;
         INSTANCE.startedNanos = System.nanoTime();
@@ -287,7 +300,8 @@ public final class PerformanceMetrics implements Listener {
         mean = samples == 0 ? 0.0D : mean / samples;
         long elapsedNanos = Math.max(1L, System.nanoTime() - startedNanos);
         return new Snapshot(label, configStaticAnchor, configPacketOnlyStatic, configVisibilityRateLimit,
-                configVisibilityBucketSize, configVisibilityRestorePerTick, configEventDrivenBlockUpdates,
+                configVisibilityBucketSize, configVisibilityRestorePerTick, configDroppedLabelVisibility,
+                configEventDrivenBlockUpdates,
                 configBlockUpdateMaxDirtyPerTick, LegacyTextComponentCache.isEnabled(),
                 elapsedNanos, samples, tickSamplesDropped,
                 percentile(sorted, 0.50D), percentile(sorted, 0.95D), percentile(sorted, 0.99D),
@@ -319,6 +333,14 @@ public final class PerformanceMetrics implements Listener {
         return sanitized.substring(0, Math.min(48, sanitized.length()));
     }
 
+    public record DroppedLabelVisibilityConfig(
+            boolean cullingEnabled,
+            int viewDistance,
+            boolean rateLimitEnabled,
+            int bucketSize,
+            int restorePerTick) {
+    }
+
     public record Snapshot(
             String label,
             boolean staticAnchorDuringAnimation,
@@ -326,6 +348,7 @@ public final class PerformanceMetrics implements Listener {
             boolean visibilityRateLimit,
             int visibilityBucketSize,
             int visibilityRestorePerTick,
+            DroppedLabelVisibilityConfig droppedLabelVisibility,
             boolean eventDrivenBlockUpdates,
             int blockUpdateMaxDirtyPerTick,
             boolean legacyTextComponentCache,
@@ -407,6 +430,10 @@ public final class PerformanceMetrics implements Listener {
                     "{\"label\":\"%s\",\"staticAnchorDuringAnimation\":%b," +
                             "\"packetOnlyStatic\":%b,\"visibilityRateLimit\":%b," +
                             "\"visibilityBucketSize\":%d,\"visibilityRestorePerTick\":%d," +
+                            "\"droppedLabelVisibilityCulling\":%b,\"droppedLabelViewDistance\":%d," +
+                            "\"droppedLabelVisibilityRateLimit\":%b," +
+                            "\"droppedLabelVisibilityBucketSize\":%d," +
+                            "\"droppedLabelVisibilityRestorePerTick\":%d," +
                             "\"eventDrivenBlockUpdates\":%b,\"blockUpdateMaxDirtyPerTick\":%d," +
                             "\"legacyTextComponentCache\":%b," +
                             "\"seconds\":%.3f,\"tickSamples\":%d,\"observedTps\":%.6f," +
@@ -430,7 +457,10 @@ public final class PerformanceMetrics implements Listener {
                             "\"legacyTextCacheHits\":%d,\"legacyTextCacheHitRate\":%.6f," +
                             "\"legacyTextSameRawFastPaths\":%d}",
                     label, staticAnchorDuringAnimation, packetOnlyStatic, visibilityRateLimit,
-                    visibilityBucketSize, visibilityRestorePerTick, eventDrivenBlockUpdates,
+                    visibilityBucketSize, visibilityRestorePerTick,
+                    droppedLabelVisibility.cullingEnabled(), droppedLabelVisibility.viewDistance(),
+                    droppedLabelVisibility.rateLimitEnabled(), droppedLabelVisibility.bucketSize(),
+                    droppedLabelVisibility.restorePerTick(), eventDrivenBlockUpdates,
                     blockUpdateMaxDirtyPerTick, legacyTextComponentCache,
                     seconds(), tickSamples, observedTps(), droppedTickSamples,
                     msptP50, msptP95, msptP99,
