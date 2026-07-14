@@ -69,6 +69,18 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class TileEntityManager implements Listener {
 
+    enum LifecycleChange {
+        REMOVED,
+        ADDED,
+        ACTIVATED
+    }
+
+    @FunctionalInterface
+    interface LifecycleDispatcher<T> {
+
+        void dispatch(T value, LifecycleChange change, TileEntityType type);
+    }
+
     private static final Plugin plugin = InteractionVisualizer.plugin;
     private static final TileEntityType[] tileEntityTypes = TileEntityType.values();
     private static final Map<TileEntityType, Set<Block>> active = new EnumMap<>(TileEntityType.class);
@@ -185,16 +197,6 @@ public class TileEntityManager implements Listener {
             Block block = state.getBlock();
             TileEntityType type = TileEntity.getTileEntityType(state.getType());
             if (type != null) {
-                if (activate && active.get(type).add(block)) {
-                    if (InteractionVisualizer.eventDrivenBlockUpdates) {
-                        TileEntityType lastActiveType = lastActiveTypes.put(block, type);
-                        if (type.equals(lastActiveType)) {
-                            callActivatedEvent(block, type);
-                        } else {
-                            callAddedEvent(block, type);
-                        }
-                    }
-                }
                 newBlocks.put(block, type);
                 blocks.add(block);
             }
@@ -205,23 +207,50 @@ public class TileEntityManager implements Listener {
             TileEntityType type = newBlocks.get(block);
             if (type == null) {
                 itr.remove();
-                if (InteractionVisualizer.eventDrivenBlockUpdates) {
-                    lastActiveTypes.remove(block);
-                }
-                for (TileEntityType t : tileEntityTypes) {
-                    if (active.get(t).remove(block)) {
-                        Bukkit.getPluginManager().callEvent(new TileEntityRemovedEvent(block, t));
-                    }
-                }
-            } else {
-                for (TileEntityType t : tileEntityTypes) {
-                    if (!t.equals(type)) {
-                        if (active.get(t).remove(block)) {
-                            Bukkit.getPluginManager().callEvent(new TileEntityRemovedEvent(block, t));
-                        }
-                    }
-                }
             }
+            reconcileActiveType(block, type, activate, InteractionVisualizer.eventDrivenBlockUpdates,
+                    active, lastActiveTypes, TileEntityManager::dispatchLifecycleChange);
+        }
+    }
+
+    static <T> void reconcileActiveType(T value, TileEntityType currentType, boolean activate,
+                                        boolean trackLifecycleEvents,
+                                        Map<TileEntityType, Set<T>> activeByType,
+                                        Map<T, TileEntityType> lastActiveByValue,
+                                        LifecycleDispatcher<T> dispatcher) {
+        if (currentType == null && trackLifecycleEvents) {
+            // Preserve the legacy removal contract for re-entrant listeners:
+            // a removed tile is no longer considered last-active when notified.
+            lastActiveByValue.remove(value);
+        }
+        for (TileEntityType type : tileEntityTypes) {
+            if (type.equals(currentType)) {
+                continue;
+            }
+            Set<T> values = activeByType.get(type);
+            if (values != null && values.remove(value)) {
+                dispatcher.dispatch(value, LifecycleChange.REMOVED, type);
+            }
+        }
+
+        if (currentType == null) {
+            return;
+        }
+
+        Set<T> currentValues = activeByType.get(currentType);
+        if (!activate || currentValues == null || !currentValues.add(value) || !trackLifecycleEvents) {
+            return;
+        }
+        TileEntityType lastActiveType = lastActiveByValue.put(value, currentType);
+        dispatcher.dispatch(value, currentType.equals(lastActiveType)
+                ? LifecycleChange.ACTIVATED : LifecycleChange.ADDED, currentType);
+    }
+
+    private static void dispatchLifecycleChange(Block block, LifecycleChange change, TileEntityType type) {
+        switch (change) {
+            case REMOVED -> Bukkit.getPluginManager().callEvent(new TileEntityRemovedEvent(block, type));
+            case ADDED -> callAddedEvent(block, type);
+            case ACTIVATED -> callActivatedEvent(block, type);
         }
     }
 

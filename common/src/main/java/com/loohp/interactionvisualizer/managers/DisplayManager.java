@@ -56,6 +56,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -489,11 +490,11 @@ public final class DisplayManager implements Listener {
         boolean packetOnly = qualifiesForPacketOnlyStatic(logical);
         boolean wasPacketOnly = packetOnlyItems.contains(logical);
         org.bukkit.entity.Entity current = logical.getBukkitEntity().orElse(null);
+        Location logicalLocation = logical.getLocation();
 
         if (packetOnly) {
             PerformanceMetrics.packetOnlyItemSync();
             ItemStack itemStack = logical.getItemStack();
-            Location location = logical.getLocation();
 
             if (current != null) {
                 discardActual(logical, current);
@@ -508,9 +509,10 @@ public final class DisplayManager implements Listener {
             // Visualizer Item getters already return defensive copies. Retain those
             // snapshots directly instead of cloning them a second time on every sync.
             ItemStack previousItemStack = renderedItemStacks.put(logical, itemStack);
-            Location previousLocation = renderedItemLocations.put(logical, location);
+            Location previousLocation = renderedItemLocations.put(logical, logicalLocation);
             boolean itemChanged = previousItemStack == null || !previousItemStack.equals(itemStack);
-            boolean locationChanged = previousLocation == null || !previousLocation.equals(location);
+            boolean locationChanged = previousLocation == null || !previousLocation.equals(logicalLocation);
+            index(logical, logicalLocation);
             if (wasPacketOnly && (itemChanged || locationChanged)) {
                 respawnVirtualItems(logical);
             }
@@ -526,7 +528,7 @@ public final class DisplayManager implements Listener {
             untrackActual(logical);
         }
 
-        if (current != null && (!current.getWorld().equals(logical.getWorld())
+        if (current != null && (!current.getWorld().equals(logicalLocation.getWorld())
                 || !(current instanceof ItemDisplay))) {
             discardActual(logical, current);
             current = null;
@@ -537,7 +539,7 @@ public final class DisplayManager implements Listener {
             actual = display;
         } else {
             clearViewerTracking(logical);
-            actual = logical.getWorld().spawn(logical.getLocation(), ItemDisplay.class,
+            actual = logicalLocation.getWorld().spawn(logicalLocation, ItemDisplay.class,
                     DisplayManager::initializeDisplay);
             PerformanceMetrics.bukkitEntitySpawn();
             logical.bind(actual);
@@ -560,25 +562,40 @@ public final class DisplayManager implements Listener {
         actual.setInterpolationDelay(0);
         actual.setInterpolationDuration(0);
         actual.setTeleportDuration(0);
-        boolean anchorMoved = applyItemBase(actual, logical);
 
         Vector velocity = logical.getVelocity();
-        boolean animated = requiresItemAnimation(logical.hasGravity(), velocity);
+        boolean gravity = logical.hasGravity();
+        boolean animated = requiresItemAnimation(gravity, velocity);
         ItemAnimationState previousAnimation = itemAnimations.get(logical);
+        Location previousPosition = previousAnimation == null ? null : previousAnimation.position;
+        Location previousLogicalLocation = previousAnimation == null ? null : previousAnimation.logicalLocation;
+        boolean applyLogicalLocation = shouldApplyItemLogicalLocation(
+                animated, previousPosition, previousLogicalLocation, logicalLocation);
+        boolean anchorMoved = applyItemBase(actual, logical, logicalLocation, applyLogicalLocation);
+
+        ItemAnimationState nextAnimation = null;
         if (animated) {
-            Location position = previousAnimation == null ? actual.getLocation() : previousAnimation.position.clone();
-            itemAnimations.put(logical, new ItemAnimationState(velocity, logical.hasGravity(), position,
+            Location position = itemAnimationStartPosition(
+                    actual.getLocation(), previousPosition, previousLogicalLocation, logicalLocation);
+            nextAnimation = new ItemAnimationState(velocity, gravity, position,
                     useStaticAnchorForAnimation(InteractionVisualizer.staticVirtualItemAnchorsDuringAnimation,
-                            logical.isCustomNameVisible())));
+                            logical.isCustomNameVisible()), logicalLocation);
+            itemAnimations.put(logical, nextAnimation);
             scheduleItemAnimationTick();
         } else {
             itemAnimations.remove(logical);
         }
 
+        Location anchorLocation = actual.getLocation();
+        Location visualLocation = itemAnimationIndexLocation(
+                nextAnimation != null && nextAnimation.staticAnchor,
+                anchorLocation, nextAnimation == null ? null : nextAnimation.position);
+        index(logical, visualLocation);
+
         if (itemChanged) {
             respawnVirtualItems(logical);
         } else if (requiresVirtualItemMotionSync(anchorMoved, previousAnimation != null, animated)) {
-            synchronizeVirtualItemMotion(logical, actual.getLocation());
+            synchronizeVirtualItemMotion(logical, visualLocation);
         }
     }
 
@@ -586,13 +603,13 @@ public final class DisplayManager implements Listener {
         return anchorMoved || wasAnimated || animated;
     }
 
-    private static boolean applyItemBase(org.bukkit.entity.Entity actual, Item logical) {
+    private static boolean applyItemBase(org.bukkit.entity.Entity actual, Item logical,
+                                         Location target, boolean applyLocation) {
         actual.setGlowing(logical.isGlowing());
         actual.customName(logical.getCustomName());
         actual.setCustomNameVisible(logical.isCustomNameVisible());
-        Location target = logical.getLocation();
-        boolean moved = !actual.getWorld().equals(target.getWorld())
-                || actual.getLocation().distanceSquared(target) > 1.0E-8;
+        boolean moved = applyLocation && (!actual.getWorld().equals(target.getWorld())
+                || actual.getLocation().distanceSquared(target) > 1.0E-8);
         if (moved) {
             PerformanceMetrics.bukkitEntityTeleport();
             actual.teleport(target);
@@ -674,6 +691,43 @@ public final class DisplayManager implements Listener {
 
     static boolean requiresItemAnimation(boolean gravity, Vector velocity) {
         return gravity || velocity.lengthSquared() > ITEM_ANIMATION_EPSILON;
+    }
+
+    static boolean itemAnimationLogicalLocationChanged(Location previousLogicalLocation,
+                                                       Location logicalLocation) {
+        if (previousLogicalLocation == null || logicalLocation == null) {
+            return true;
+        }
+        return !Objects.equals(previousLogicalLocation.getWorld(), logicalLocation.getWorld())
+                || previousLogicalLocation.getX() != logicalLocation.getX()
+                || previousLogicalLocation.getY() != logicalLocation.getY()
+                || previousLogicalLocation.getZ() != logicalLocation.getZ();
+    }
+
+    static boolean shouldApplyItemLogicalLocation(boolean animated,
+                                                  Location previousAnimationPosition,
+                                                  Location previousLogicalLocation,
+                                                  Location logicalLocation) {
+        return previousAnimationPosition == null || !animated
+                || itemAnimationLogicalLocationChanged(previousLogicalLocation, logicalLocation);
+    }
+
+    static Location itemAnimationStartPosition(Location actualLocation,
+                                               Location previousAnimationPosition,
+                                               Location previousLogicalLocation,
+                                               Location logicalLocation) {
+        Objects.requireNonNull(actualLocation, "actualLocation");
+        if (previousAnimationPosition == null
+                || itemAnimationLogicalLocationChanged(previousLogicalLocation, logicalLocation)) {
+            return actualLocation.clone();
+        }
+        return previousAnimationPosition.clone();
+    }
+
+    static Location itemAnimationIndexLocation(boolean staticAnchor, Location anchorLocation,
+                                               Location animationPosition) {
+        Objects.requireNonNull(anchorLocation, "anchorLocation");
+        return (staticAnchor || animationPosition == null ? anchorLocation : animationPosition).clone();
     }
 
     static boolean useStaticAnchorForAnimation(boolean configured, boolean customNameVisible) {
@@ -760,6 +814,11 @@ public final class DisplayManager implements Listener {
                 return;
             }
         }
+        boolean chunkChanged = index(logical, itemAnimationIndexLocation(
+                animation.staticAnchor, actual.getLocation(), animation.position));
+        if (chunkChanged) {
+            reconcileViewers(logical);
+        }
         if (animation.gravity) {
             // Heart's fake item is no-gravity. Absolute correction preserves the
             // vanilla gravity trajectory; no-gravity motion remains client-run.
@@ -772,6 +831,9 @@ public final class DisplayManager implements Listener {
                 if (!actual.teleport(destination)) {
                     remove(null, logical, true);
                     return;
+                }
+                if (index(logical, actual.getLocation())) {
+                    reconcileViewers(logical);
                 }
             }
             synchronizeVirtualItemMotion(logical, destination);
@@ -799,6 +861,7 @@ public final class DisplayManager implements Listener {
         org.bukkit.entity.Entity anchor = logical.getBukkitEntity().orElse(null);
         Set<UUID> shown = shownViewers.get(logical);
         boolean packetOnly = packetOnlyItems.contains(logical);
+        ItemAnimationState animation = itemAnimations.get(logical);
         Location source;
         if (!active.containsKey(logical) || shown == null || !shown.contains(player.getUniqueId())
                 || !player.isOnline()) {
@@ -814,7 +877,7 @@ public final class DisplayManager implements Listener {
             if (!(anchor instanceof ItemDisplay) || !player.getWorld().equals(anchor.getWorld())) {
                 return false;
             }
-            source = anchor.getLocation();
+            source = animation == null ? anchor.getLocation() : animation.position.clone();
         }
 
         Map<UUID, Integer> ids = virtualItemIds.computeIfAbsent(logical, ignored -> new ConcurrentHashMap<>());
@@ -829,7 +892,6 @@ public final class DisplayManager implements Listener {
                     player, logical.getItemStack(), source);
             PerformanceMetrics.virtualSpawnBundle();
             ids.put(viewer, spawnedId);
-            ItemAnimationState animation = itemAnimations.get(logical);
             if (animation != null) {
                 Vector motion = itemMovementForTick(animation.gravity, animation.velocity);
                 if (motion.lengthSquared() > ITEM_ANIMATION_EPSILON) {
@@ -1054,19 +1116,34 @@ public final class DisplayManager implements Listener {
     }
 
     private static void index(VisualizerEntity logical) {
-        Location location = logical.getLocation();
+        if (logical instanceof Item item) {
+            ItemAnimationState animation = itemAnimations.get(item);
+            if (animation != null) {
+                Location anchorLocation = logical.getBukkitEntity()
+                        .map(org.bukkit.entity.Entity::getLocation)
+                        .orElseGet(logical::getLocation);
+                index(logical, itemAnimationIndexLocation(
+                        animation.staticAnchor, anchorLocation, animation.position));
+                return;
+            }
+        }
+        index(logical, logical.getLocation());
+    }
+
+    static boolean index(VisualizerEntity logical, Location location) {
         UUID world = location.getWorld().getUID();
         int chunkX = location.getBlockX() >> 4;
         int chunkZ = location.getBlockZ() >> 4;
         ChunkKey previous = chunkByLogical.get(logical);
         if (previous != null && previous.world().equals(world)
                 && previous.x() == chunkX && previous.z() == chunkZ) {
-            return;
+            return false;
         }
         ChunkKey current = new ChunkKey(
                 world, chunkX, chunkZ);
         previous = chunkByLogical.put(logical, current);
-        if (previous != null && !previous.equals(current)) {
+        boolean migrated = previous != null && !previous.equals(current);
+        if (migrated) {
             Set<VisualizerEntity> previousEntries = logicalsByChunk.get(previous);
             if (previousEntries != null) {
                 previousEntries.remove(logical);
@@ -1076,9 +1153,10 @@ public final class DisplayManager implements Listener {
             }
         }
         logicalsByChunk.computeIfAbsent(current, ignored -> ConcurrentHashMap.newKeySet()).add(logical);
+        return migrated;
     }
 
-    private static void unindex(VisualizerEntity logical) {
+    static void unindex(VisualizerEntity logical) {
         ChunkKey key = chunkByLogical.remove(logical);
         if (key == null) {
             return;
@@ -1748,12 +1826,15 @@ public final class DisplayManager implements Listener {
         private final boolean gravity;
         private Location position;
         private final boolean staticAnchor;
+        private final Location logicalLocation;
 
-        private ItemAnimationState(Vector velocity, boolean gravity, Location position, boolean staticAnchor) {
+        private ItemAnimationState(Vector velocity, boolean gravity, Location position,
+                                   boolean staticAnchor, Location logicalLocation) {
             this.velocity = velocity.clone();
             this.gravity = gravity;
             this.position = position.clone();
             this.staticAnchor = staticAnchor;
+            this.logicalLocation = logicalLocation.clone();
         }
     }
 

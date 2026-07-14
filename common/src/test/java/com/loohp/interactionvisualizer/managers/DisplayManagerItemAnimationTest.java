@@ -12,11 +12,14 @@
 package com.loohp.interactionvisualizer.managers;
 
 import com.loohp.interactionvisualizer.entityholders.Item;
+import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.util.Vector;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -86,6 +89,68 @@ class DisplayManagerItemAnimationTest {
     }
 
     @Test
+    void sameWorldLogicalTeleportResetsAnExistingAnimationPath() {
+        Location originalLogical = new Location(null, 1.0, 64.0, 1.0);
+        Location previousAnimation = new Location(null, 4.0, 65.0, 4.0);
+        Location teleportedLogical = new Location(null, 20.0, 70.0, 20.0);
+        Location actualAtTeleport = teleportedLogical.clone();
+
+        assertFalse(DisplayManager.shouldApplyItemLogicalLocation(
+                true, previousAnimation, originalLogical, originalLogical.clone()));
+        assertEquals(previousAnimation, DisplayManager.itemAnimationStartPosition(
+                actualAtTeleport, previousAnimation, originalLogical, originalLogical.clone()));
+
+        assertTrue(DisplayManager.shouldApplyItemLogicalLocation(
+                true, previousAnimation, originalLogical, teleportedLogical));
+        assertEquals(actualAtTeleport, DisplayManager.itemAnimationStartPosition(
+                actualAtTeleport, previousAnimation, originalLogical, teleportedLogical));
+    }
+
+    @Test
+    void endingAnAnimationRestoresTheLogicalLocation() {
+        Location logical = new Location(null, 1.0, 64.0, 1.0);
+        Location previousAnimation = new Location(null, 4.0, 65.0, 4.0);
+
+        assertTrue(DisplayManager.shouldApplyItemLogicalLocation(
+                false, previousAnimation, logical, logical.clone()));
+    }
+
+    @Test
+    void animatedChunkIndexFollowsTheMovingEntityUnlessTheAnchorIsStatic() {
+        Location anchor = new Location(null, 15.9, 64.0, 0.0);
+        Location acrossChunkBoundary = new Location(null, 16.1, 64.0, 0.0);
+
+        assertEquals(acrossChunkBoundary, DisplayManager.itemAnimationIndexLocation(
+                false, anchor, acrossChunkBoundary));
+        assertEquals(anchor, DisplayManager.itemAnimationIndexLocation(
+                true, anchor, acrossChunkBoundary));
+    }
+
+    @Test
+    void chunkIndexReportsOnlyExistingEntryCrossings()
+            throws ReflectiveOperationException {
+        UUID worldId = UUID.randomUUID();
+        World world = (World) Proxy.newProxyInstance(
+                World.class.getClassLoader(), new Class<?>[]{World.class},
+                (proxy, method, arguments) -> switch (method.getName()) {
+                    case "getUID" -> worldId;
+                    case "equals" -> proxy == arguments[0];
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "toString" -> "animation-index-test-world";
+                    default -> throw new UnsupportedOperationException(method.getName());
+                });
+        Item logical = newUninitializedItem();
+
+        try {
+            assertFalse(DisplayManager.index(logical, new Location(world, 1.0, 64.0, 1.0)));
+            assertFalse(DisplayManager.index(logical, new Location(world, 15.9, 64.0, 1.0)));
+            assertTrue(DisplayManager.index(logical, new Location(world, 16.1, 64.0, 1.0)));
+        } finally {
+            DisplayManager.unindex(logical);
+        }
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void claimingPickupIdsRemovesOnlyLocalBookkeeping() throws ReflectiveOperationException {
         Field idsField = DisplayManager.class.getDeclaredField("virtualItemIds");
@@ -94,11 +159,7 @@ class DisplayManagerItemAnimationTest {
         Method forget = DisplayManager.class.getDeclaredMethod("forgetVirtualItem", Item.class, UUID.class);
         forget.setAccessible(true);
 
-        Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
-        Field unsafeField = unsafeClass.getDeclaredField("theUnsafe");
-        unsafeField.setAccessible(true);
-        Item logical = (Item) unsafeClass.getMethod("allocateInstance", Class.class)
-                .invoke(unsafeField.get(null), Item.class);
+        Item logical = newUninitializedItem();
         UUID firstViewer = UUID.randomUUID();
         UUID secondViewer = UUID.randomUUID();
         Map<UUID, Integer> viewerIds = new ConcurrentHashMap<>();
@@ -115,5 +176,13 @@ class DisplayManagerItemAnimationTest {
         } finally {
             allIds.remove(logical);
         }
+    }
+
+    private static Item newUninitializedItem() throws ReflectiveOperationException {
+        Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
+        Field unsafeField = unsafeClass.getDeclaredField("theUnsafe");
+        unsafeField.setAccessible(true);
+        return (Item) unsafeClass.getMethod("allocateInstance", Class.class)
+                .invoke(unsafeField.get(null), Item.class);
     }
 }
