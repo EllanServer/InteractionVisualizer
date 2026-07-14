@@ -14,9 +14,11 @@ package com.loohp.interactionvisualizer.utils;
 
 import com.loohp.interactionvisualizer.entityholders.BillboardDisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
+import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.entityholders.ItemFrame;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.joml.Matrix4f;
+import org.bukkit.entity.ItemDisplay;
 
 /** Centralized transforms replacing armor-stand arm/head pose encoding. */
 public final class DisplayTransformFactory {
@@ -25,7 +27,38 @@ public final class DisplayTransformFactory {
     }
 
     public static Matrix4f item(DisplayEntity state) {
-        String mode = mode(state);
+        return item(mode(state), state.isSmall());
+    }
+
+    public static Matrix4f item(Item state) {
+        return item(state.getRenderMode(), state.getFrameRotation());
+    }
+
+    static Matrix4f item(Item.RenderMode mode) {
+        return item(mode, 0);
+    }
+
+    private static Matrix4f item(Item.RenderMode mode, int frameRotation) {
+        if (mode == Item.RenderMode.BANNER) {
+            return new Matrix4f().identity().translate(0.0F, 0.5F, 0.0F).scale(0.8F);
+        }
+        if (mode == Item.RenderMode.FRAME) {
+            return new Matrix4f().identity()
+                    .rotateZ((float) Math.toRadians(frameRotation * 45.0))
+                    .scale(0.5F);
+        }
+        String transformMode = switch (mode) {
+            case BLOCK -> "block";
+            case LOW_BLOCK -> "lowblock";
+            case TOOL -> "tool";
+            case STANDING -> "standing";
+            case BANNER, FRAME -> throw new IllegalStateException("handled above");
+            case ITEM, DROPPED -> "item";
+        };
+        return item(transformMode, true);
+    }
+
+    static Matrix4f item(String mode, boolean small) {
         Matrix4f matrix = new Matrix4f().identity();
 
         switch (mode) {
@@ -33,10 +66,21 @@ public final class DisplayTransformFactory {
             case "lowblock" -> matrix.translate(0.0F, 0.02F, 0.0F).rotateX((float) Math.toRadians(90)).scale(0.36F);
             case "tool" -> matrix.rotateZ((float) Math.toRadians(-90)).scale(0.48F);
             case "standing" -> matrix.translate(0.0F, 0.18F, 0.0F).scale(0.5F);
-            default -> matrix.scale(state.isSmall() ? 0.42F : 0.5F);
+            default -> matrix.scale(small ? 0.42F : 0.5F);
         }
         return matrix;
     }
+
+    public static ItemDisplay.ItemDisplayTransform itemDisplayTransform(Item state) {
+        return itemDisplayTransform(state.getRenderMode());
+    }
+
+    static ItemDisplay.ItemDisplayTransform itemDisplayTransform(Item.RenderMode mode) {
+        return mode == Item.RenderMode.BANNER
+                ? ItemDisplay.ItemDisplayTransform.GUI
+                : ItemDisplay.ItemDisplayTransform.FIXED;
+    }
+
 
     public static Matrix4f text(DisplayEntity state) {
         Matrix4f matrix = new Matrix4f().identity();

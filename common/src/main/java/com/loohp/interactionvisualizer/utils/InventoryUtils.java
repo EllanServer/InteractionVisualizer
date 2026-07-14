@@ -27,6 +27,10 @@ import org.bukkit.inventory.PlayerInventory;
 
 public class InventoryUtils {
 
+    public static ItemStack cloneItem(ItemStack item) {
+        return item == null ? null : item.clone();
+    }
+
     public static boolean compareContents(Inventory first, Inventory second) {
         int size = Math.max(first.getSize(), second.getSize());
         for (int i = 0; i < size; i++) {

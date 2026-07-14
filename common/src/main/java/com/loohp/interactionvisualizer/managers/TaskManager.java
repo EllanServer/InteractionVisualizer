@@ -71,6 +71,7 @@ import org.bukkit.plugin.Plugin;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class TaskManager {
@@ -114,9 +115,15 @@ public class TaskManager {
 
     public static Map<InventoryType, List<VisualizerInteractDisplay>> processes = new ConcurrentHashMap<>();
     public static List<VisualizerRunnableDisplay> runnables = new ArrayList<>();
+    static final long INVENTORY_OPEN_PROCESS_DELAY_TICKS = 1L;
+    static final long INVENTORY_PROCESS_DELAY_TICKS = 2L;
+    private static final Map<UUID, Object> pendingInventoryOpenProcesses = new ConcurrentHashMap<>();
+    private static final Map<UUID, Object> pendingInventoryRefreshes = new ConcurrentHashMap<>();
 
     @SuppressWarnings("deprecation")
     public static void setup() {
+        pendingInventoryOpenProcesses.clear();
+        pendingInventoryRefreshes.clear();
         anvil = false;
         banner = false;
         barrel = false;
@@ -443,19 +450,115 @@ public class TaskManager {
     }
 
     public static void processOpenInventory(Player player) {
-        Scheduler.runTaskLater(plugin, () -> {
-            if (!player.isOnline()) {
-                return;
-            }
-            Inventory inventory = player.getOpenInventory().getTopInventory();
-            InventoryType type = inventory.getType();
-            if (type == InventoryType.CRAFTING || type == InventoryType.CREATIVE) {
-                return;
-            }
-            for (VisualizerInteractDisplay display : processes.getOrDefault(type, List.of())) {
+        if (!player.isOnline()) {
+            return;
+        }
+        UUID playerId = player.getUniqueId();
+        if (!markInventoryOpenProcessQueued(playerId)) {
+            return;
+        }
+        Object request = pendingInventoryOpenProcesses.get(playerId);
+        try {
+            Scheduler.runTaskLater(plugin, () -> {
+                if (pendingInventoryOpenProcesses.remove(playerId, request)) {
+                    processCurrentInventory(player, true);
+                }
+            }, INVENTORY_OPEN_PROCESS_DELAY_TICKS, player);
+        } catch (RuntimeException exception) {
+            pendingInventoryOpenProcesses.remove(playerId, request);
+            throw exception;
+        }
+    }
+
+    public static void refreshOpenInventory(Player player) {
+        if (!player.isOnline()) {
+            return;
+        }
+        UUID playerId = player.getUniqueId();
+        if (!markInventoryRefreshQueued(playerId)) {
+            return;
+        }
+        Object request = pendingInventoryRefreshes.get(playerId);
+        try {
+            Scheduler.runTaskLater(plugin, () -> {
+                if (pendingInventoryRefreshes.remove(playerId, request)) {
+                    processCurrentInventory(player, false);
+                }
+            }, INVENTORY_PROCESS_DELAY_TICKS, player);
+        } catch (RuntimeException exception) {
+            pendingInventoryRefreshes.remove(playerId, request);
+            throw exception;
+        }
+    }
+
+    static boolean markInventoryOpenProcessQueued(UUID playerId) {
+        // The one-tick open callback observes the same or newer state and also
+        // includes every native display, so an older two-tick refresh is redundant.
+        pendingInventoryRefreshes.remove(playerId);
+        return pendingInventoryOpenProcesses.putIfAbsent(playerId, new Object()) == null;
+    }
+
+    static boolean markInventoryRefreshQueued(UUID playerId) {
+        if (pendingInventoryOpenProcesses.containsKey(playerId)) {
+            return false;
+        }
+        return pendingInventoryRefreshes.putIfAbsent(playerId, new Object()) == null;
+    }
+
+    public static void clearPendingInventoryProcess(UUID playerId) {
+        pendingInventoryOpenProcesses.remove(playerId);
+        pendingInventoryRefreshes.remove(playerId);
+    }
+
+    static void processCurrentInventory(Player player) {
+        processCurrentInventory(player, true);
+    }
+
+    static void processCurrentInventory(Player player, boolean includeCustomDisplays) {
+        if (!player.isOnline()) {
+            return;
+        }
+        Inventory inventory = player.getOpenInventory().getTopInventory();
+        processInventoryDisplays(player, inventory.getType(), includeCustomDisplays);
+    }
+
+    static void processInventoryDisplays(Player player, InventoryType type) {
+        processInventoryDisplays(player, type, true);
+    }
+
+    static void processInventoryDisplays(Player player, InventoryType type, boolean includeCustomDisplays) {
+        if (!hasInventoryDisplays(type)) {
+            return;
+        }
+        for (VisualizerInteractDisplay display : processes.getOrDefault(type, List.of())) {
+            if (includeCustomDisplays || isNativeInventoryDisplay(display)) {
                 display.process(player);
             }
-        }, 1, player);
+        }
+    }
+
+    public static boolean hasInventoryDisplays(InventoryType type) {
+        if (type == null || type == InventoryType.CRAFTING || type == InventoryType.CREATIVE) {
+            return false;
+        }
+        List<VisualizerInteractDisplay> displays = processes.get(type);
+        return displays != null && !displays.isEmpty();
+    }
+
+    public static boolean hasNativeInventoryDisplays(InventoryType type) {
+        if (type == null || type == InventoryType.CRAFTING || type == InventoryType.CREATIVE) {
+            return false;
+        }
+        for (VisualizerInteractDisplay display : processes.getOrDefault(type, List.of())) {
+            if (isNativeInventoryDisplay(display)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean isNativeInventoryDisplay(VisualizerInteractDisplay display) {
+        return display.key().isNative();
     }
 
     private static SparrowConfiguration getConfig() {

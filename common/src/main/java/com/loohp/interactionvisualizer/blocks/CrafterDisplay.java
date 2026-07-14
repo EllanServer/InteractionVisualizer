@@ -27,6 +27,7 @@ import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
 import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
+import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
@@ -35,7 +36,6 @@ import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.MaterialUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -51,7 +51,6 @@ import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.util.EulerAngle;
 import org.bukkit.util.Vector;
 
 import java.util.HashMap;
@@ -103,9 +102,9 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
                     if (!isActive(block.getLocation())) {
                         Map<String, Object> map = entry.getValue();
                         for (int i = 1; i <= 9; i++) {
-                            if (map.get(String.valueOf(i)) instanceof DisplayEntity) {
-                                DisplayEntity stand = (DisplayEntity) map.get(String.valueOf(i));
-                                DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
+                            if (map.get(String.valueOf(i)) instanceof Item) {
+                                Item stand = (Item) map.get(String.valueOf(i));
+                                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), stand);
                             }
                         }
                         crafterMap.remove(block);
@@ -114,9 +113,9 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
                     if (!block.getType().equals(Material.CRAFTER) || getCardinalDirection(block) < 0F) {
                         Map<String, Object> map = entry.getValue();
                         for (int i = 1; i <= 9; i++) {
-                            if (map.get(String.valueOf(i)) instanceof DisplayEntity) {
-                                DisplayEntity stand = (DisplayEntity) map.get(String.valueOf(i));
-                                DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
+                            if (map.get(String.valueOf(i)) instanceof Item) {
+                                Item stand = (Item) map.get(String.valueOf(i));
+                                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), stand);
                             }
                         }
                         crafterMap.remove(block);
@@ -160,7 +159,10 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
     }
 
     public void handleUpdate(Block block, Map<String, Object> map) {
-        Crafter crafter = (Crafter) block.getState();
+        if (block.getType() != Material.CRAFTER || crafterMap.get(block) != map
+                || !(block.getState() instanceof Crafter crafter)) {
+            return;
+        }
         Inventory inventory = crafter.getInventory();
 
         ItemStack[] items = new ItemStack[] {
@@ -176,30 +178,30 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
         };
 
         for (int i = 0; i < 9; i++) {
-            DisplayEntity stand = (DisplayEntity) map.get(String.valueOf(i + 1));
-            ItemStack item = items[i];
+            Item stand = (Item) map.get(String.valueOf(i + 1));
+            ItemStack itemStack = items[i];
             if (crafter.isSlotDisabled(i)) {
-                item = new ItemStack(Material.BARRIER);
-            } else if (item == null || item.getType().equals(Material.AIR)) {
-                item = null;
+                itemStack = new ItemStack(Material.BARRIER);
+            } else if (itemStack == null || itemStack.getType().equals(Material.AIR)) {
+                itemStack = ItemStack.empty();
             }
-            if (item != null) {
-                MaterialUtils.MaterialMode materialMode = MaterialUtils.getMaterialType(item);
-                boolean changed = materialMode != standMode(stand);
+            if (!itemStack.isEmpty()) {
+                Item.RenderMode renderMode = renderMode(MaterialUtils.getMaterialType(itemStack));
+                boolean changed = renderMode != standMode(stand);
                 if (changed) {
-                    toggleStandMode(stand, materialMode.toString());
+                    toggleStandMode(stand, renderMode);
                 }
-                if (!item.equals(stand.getItemInMainHand())) {
+                if (!itemStack.equals(stand.getItemStack())) {
                     changed = true;
-                    stand.setItemInMainHand(item);
+                    stand.setItemStack(itemStack);
                 }
                 if (changed) {
-                    DisplayManager.updateDisplay(stand);
+                    DisplayManager.updateItem(stand);
                 }
             } else {
-                if (!stand.getItemInMainHand().getType().equals(Material.AIR)) {
-                    stand.setItemInMainHand(new ItemStack(Material.AIR));
-                    DisplayManager.updateDisplay(stand);
+                if (!stand.getItemStack().isEmpty()) {
+                    stand.setItemStack(ItemStack.empty());
+                    DisplayManager.updateItem(stand);
                 }
             }
         }
@@ -278,7 +280,7 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
             return;
         }
 
-        if (event.getRawSlot() >= 0 && event.getRawSlot() <= 2) {
+        if (event.getRawSlot() >= 0 && event.getRawSlot() <= 8) {
             DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
         }
         Map<String, Object> map = crafterMap.get(block);
@@ -296,9 +298,9 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
 
         Map<String, Object> map = crafterMap.get(block);
         for (int i = 1; i <= 9; i++) {
-            if (map.get(String.valueOf(i)) instanceof DisplayEntity) {
-                DisplayEntity stand = (DisplayEntity) map.get(String.valueOf(i));
-                DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
+            if (map.get(String.valueOf(i)) instanceof Item) {
+                Item stand = (Item) map.get(String.valueOf(i));
+                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), stand);
             }
         }
         crafterMap.remove(block);
@@ -312,108 +314,113 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
         return PlayerLocationManager.hasPlayerNearby(loc);
     }
 
-    public MaterialUtils.MaterialMode standMode(DisplayEntity stand) {
-        String plain = PlainTextComponentSerializer.plainText().serialize(stand.getCustomName());
-        if (plain.startsWith("IV.Crafter.")) {
-            return MaterialUtils.MaterialMode.getModeFromName(plain.substring(plain.lastIndexOf(".") + 1));
-        }
-        return null;
+    public Item.RenderMode standMode(Item stand) {
+        return stand.getRenderMode();
     }
 
-    public void toggleStandMode(DisplayEntity stand, String mode) {
-        String plain = PlainTextComponentSerializer.plainText().serialize(stand.getCustomName());
-        if (!plain.equals("IV.Crafter.Item")) {
-            if (plain.equals("IV.Crafter.Block")) {
-                stand.setCustomName("IV.Crafter.Item");
+    private static Item.RenderMode renderMode(MaterialUtils.MaterialMode mode) {
+        return switch (mode) {
+            case ITEM -> Item.RenderMode.ITEM;
+            case BLOCK -> Item.RenderMode.BLOCK;
+            case LOWBLOCK -> Item.RenderMode.LOW_BLOCK;
+            case TOOL -> Item.RenderMode.TOOL;
+            case STANDING -> Item.RenderMode.STANDING;
+        };
+    }
+
+    public void toggleStandMode(Item stand, Item.RenderMode mode) {
+        if (stand.getRenderMode() == mode) {
+            return;
+        }
+
+        switch (stand.getRenderMode()) {
+            case BLOCK -> {
+                stand.setRenderMode(Item.RenderMode.ITEM);
                 stand.setRotation(stand.getLocation().getYaw() - 45, stand.getLocation().getPitch());
-                stand.setRightArmPose(EulerAngle.ZERO);
                 stand.teleport(stand.getLocation().add(0.0, -0.084, 0.0));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.102), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.14)));
-
+                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(-0.102), -90)));
+                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(-0.14)));
             }
-            if (plain.equals("IV.Crafter.LowBlock")) {
-                stand.setCustomName("IV.Crafter.Item");
+            case LOW_BLOCK -> {
+                stand.setRenderMode(Item.RenderMode.ITEM);
                 stand.setRotation(stand.getLocation().getYaw() - 45, stand.getLocation().getPitch());
-                stand.setRightArmPose(EulerAngle.ZERO);
                 stand.teleport(stand.getLocation().add(0.0, -0.02, 0.0));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.09), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.15)));
-
+                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(-0.09), -90)));
+                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(-0.15)));
             }
-            if (plain.equals("IV.Crafter.Tool")) {
-                stand.setCustomName("IV.Crafter.Item");
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.3), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.1)));
+            case TOOL -> {
+                stand.setRenderMode(Item.RenderMode.ITEM);
+                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(0.3), -90)));
+                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(0.1)));
                 stand.teleport(stand.getLocation().add(0, 0.26, 0));
-                stand.setRightArmPose(EulerAngle.ZERO);
             }
-            if (plain.equals("IV.Crafter.Standing")) {
-                stand.setCustomName("IV.Crafter.Item");
+            case STANDING -> {
+                stand.setRenderMode(Item.RenderMode.ITEM);
                 stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(0.323), -90)));
                 stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(-0.115)));
                 stand.teleport(stand.getLocation().add(0, 0.32, 0));
-                stand.setRightArmPose(EulerAngle.ZERO);
             }
+            case ITEM -> {
+            }
+            default -> stand.setRenderMode(Item.RenderMode.ITEM);
         }
-        if (mode.equals("Block")) {
-            stand.setCustomName("IV.Crafter.Block");
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.14)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.102), -90)));
-            stand.teleport(stand.getLocation().add(0.0, 0.084, 0.0));
-            stand.setRightArmPose(new EulerAngle(357.9, 0.0, 0.0));
-            stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
-        }
-        if (mode.equals("LowBlock")) {
-            stand.setCustomName("IV.Crafter.LowBlock");
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.15)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.09), -90)));
-            stand.teleport(stand.getLocation().add(0.0, 0.02, 0.0));
-            stand.setRightArmPose(new EulerAngle(357.9, 0.0, 0.0));
-            stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
-        }
-        if (mode.equals("Tool")) {
-            stand.setCustomName("IV.Crafter.Tool");
-            stand.setRightArmPose(new EulerAngle(357.99, 0.0, 300.0));
-            stand.teleport(stand.getLocation().add(0, -0.26, 0));
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.1)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.3), -90)));
-        }
-        if (mode.equals("Standing")) {
-            stand.setCustomName("IV.Crafter.Standing");
-            stand.setRightArmPose(new EulerAngle(0.0, 4.7, 4.7));
-            stand.teleport(stand.getLocation().add(0, -0.32, 0));
-            stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(0.115)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(-0.323), -90)));
+
+        switch (mode) {
+            case ITEM -> stand.setRenderMode(Item.RenderMode.ITEM);
+            case BLOCK -> {
+                stand.setRenderMode(Item.RenderMode.BLOCK);
+                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(0.14)));
+                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(0.102), -90)));
+                stand.teleport(stand.getLocation().add(0.0, 0.084, 0.0));
+                stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
+            }
+            case LOW_BLOCK -> {
+                stand.setRenderMode(Item.RenderMode.LOW_BLOCK);
+                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(0.15)));
+                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(0.09), -90)));
+                stand.teleport(stand.getLocation().add(0.0, 0.02, 0.0));
+                stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
+            }
+            case TOOL -> {
+                stand.setRenderMode(Item.RenderMode.TOOL);
+                stand.teleport(stand.getLocation().add(0, -0.26, 0));
+                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(-0.1)));
+                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(-0.3), -90)));
+            }
+            case STANDING -> {
+                stand.setRenderMode(Item.RenderMode.STANDING);
+                stand.teleport(stand.getLocation().add(0, -0.32, 0));
+                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(0.115)));
+                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(-0.323), -90)));
+            }
+            default -> throw new IllegalArgumentException("Unsupported crafter render mode: " + mode);
         }
     }
 
-    public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) { //.add(0.68, 0.600781, 0.35)
-        Map<String, DisplayEntity> map = new HashMap<>();
+    public Map<String, Item> spawnDisplayEntitys(Block block) { //.add(0.68, 0.600781, 0.35)
+        Map<String, Item> map = new HashMap<>();
         Location loc = block.getLocation().clone().add(0.5, 0.600781, 0.5);
         DisplayEntity center = new DisplayEntity(loc);
         float yaw = getCardinalDirection(block);
         center.setRotation(yaw, center.getLocation().getPitch());
-        setStand(center);
-        center.setCustomName("IV.Crafter.Center");
         Vector vector = rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.19), -100).add(center.getLocation().clone().getDirection().normalize().multiply(-0.11));
-        DisplayEntity slot5 = new DisplayEntity(loc.clone().add(vector));
+        Item slot5 = new Item(loc.clone().add(vector), Item.RenderMode.ITEM);
         setStand(slot5, yaw);
-        DisplayEntity slot2 = new DisplayEntity(slot5.getLocation().clone().add(center.getLocation().clone().getDirection().normalize().multiply(0.2)));
+        Item slot2 = new Item(slot5.getLocation().clone().add(center.getLocation().clone().getDirection().normalize().multiply(0.2)), Item.RenderMode.ITEM);
         setStand(slot2, yaw);
-        DisplayEntity slot1 = new DisplayEntity(slot2.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)));
+        Item slot1 = new Item(slot2.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)), Item.RenderMode.ITEM);
         setStand(slot1, yaw);
-        DisplayEntity slot3 = new DisplayEntity(slot2.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)));
+        Item slot3 = new Item(slot2.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)), Item.RenderMode.ITEM);
         setStand(slot3, yaw);
-        DisplayEntity slot4 = new DisplayEntity(slot5.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)));
+        Item slot4 = new Item(slot5.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)), Item.RenderMode.ITEM);
         setStand(slot4, yaw);
-        DisplayEntity slot6 = new DisplayEntity(slot5.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)));
+        Item slot6 = new Item(slot5.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)), Item.RenderMode.ITEM);
         setStand(slot6, yaw);
-        DisplayEntity slot8 = new DisplayEntity(slot5.getLocation().clone().add(center.getLocation().getDirection().clone().normalize().multiply(-0.2)));
+        Item slot8 = new Item(slot5.getLocation().clone().add(center.getLocation().getDirection().clone().normalize().multiply(-0.2)), Item.RenderMode.ITEM);
         setStand(slot8, yaw);
-        DisplayEntity slot7 = new DisplayEntity(slot8.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)));
+        Item slot7 = new Item(slot8.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)), Item.RenderMode.ITEM);
         setStand(slot7, yaw);
-        DisplayEntity slot9 = new DisplayEntity(slot8.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)));
+        Item slot9 = new Item(slot8.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)), Item.RenderMode.ITEM);
         setStand(slot9, yaw);
 
         map.put("1", slot1);
@@ -426,42 +433,21 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
         map.put("8", slot8);
         map.put("9", slot9);
 
-        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot1);
-        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot2);
-        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot3);
-        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot4);
-        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot5);
-        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot6);
-        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot7);
-        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot8);
-        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot9);
+        DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot1);
+        DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot2);
+        DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot3);
+        DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot4);
+        DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot5);
+        DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot6);
+        DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot7);
+        DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot8);
+        DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), slot9);
 
         return map;
     }
 
-    public void setStand(DisplayEntity stand, float yaw) {
-        stand.setArms(true);
-        stand.setBasePlate(false);
-        stand.setMarker(true);
-        stand.setGravity(false);
-        stand.setSmall(true);
-        stand.setInvulnerable(true);
-        stand.setVisible(false);
-        stand.setSilent(true);
-        stand.setRightArmPose(EulerAngle.ZERO);
-        stand.setCustomName("IV.Crafter.Item");
+    public void setStand(Item stand, float yaw) {
         stand.setRotation(yaw, stand.getLocation().getPitch());
-    }
-
-    public void setStand(DisplayEntity stand) {
-        stand.setArms(true);
-        stand.setBasePlate(false);
-        stand.setMarker(true);
-        stand.setGravity(false);
-        stand.setSmall(true);
-        stand.setSilent(true);
-        stand.setInvulnerable(true);
-        stand.setVisible(false);
     }
 
     public Vector rotateVectorAroundY(Vector vector, double degrees) {
