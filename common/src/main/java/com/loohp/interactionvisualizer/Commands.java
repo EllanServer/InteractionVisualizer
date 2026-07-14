@@ -21,9 +21,12 @@
 package com.loohp.interactionvisualizer;
 
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
+import com.loohp.interactionvisualizer.debug.PerformanceBlockScene;
 import com.loohp.interactionvisualizer.managers.MaterialManager;
 import com.loohp.interactionvisualizer.managers.MusicManager;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
+import com.loohp.interactionvisualizer.managers.PerformanceMetrics;
+import com.loohp.interactionvisualizer.debug.PerformanceScene;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.updater.Updater;
 import com.loohp.interactionvisualizer.updater.Updater.UpdaterResponse;
@@ -43,6 +46,8 @@ import org.bukkit.entity.Player;
 
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
+import java.util.UUID;
 
 public class Commands implements CommandExecutor, TabCompleter {
 
@@ -58,6 +63,10 @@ public class Commands implements CommandExecutor, TabCompleter {
             sender.sendMessage(Component.text("[InteractionVisualizer] InteractionVisualizer written by LOOHP!", NamedTextColor.AQUA));
             sender.sendMessage(Component.text("[InteractionVisualizer] Running InteractionVisualizer version: " + plugin.getPluginMeta().getVersion(), NamedTextColor.GOLD));
             return true;
+        }
+
+        if (args[0].equalsIgnoreCase("perf")) {
+            return handlePerformanceCommand(sender, args);
         }
 
         if (args[0].equalsIgnoreCase("reload")) {
@@ -261,6 +270,368 @@ public class Commands implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean handlePerformanceCommand(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("interactionvisualizer.performance")) {
+            sender.sendMessage(ChatColorUtils.translateAlternateColorCodes('&', plugin.getConfiguration().getString("Messages.NoPermission")));
+            return true;
+        }
+        if (args.length < 2) {
+            sender.sendMessage(Component.text("Usage: /iv perf <start|stop|status|scene|clear|blockscene>"));
+            return true;
+        }
+        switch (args[1].toLowerCase()) {
+            case "start" -> {
+                String label = args.length >= 3 ? args[2] : "unnamed";
+                if (PerformanceMetrics.start(label)) {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] Performance sampling started: " + label));
+                } else {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] Performance sampling is already active."));
+                }
+            }
+            case "stop" -> {
+                PerformanceMetrics.Snapshot snapshot = PerformanceMetrics.stop();
+                if (snapshot == null) {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] Performance sampling is not active."));
+                } else {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] " + snapshot.summary()));
+                }
+            }
+            case "status" -> {
+                PerformanceMetrics.Snapshot snapshot = PerformanceMetrics.snapshot();
+                if (snapshot == null) {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] Performance sampling is not active."));
+                } else {
+                    sender.sendMessage(Component.text("[InteractionVisualizer] " + snapshot.summary()));
+                }
+            }
+            case "scene" -> {
+                if (args.length < 4) {
+                    sender.sendMessage(Component.text(
+                            "Usage: /iv perf scene <static|motion|itemdisplay|textdisplay> " +
+                                    "<count> [lifetimeTicks] [player]"));
+                    return true;
+                }
+                boolean moving = args[2].equalsIgnoreCase("motion");
+                boolean staticItem = args[2].equalsIgnoreCase("static");
+                boolean itemDisplay = args[2].equalsIgnoreCase("itemdisplay");
+                boolean textDisplay = args[2].equalsIgnoreCase("textdisplay");
+                if (!moving && !staticItem && !itemDisplay && !textDisplay) {
+                    sender.sendMessage(Component.text(
+                            "[InteractionVisualizer] Scene type must be static, motion, itemdisplay, or textdisplay."));
+                    return true;
+                }
+                long defaultLifetime = moving ? 80L : 200L;
+                long lifetime = defaultLifetime;
+                String requestedPlayer = args.length >= 6 ? args[5] : null;
+                if (args.length >= 5) {
+                    try {
+                        lifetime = Long.parseLong(args[4]);
+                    } catch (NumberFormatException ignored) {
+                        if (args.length == 5) {
+                            requestedPlayer = args[4];
+                        } else {
+                            sender.sendMessage(Component.text(
+                                    "[InteractionVisualizer] lifetimeTicks must be an integer."));
+                            return true;
+                        }
+                    }
+                }
+                Player player = performanceScenePlayer(sender, requestedPlayer);
+                if (player == null) {
+                    sender.sendMessage(Component.text(
+                            "[InteractionVisualizer] Specify an online player for the benchmark scene."));
+                    return true;
+                }
+                int count = parseInteger(args[3], 1);
+                int spawned = itemDisplay || textDisplay
+                        ? PerformanceScene.spawnDisplay(player, textDisplay, count, lifetime)
+                        : PerformanceScene.spawn(player, moving, count, lifetime);
+                String sceneName = moving ? "moving" : staticItem ? "static"
+                        : itemDisplay ? "itemdisplay" : "textdisplay";
+                String entityLabel = staticItem || moving ? " benchmark items" : " benchmark entities";
+                sender.sendMessage(Component.text("[InteractionVisualizer] Spawned " + spawned + " "
+                        + sceneName + entityLabel + " for " + lifetime + " ticks."));
+            }
+            case "clear" -> {
+                String requestedOwner = args.length >= 3 ? args[2] : null;
+                Player player = performanceScenePlayer(sender, requestedOwner);
+                UUID ownerId = player == null ? parseUuid(requestedOwner) : player.getUniqueId();
+                if (ownerId == null) {
+                    sender.sendMessage(Component.text(
+                            "[InteractionVisualizer] Specify an online player or owner UUID when clearing a scene from console."));
+                    return true;
+                }
+                PerformanceScene.clear(ownerId);
+                String ownerName = player == null ? ownerId.toString() : player.getName();
+                sender.sendMessage(Component.text("[InteractionVisualizer] Cleared the benchmark scene for "
+                        + ownerName + "."));
+            }
+            case "blockscene" -> handlePerformanceBlockScene(sender, args);
+            default -> sender.sendMessage(Component.text(
+                    "Usage: /iv perf <start|stop|status|scene|clear|blockscene>"));
+        }
+        return true;
+    }
+
+    private static void handlePerformanceBlockScene(CommandSender sender, String[] args) {
+        if (args.length < 3) {
+            sendBlockSceneUsage(sender);
+            return;
+        }
+        String action = args[2].toLowerCase();
+        try {
+            switch (action) {
+                case "create" -> createPerformanceBlockScene(sender, args);
+                case "mutate" -> mutatePerformanceBlockScene(sender, args);
+                case "status" -> inspectPerformanceBlockScene(sender, args, false);
+                case "clear" -> inspectPerformanceBlockScene(sender, args, true);
+                default -> {
+                    sendBlockSceneRecord(sender, action, null,
+                            "state=invalid reason=unknown_action");
+                    sendBlockSceneUsage(sender);
+                }
+            }
+        } catch (RuntimeException exception) {
+            sendBlockSceneRecordForOwner(sender, action, blockSceneOwnerHint(sender, action, args),
+                    "state=error error=" + summaryToken(exception.getClass().getSimpleName())
+                            + " detail=" + summaryToken(exception.getMessage()));
+        }
+    }
+
+    private static void createPerformanceBlockScene(CommandSender sender, String[] args) {
+        if (args.length < 5 || args.length > 6) {
+            sendBlockSceneRecord(sender, "create", null, "state=invalid reason=usage");
+            sender.sendMessage(Component.text(
+                    "Usage: /iv perf blockscene create <idle|active|direct-write> <count> [player]"));
+            return;
+        }
+        PerformanceBlockScene.Mode mode = performanceBlockMode(args[3]);
+        if (mode == null) {
+            sendBlockSceneRecord(sender, "create", null, "state=invalid reason=invalid_mode");
+            return;
+        }
+        Integer count = performanceBlockCount(args[4]);
+        if (count == null) {
+            sendBlockSceneRecord(sender, "create", null,
+                    "state=invalid reason=invalid_count min=1 max=" + PerformanceBlockScene.MAX_BLOCKS);
+            return;
+        }
+        Player player = performanceScenePlayer(sender, args.length == 6 ? args[5] : null);
+        if (player == null) {
+            sendBlockSceneRecord(sender, "create", null, "state=invalid reason=player_not_online");
+            return;
+        }
+        PerformanceBlockScene.Snapshot snapshot = PerformanceBlockScene.create(player, count, mode);
+        sendBlockSceneRecord(sender, "create", player, snapshot.summary());
+    }
+
+    private static void mutatePerformanceBlockScene(CommandSender sender, String[] args) {
+        if (args.length > 6) {
+            sendBlockSceneRecord(sender, "mutate", null, "state=invalid reason=usage");
+            sender.sendMessage(Component.text(
+                    "Usage: /iv perf blockscene mutate [count] [idle|active|direct-write] [player|owner-uuid]"));
+            return;
+        }
+
+        Integer count = null;
+        PerformanceBlockScene.Mode mode = null;
+        String requestedPlayer = null;
+        for (int index = 3; index < args.length; index++) {
+            String argument = args[index];
+            PerformanceBlockScene.Mode parsedMode = performanceBlockMode(argument);
+            if (parsedMode != null) {
+                if (mode != null) {
+                    sendBlockSceneRecord(sender, "mutate", null, "state=invalid reason=duplicate_mode");
+                    return;
+                }
+                mode = parsedMode;
+                continue;
+            }
+            Integer parsedCount = performanceBlockCount(argument);
+            if (parsedCount != null) {
+                if (count != null) {
+                    sendBlockSceneRecord(sender, "mutate", null, "state=invalid reason=duplicate_count");
+                    return;
+                }
+                count = parsedCount;
+                continue;
+            }
+            if (argument.matches("[+-]?\\d+")) {
+                sendBlockSceneRecord(sender, "mutate", null,
+                        "state=invalid reason=count_out_of_range min=1 max=" + PerformanceBlockScene.MAX_BLOCKS);
+                return;
+            }
+            if (requestedPlayer == null) {
+                requestedPlayer = argument;
+                continue;
+            }
+            sendBlockSceneRecord(sender, "mutate", null, "state=invalid reason=ambiguous_arguments");
+            return;
+        }
+
+        BlockSceneOwner owner = performanceBlockSceneOwner(sender, requestedPlayer);
+        if (owner == null) {
+            sendBlockSceneRecord(sender, "mutate", null,
+                    "state=invalid reason=online_player_or_owner_uuid_required");
+            return;
+        }
+        long mutationCommandStartNanos = System.nanoTime();
+        PerformanceBlockScene.Snapshot current = PerformanceBlockScene.snapshot(owner.ownerId());
+        long mutationPreflightElapsedNanos = Math.max(
+                0L, System.nanoTime() - mutationCommandStartNanos);
+        if (current.state() == PerformanceBlockScene.SceneState.ABSENT) {
+            sendBlockSceneRecordForOwner(sender, "mutate", owner.displayName(), current.summary());
+            return;
+        }
+        if (count != null && count > current.placedCount()) {
+            sendBlockSceneRecordForOwner(sender, "mutate", owner.displayName(),
+                    "state=invalid reason=count_exceeds_scene requested=" + count
+                            + " max=" + current.placedCount());
+            return;
+        }
+
+        PerformanceBlockScene.Snapshot snapshot;
+        if (count != null && mode != null) {
+            snapshot = PerformanceBlockScene.mutate(owner.ownerId(), count, mode);
+        } else if (mode != null) {
+            snapshot = PerformanceBlockScene.mutate(owner.ownerId(), mode);
+        } else {
+            snapshot = PerformanceBlockScene.mutate(owner.ownerId(),
+                    count == null ? current.placedCount() : count);
+        }
+        long mutationCommandElapsedNanos = Math.max(
+                0L, System.nanoTime() - mutationCommandStartNanos);
+        String commandTiming = " mutationPreflightMs="
+                + String.format(Locale.ROOT, "%.6f", mutationPreflightElapsedNanos / 1_000_000.0D)
+                + " mutationCommandMs="
+                + String.format(Locale.ROOT, "%.6f", mutationCommandElapsedNanos / 1_000_000.0D);
+        sendBlockSceneRecordForOwner(sender, "mutate", owner.displayName(),
+                snapshot.summary() + commandTiming);
+    }
+
+    private static void inspectPerformanceBlockScene(CommandSender sender, String[] args, boolean clear) {
+        String action = clear ? "clear" : "status";
+        if (args.length > 4) {
+            sendBlockSceneRecord(sender, action, null, "state=invalid reason=usage");
+            sender.sendMessage(Component.text(
+                    "Usage: /iv perf blockscene " + action + " [player|owner-uuid]"));
+            return;
+        }
+        BlockSceneOwner owner = performanceBlockSceneOwner(sender, args.length == 4 ? args[3] : null);
+        if (owner == null) {
+            sendBlockSceneRecord(sender, action, null,
+                    "state=invalid reason=online_player_or_owner_uuid_required");
+            return;
+        }
+        PerformanceBlockScene.Snapshot snapshot = clear
+                ? PerformanceBlockScene.clear(owner.ownerId())
+                : PerformanceBlockScene.snapshot(owner.ownerId());
+        sendBlockSceneRecordForOwner(sender, action, owner.displayName(), snapshot.summary());
+    }
+
+    private static PerformanceBlockScene.Mode performanceBlockMode(String value) {
+        try {
+            return PerformanceBlockScene.Mode.parse(value);
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
+    private static Integer performanceBlockCount(String value) {
+        try {
+            int count = Integer.parseInt(value);
+            return count >= 1 && count <= PerformanceBlockScene.MAX_BLOCKS ? count : null;
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
+    private static void sendBlockSceneRecord(CommandSender sender, String action, Player player, String summary) {
+        sendBlockSceneRecordForOwner(sender, action, player == null ? null : player.getName(), summary);
+    }
+
+    private static void sendBlockSceneRecordForOwner(CommandSender sender, String action, String owner,
+                                                      String summary) {
+        String record = "IV_BLOCK_SCENE action=" + summaryToken(action)
+                + " owner=" + summaryToken(owner) + " " + summary;
+        plugin.getLogger().info(record);
+        if (sender instanceof Player) {
+            sender.sendMessage(Component.text("[InteractionVisualizer] " + record));
+        }
+    }
+
+    private static String summaryToken(String value) {
+        if (value == null || value.isBlank()) {
+            return "none";
+        }
+        return value.replaceAll("[^A-Za-z0-9_.:-]", "_");
+    }
+
+    private static void sendBlockSceneUsage(CommandSender sender) {
+        sender.sendMessage(Component.text(
+                "Usage: /iv perf blockscene <create|mutate|status|clear>"));
+    }
+
+    private static Player performanceScenePlayer(CommandSender sender, String requestedName) {
+        if (requestedName != null && !requestedName.isBlank()) {
+            return Bukkit.getPlayerExact(requestedName);
+        }
+        return sender instanceof Player player ? player : null;
+    }
+
+    private static BlockSceneOwner performanceBlockSceneOwner(CommandSender sender, String requestedName) {
+        Player online = performanceScenePlayer(sender, requestedName);
+        if (online != null) {
+            return new BlockSceneOwner(online.getUniqueId(), online.getName());
+        }
+        UUID ownerId = parseUuid(requestedName);
+        return ownerId == null ? null : new BlockSceneOwner(ownerId, ownerId.toString());
+    }
+
+    private static String blockSceneOwnerHint(CommandSender sender, String action, String[] args) {
+        String requested = null;
+        if ("create".equals(action) && args.length >= 6) {
+            requested = args[5];
+        } else if (("status".equals(action) || "clear".equals(action)) && args.length >= 4) {
+            requested = args[3];
+        } else if ("mutate".equals(action)) {
+            for (int index = 3; index < args.length; index++) {
+                String argument = args[index];
+                if (performanceBlockMode(argument) == null && performanceBlockCount(argument) == null
+                        && !argument.matches("[+-]?\\d+")) {
+                    requested = argument;
+                    break;
+                }
+            }
+        }
+        if (requested != null && !requested.isBlank()) {
+            return requested;
+        }
+        return sender instanceof Player player ? player.getName() : null;
+    }
+
+    private static UUID parseUuid(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
+    }
+
+    private record BlockSceneOwner(UUID ownerId, String displayName) {
+    }
+
+    private static int parseInteger(String value, int defaultValue) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
+        }
+    }
+
     @Override
     public List<String> onTabComplete(CommandSender sender, Command cmd, String label, String[] args) {
         List<String> tab = new LinkedList<>();
@@ -304,8 +675,19 @@ public class Commands implements CommandExecutor, TabCompleter {
                         tab.add("refresh");
                     }
                 }
+                if (sender.hasPermission("interactionvisualizer.performance") && "perf".startsWith(args[0].toLowerCase())) {
+                    tab.add("perf");
+                }
                 return tab;
             case 2:
+                if (args[0].equalsIgnoreCase("perf") && sender.hasPermission("interactionvisualizer.performance")) {
+                    for (String option : List.of("start", "stop", "status", "scene", "clear", "blockscene")) {
+                        if (option.startsWith(args[1].toLowerCase())) {
+                            tab.add(option);
+                        }
+                    }
+                    return tab;
+                }
                 if (args[0].equalsIgnoreCase("toggle")) {
                     if (sender.hasPermission("interactionvisualizer.toggle")) {
                         if ("itemstand".startsWith(args[1].toLowerCase())) {
@@ -324,6 +706,24 @@ public class Commands implements CommandExecutor, TabCompleter {
                 }
                 return tab;
             case 3:
+                if (args[0].equalsIgnoreCase("perf") && args[1].equalsIgnoreCase("scene")
+                        && sender.hasPermission("interactionvisualizer.performance")) {
+                    for (String option : List.of("static", "motion", "itemdisplay", "textdisplay")) {
+                        if (option.startsWith(args[2].toLowerCase())) {
+                            tab.add(option);
+                        }
+                    }
+                    return tab;
+                }
+                if (args[0].equalsIgnoreCase("perf") && args[1].equalsIgnoreCase("blockscene")
+                        && sender.hasPermission("interactionvisualizer.performance")) {
+                    for (String option : List.of("create", "mutate", "status", "clear")) {
+                        if (option.startsWith(args[2].toLowerCase())) {
+                            tab.add(option);
+                        }
+                    }
+                    return tab;
+                }
                 if (args[0].equalsIgnoreCase("toggle")) {
                     if (sender.hasPermission("interactionvisualizer.toggle")) {
                         if (args[1].equalsIgnoreCase("itemstand") || args[1].equalsIgnoreCase("itemdrop") || args[1].equalsIgnoreCase("hologram") || args[1].equalsIgnoreCase("all")) {
@@ -340,6 +740,17 @@ public class Commands implements CommandExecutor, TabCompleter {
                 }
                 return tab;
             case 4:
+                if (args[0].equalsIgnoreCase("perf") && args[1].equalsIgnoreCase("blockscene")
+                        && sender.hasPermission("interactionvisualizer.performance")) {
+                    if (args[2].equalsIgnoreCase("create") || args[2].equalsIgnoreCase("mutate")) {
+                        addMatchingBlockModes(tab, args[3]);
+                    }
+                    if (args[2].equalsIgnoreCase("mutate") || args[2].equalsIgnoreCase("status")
+                            || args[2].equalsIgnoreCase("clear")) {
+                        addMatchingPlayers(tab, args[3]);
+                    }
+                    return tab;
+                }
                 if (args[0].equalsIgnoreCase("toggle")) {
                     if (sender.hasPermission("interactionvisualizer.toggle")) {
                         if (args[1].equalsIgnoreCase("itemstand") || args[1].equalsIgnoreCase("itemdrop") || args[1].equalsIgnoreCase("hologram") || args[1].equalsIgnoreCase("all")) {
@@ -354,6 +765,15 @@ public class Commands implements CommandExecutor, TabCompleter {
                 }
                 return tab;
             case 5:
+                if (args[0].equalsIgnoreCase("perf") && args[1].equalsIgnoreCase("blockscene")
+                        && args[2].equalsIgnoreCase("mutate")
+                        && sender.hasPermission("interactionvisualizer.performance")) {
+                    if (performanceBlockCount(args[3]) != null) {
+                        addMatchingBlockModes(tab, args[4]);
+                    }
+                    addMatchingPlayers(tab, args[4]);
+                    return tab;
+                }
                 if (args[0].equalsIgnoreCase("toggle")) {
                     if (sender.hasPermission("interactionvisualizer.toggle")) {
                         if (args[1].equalsIgnoreCase("itemstand") || args[1].equalsIgnoreCase("itemdrop") || args[1].equalsIgnoreCase("hologram")) {
@@ -368,8 +788,34 @@ public class Commands implements CommandExecutor, TabCompleter {
                     }
                 }
                 return tab;
+            case 6:
+                if (args[0].equalsIgnoreCase("perf") && args[1].equalsIgnoreCase("blockscene")
+                        && sender.hasPermission("interactionvisualizer.performance")) {
+                    if (args[2].equalsIgnoreCase("create")
+                            || args[2].equalsIgnoreCase("mutate")) {
+                        addMatchingPlayers(tab, args[5]);
+                    }
+                    return tab;
+                }
+                return tab;
             default:
                 return tab;
+        }
+    }
+
+    private static void addMatchingBlockModes(List<String> tab, String prefix) {
+        for (String option : List.of("idle", "active", "direct-write")) {
+            if (option.startsWith(prefix.toLowerCase())) {
+                tab.add(option);
+            }
+        }
+    }
+
+    private static void addMatchingPlayers(List<String> tab, String prefix) {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (player.getName().toLowerCase().startsWith(prefix.toLowerCase())) {
+                tab.add(player.getName());
+            }
         }
     }
 

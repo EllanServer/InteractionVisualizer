@@ -1,0 +1,5 @@
+name: InteractionVisualizerBenchmark
+version: '1.0'
+main: com.loohp.interactionvisualizer.entities.DroppedItemBenchmarkPlugin
+api-version: '26.1'
+description: Disposable A/B performance harness for InteractionVisualizer

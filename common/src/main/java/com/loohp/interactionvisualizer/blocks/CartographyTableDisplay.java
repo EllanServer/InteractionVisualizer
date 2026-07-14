@@ -24,7 +24,8 @@ import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerInteractDisplay;
-import com.loohp.interactionvisualizer.entityholders.ItemFrame;
+import com.loohp.interactionvisualizer.entityholders.Item;
+import com.loohp.interactionvisualizer.entityholders.Item.RenderMode;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
@@ -32,10 +33,10 @@ import com.loohp.interactionvisualizer.scheduler.ScheduledRunnable;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import org.bukkit.FluidCollisionMode;
 import org.bukkit.GameMode;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
-import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -98,11 +99,11 @@ public class CartographyTableDisplay extends VisualizerInteractDisplay implement
                                 }
                             }
 
-                            if (map.get("Item") instanceof ItemFrame) {
-                                Entity entity = (Entity) map.get("Item");
-                                DisplayManager.removeItemFrame(InteractionVisualizerAPI.getPlayers(), (ItemFrame) entity);
+                            if (map.get("Item") instanceof Item item) {
+                                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
                             }
                             openedCTable.remove(block);
+                            playermap.remove((Player) map.get("Player"), block);
                         }
                     }.runTaskLater(InteractionVisualizer.plugin, delay, block.getLocation());
                 }
@@ -168,31 +169,37 @@ public class CartographyTableDisplay extends VisualizerInteractDisplay implement
             itemstack = output;
         }
 
-        ItemFrame item = null;
-        if (!block.getRelative(BlockFace.UP).getType().isSolid()) {
-            if (map.get("Item") instanceof String) {
-                if (itemstack != null) {
-                    item = new ItemFrame(block.getRelative(BlockFace.UP).getLocation());
-                    item.setItem(itemstack);
-                    item.setFacingDirection(BlockFace.UP);
-                    item.setSilent(true);
-                    map.put("Item", item);
-                    DisplayManager.sendItemFrameSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), item);
-                    DisplayManager.updateItemFrame(item);
-                } else {
-                    map.put("Item", "N/A");
+        if (block.getRelative(BlockFace.UP).getType().isSolid()) {
+            if (map.get("Item") instanceof Item item) {
+                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                map.put("Item", "N/A");
+            }
+            return;
+        }
+
+        if (map.get("Item") instanceof String) {
+            if (itemstack != null) {
+                Location location = block.getLocation().clone().add(0.5, 1.03125, 0.5);
+                location.setPitch(-90.0F);
+                Item item = new Item(location, RenderMode.FRAME);
+                item.setItemStack(itemstack);
+                item.setSilent(true);
+                map.put("Item", item);
+                DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMSTAND, KEY), item);
+                DisplayManager.updateItem(item);
+            } else {
+                map.put("Item", "N/A");
+            }
+        } else {
+            Item item = (Item) map.get("Item");
+            if (itemstack != null) {
+                if (!item.getItemStack().equals(itemstack)) {
+                    item.setItemStack(itemstack);
+                    DisplayManager.updateItem(item);
                 }
             } else {
-                item = (ItemFrame) map.get("Item");
-                if (itemstack != null) {
-                    if (!item.getItem().equals(itemstack)) {
-                        item.setItem(itemstack);
-                        DisplayManager.updateItemFrame(item);
-                    }
-                } else {
-                    map.put("Item", "N/A");
-                    DisplayManager.removeItemFrame(InteractionVisualizerAPI.getPlayers(), item);
-                }
+                map.put("Item", "N/A");
+                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
             }
         }
     }
@@ -230,27 +237,21 @@ public class CartographyTableDisplay extends VisualizerInteractDisplay implement
 
     @EventHandler
     public void onCloseCartographyTable(InventoryCloseEvent event) {
-        if (!playermap.containsKey((Player) event.getPlayer())) {
-            return;
-        }
-
-        Block block = playermap.get((Player) event.getPlayer());
-
-        if (!openedCTable.containsKey(block)) {
+        Player player = (Player) event.getPlayer();
+        Block block = playermap.remove(player);
+        if (block == null) {
             return;
         }
 
         Map<String, Object> map = openedCTable.get(block);
-        if (!map.get("Player").equals(event.getPlayer())) {
+        if (map == null || !map.get("Player").equals(player)) {
             return;
         }
 
-        if (map.get("Item") instanceof ItemFrame) {
-            ItemFrame entity = (ItemFrame) map.get("Item");
-            DisplayManager.removeItemFrame(InteractionVisualizerAPI.getPlayers(), entity);
+        if (map.get("Item") instanceof Item item) {
+            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
         }
         openedCTable.remove(block);
-        playermap.remove((Player) event.getPlayer());
     }
 
 }

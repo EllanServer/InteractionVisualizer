@@ -37,7 +37,6 @@ import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -194,15 +193,11 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
 
                             symbol += spawnRange.replace("{SpawnRange}", spawner.getSpawnRange() + "");
 
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals(symbol) || !stand.isCustomNameVisible()) {
-                                stand.setCustomNameVisible(true);
-                                stand.setCustomName(symbol);
+                            if (stand.updateCustomName(symbol, true)) {
                                 DisplayManager.updateDisplay(stand);
                             }
                         } else {
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals("") || stand.isCustomNameVisible()) {
-                                stand.setCustomNameVisible(false);
-                                stand.setCustomName("");
+                            if (stand.updateCustomName("", false)) {
                                 DisplayManager.updateDisplay(stand);
                             }
                         }
@@ -252,6 +247,7 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
     }
 
     public void setStand(DisplayEntity stand) {
+        stand.useLegacyNameTagStyle();
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);

@@ -231,11 +231,10 @@ public class DoubleChestDisplay implements Listener, VisualizerDisplay {
                     vector = loc.clone().add(0.5, 1, 0.5).toVector().subtract(event.getWhoClicked().getEyeLocation().clone().add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector()).multiply(0.15).add(offset);
                     item.setVelocity(vector);
                 }
-                DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
                 item.setItemStack(itemstack);
                 item.setPickupDelay(32767);
                 item.setGravity(true);
-                DisplayManager.updateItem(item);
+                DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
                 if (!link.containsKey(player)) {
                     link.put(player, new ArrayList<Item>());
                 }
@@ -355,12 +354,10 @@ public class DoubleChestDisplay implements Listener, VisualizerDisplay {
                     Vector offset = new Vector(0.0, 0.15, 0.0);
                     Vector vector = loc.clone().add(0.5, 1, 0.5).toVector().subtract(event.getWhoClicked().getEyeLocation().clone().add(0.0, InteractionVisualizer.playerPickupYOffset, 0.0).toVector()).multiply(0.15).add(offset);
                     item.setVelocity(vector);
-                    DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
                     item.setItemStack(itemstack);
-                    item.setCustomName(System.currentTimeMillis() + "");
                     item.setPickupDelay(32767);
                     item.setGravity(true);
-                    DisplayManager.updateItem(item);
+                    DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
                     if (!link.containsKey(player)) {
                         link.put(player, new ArrayList<Item>());
                     }

@@ -1,0 +1,17 @@
+/*
+ * This file is part of InteractionVisualizer.
+ *
+ * Copyright (C) 2026. Contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
+package net.minecraft.world.entity;
+
+public record EntityType<T>(String key) {
+
+    public static final EntityType<Object> TEXT_DISPLAY = new EntityType<>("text_display");
+}

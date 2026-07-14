@@ -35,13 +35,13 @@ import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
+import org.bukkit.entity.Display;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -49,7 +49,6 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BookMeta;
 import org.bukkit.util.EulerAngle;
-import org.bukkit.util.Vector;
 
 import java.util.HashMap;
 import java.util.Iterator;
@@ -193,25 +192,17 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
                                     .replace("{Author}", meta.getAuthor() == null ? "" : meta.getAuthor())
                                     .replace("{Page}", lectern.getPage() + "");
 
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand1.getCustomName()).equals(line1) || !stand1.isCustomNameVisible()) {
-                                stand1.setCustomNameVisible(true);
-                                stand1.setCustomName(line1);
+                            if (stand1.updateCustomName(line1, true)) {
                                 DisplayManager.updateDisplay(stand1);
                             }
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand2.getCustomName()).equals(line2) || !stand2.isCustomNameVisible()) {
-                                stand2.setCustomNameVisible(true);
-                                stand2.setCustomName(line2);
+                            if (stand2.updateCustomName(line2, true)) {
                                 DisplayManager.updateDisplay(stand2);
                             }
                         } else {
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand1.getCustomName()).equals("") || stand1.isCustomNameVisible()) {
-                                stand1.setCustomNameVisible(false);
-                                stand1.setCustomName("");
+                            if (stand1.updateCustomName("", false)) {
                                 DisplayManager.updateDisplay(stand1);
                             }
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand2.getCustomName()).equals("") || stand2.isCustomNameVisible()) {
-                                stand2.setCustomNameVisible(false);
-                                stand2.setCustomName("");
+                            if (stand2.updateCustomName("", false)) {
                                 DisplayManager.updateDisplay(stand2);
                             }
                         }
@@ -254,13 +245,10 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
         Location origin = block.getLocation();
         BlockData blockData = block.getState().getBlockData();
         BlockFace facing = ((Directional) blockData).getFacing();
-        Location target = block.getRelative(facing).getLocation();
-        Vector direction = target.toVector().subtract(origin.toVector()).multiply(0.2);
-
-        Location loc = origin.clone().add(direction).add(0.5, 1.301, 0.5);
+        Location loc = firstLineLocation(origin, facing);
         DisplayEntity slot1 = new DisplayEntity(loc.clone());
         setStand(slot1);
-        DisplayEntity slot2 = new DisplayEntity(loc.clone().add(0, -0.3, 0));
+        DisplayEntity slot2 = new DisplayEntity(secondLineLocation(origin, facing));
         setStand(slot2);
 
         map.put("1", slot1);
@@ -272,7 +260,17 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
         return map;
     }
 
-    public void setStand(DisplayEntity stand) {
+    static Location firstLineLocation(Location origin, BlockFace facing) {
+        return origin.clone().add(facing.getDirection().multiply(0.2D)).add(0.5D, 1.301D, 0.5D);
+    }
+
+    static Location secondLineLocation(Location origin, BlockFace facing) {
+        return firstLineLocation(origin, facing).add(0.0D, -0.3D, 0.0D);
+    }
+
+    public static void setStand(DisplayEntity stand) {
+        stand.useLegacyNameTagStyle();
+        stand.setBillboard(labelBillboard());
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);
@@ -282,6 +280,12 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
         stand.setVisible(false);
         stand.setCustomName("");
         stand.setRightArmPose(EulerAngle.ZERO);
+    }
+
+    static Display.Billboard labelBillboard() {
+        // Legacy marker-entity name tags always faced the viewer. Preserve
+        // that behavior when the label is rendered by a TextDisplay.
+        return Display.Billboard.CENTER;
     }
 
 }

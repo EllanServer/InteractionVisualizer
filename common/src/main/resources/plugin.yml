@@ -37,3 +37,6 @@ permissions:
   interactionvisualizer.update:
     description: Allows you receive update messages
     default: op
+  interactionvisualizer.performance:
+    description: Allows you to run InteractionVisualizer performance measurements
+    default: op

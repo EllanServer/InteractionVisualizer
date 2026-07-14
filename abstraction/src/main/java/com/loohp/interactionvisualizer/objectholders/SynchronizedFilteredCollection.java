@@ -21,7 +21,9 @@
 package com.loohp.interactionvisualizer.objectholders;
 
 import java.lang.reflect.Array;
+import java.util.AbstractCollection;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.Objects;
 import java.util.Spliterator;
@@ -51,6 +53,39 @@ public class SynchronizedFilteredCollection<E> implements Collection<E> {
         return new SynchronizedFilteredCollection<E>(backingCollection, e -> true);
     }
 
+    /**
+     * Returns a read-only collection that preserves the snapshot-free
+     * {@link #anyMatch(Collection, Predicate)} path when the backing collection
+     * is a synchronized filtered view.
+     */
+    public static <E> Collection<E> unmodifiableCollection(Collection<E> backingCollection) {
+        return new ReadOnlyCollection<>(Objects.requireNonNull(backingCollection, "backingCollection"));
+    }
+
+    /**
+     * Tests a collection without materializing an iterator snapshot when it is
+     * one of this class's filtered or read-only views. The matcher must be a
+     * side-effect-free read: mutating the same collection from the matcher would
+     * attempt a read-to-write lock upgrade.
+     */
+    @SuppressWarnings("unchecked")
+    public static <E> boolean anyMatch(Collection<E> collection, Predicate<? super E> matcher) {
+        Objects.requireNonNull(collection, "collection");
+        Objects.requireNonNull(matcher, "matcher");
+        if (collection instanceof SynchronizedFilteredCollection<?> filtered) {
+            return ((SynchronizedFilteredCollection<E>) filtered).anyMatch(matcher);
+        }
+        if (collection instanceof ReadOnlyCollection<?> readOnly) {
+            return ((ReadOnlyCollection<E>) readOnly).anyMatch(matcher);
+        }
+        for (E element : collection) {
+            if (matcher.test(element)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private final Collection<E> backingCollection;
     private final Predicate<E> predicate;
     private final ReentrantReadWriteLock lock;
@@ -71,6 +106,34 @@ public class SynchronizedFilteredCollection<E> implements Collection<E> {
 
     public ReentrantReadWriteLock getLock() {
         return lock;
+    }
+
+    /**
+     * Tests the live filtered view while holding the shared read lock, without
+     * materializing the snapshot used by {@link #iterator()} and {@link #stream()}.
+     */
+    public boolean anyMatch(Predicate<? super E> matcher) {
+        Objects.requireNonNull(matcher, "matcher");
+        try {
+            lock.readLock().lock();
+            return anyMatchUnlocked(matcher);
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean anyMatchUnlocked(Predicate<? super E> matcher) {
+        if (backingCollection instanceof SynchronizedFilteredCollection<?> filtered) {
+            SynchronizedFilteredCollection<E> nested = (SynchronizedFilteredCollection<E>) filtered;
+            return nested.anyMatchUnlocked(element -> predicate.test(element) && matcher.test(element));
+        }
+        for (E element : backingCollection) {
+            if (predicate.test(element) && matcher.test(element)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -95,12 +158,7 @@ public class SynchronizedFilteredCollection<E> implements Collection<E> {
 
     @Override
     public boolean contains(Object o) {
-        try {
-            lock.readLock().lock();
-            return backingCollection.stream().filter(predicate).anyMatch(each -> Objects.equals(each, o));
-        } finally {
-            lock.readLock().unlock();
-        }
+        return anyMatch(each -> Objects.equals(each, o));
     }
 
     @Override
@@ -291,6 +349,86 @@ public class SynchronizedFilteredCollection<E> implements Collection<E> {
             return backingCollection.parallelStream().filter(predicate).collect(Collectors.toList()).parallelStream();
         } finally {
             lock.readLock().unlock();
+        }
+    }
+
+    private static final class ReadOnlyCollection<E> extends AbstractCollection<E> {
+
+        private final Collection<E> backingCollection;
+        private final Collection<E> readOnlyDelegate;
+
+        private ReadOnlyCollection(Collection<E> backingCollection) {
+            this.backingCollection = backingCollection;
+            this.readOnlyDelegate = Collections.unmodifiableCollection(backingCollection);
+        }
+
+        private boolean anyMatch(Predicate<? super E> matcher) {
+            return SynchronizedFilteredCollection.anyMatch(backingCollection, matcher);
+        }
+
+        @Override
+        public Iterator<E> iterator() {
+            return readOnlyDelegate.iterator();
+        }
+
+        @Override
+        public int size() {
+            return readOnlyDelegate.size();
+        }
+
+        @Override
+        public boolean isEmpty() {
+            return readOnlyDelegate.isEmpty();
+        }
+
+        @Override
+        public boolean contains(Object object) {
+            return readOnlyDelegate.contains(object);
+        }
+
+        @Override
+        public Object[] toArray() {
+            return readOnlyDelegate.toArray();
+        }
+
+        @Override
+        public <T> T[] toArray(T[] array) {
+            return readOnlyDelegate.toArray(array);
+        }
+
+        @Override
+        public boolean add(E element) {
+            return readOnlyDelegate.add(element);
+        }
+
+        @Override
+        public boolean remove(Object object) {
+            return readOnlyDelegate.remove(object);
+        }
+
+        @Override
+        public boolean addAll(Collection<? extends E> collection) {
+            return readOnlyDelegate.addAll(collection);
+        }
+
+        @Override
+        public boolean removeAll(Collection<?> collection) {
+            return readOnlyDelegate.removeAll(collection);
+        }
+
+        @Override
+        public boolean retainAll(Collection<?> collection) {
+            return readOnlyDelegate.retainAll(collection);
+        }
+
+        @Override
+        public boolean removeIf(Predicate<? super E> filter) {
+            return readOnlyDelegate.removeIf(filter);
+        }
+
+        @Override
+        public void clear() {
+            readOnlyDelegate.clear();
         }
     }
 

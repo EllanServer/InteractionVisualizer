@@ -18,6 +18,7 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.integration.CustomContentManager;
+import com.loohp.interactionvisualizer.managers.PerformanceMetrics;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
 import com.loohp.interactionvisualizer.utils.ComponentFont;
@@ -56,8 +57,11 @@ import org.bukkit.util.Transformation;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -71,10 +75,13 @@ import java.util.UUID;
 public final class DroppedItemDisplay extends VisualizerRunnableDisplay implements Listener {
 
     public static final EntryKey KEY = new EntryKey("item");
+    private static final int DEFAULT_TRACKING_DISTANCE = 64;
+    private static final int VIEW_DISTANCE_HYSTERESIS = 16;
 
     private final Map<UUID, Item> trackedItems = new HashMap<>();
     private final Map<UUID, TextDisplay> labels = new HashMap<>();
     private final Set<UUID> eligibleViewers = new HashSet<>();
+    private final Map<UUID, VisibilityState> visibilityStates = new HashMap<>();
 
     private String regularFormatting;
     private String singularFormatting;
@@ -87,6 +94,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     private int updateRate = 20;
     private int ticksUntilUpdate;
     private int despawnTicks = 6000;
+    private DroppedItemVisibilityPolicy visibilityPolicy = DroppedItemVisibilityPolicy.legacyDefaults();
     private boolean stripColorBlacklist;
     private DroppedItemBlacklist blacklist = DroppedItemBlacklist.compile(List.of(), DroppedItemDisplay::warn);
 
@@ -96,6 +104,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     @EventHandler
     public void onReload(InteractionVisualizerReloadEvent event) {
+        DroppedItemVisibilityPolicy previousVisibilityPolicy = visibilityPolicy;
         regularFormatting = configString("Entities.Item.Options.RegularFormat");
         singularFormatting = configString("Entities.Item.Options.SingularFormat");
         toolsFormatting = configString("Entities.Item.Options.ToolsFormat");
@@ -107,6 +116,30 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 .getDouble("Entities.Item.Options.LabelYOffset");
         labelYOffset = Double.isFinite(configuredLabelYOffset) ? configuredLabelYOffset : 0.8D;
         updateRate = Math.max(1, InteractionVisualizer.plugin.getConfiguration().getInt("Entities.Item.Options.UpdateRate"));
+        int configuredViewDistance = InteractionVisualizer.plugin.getConfiguration()
+                .getInt("Entities.Item.Options.VisibilityCulling.ViewDistance");
+        int configuredBucketSize = InteractionVisualizer.plugin.getConfiguration()
+                .getInt("Entities.Item.Options.VisibilityRateLimit.BucketSize");
+        int configuredRefill = InteractionVisualizer.plugin.getConfiguration()
+                .getInt("Entities.Item.Options.VisibilityRateLimit.RestorePerTick");
+        visibilityPolicy = DroppedItemVisibilityPolicy.create(
+                InteractionVisualizer.plugin.getConfiguration()
+                        .getBoolean("Entities.Item.Options.VisibilityCulling.Enabled"),
+                configuredViewDistance,
+                InteractionVisualizer.plugin.getConfiguration()
+                        .getBoolean("Entities.Item.Options.VisibilityRateLimit.Enabled"),
+                configuredBucketSize,
+                configuredRefill);
+        PerformanceMetrics.droppedLabelVisibilityConfig(
+                visibilityPolicy.cullingEnabled(),
+                visibilityPolicy.viewDistance(),
+                visibilityPolicy.rateLimitEnabled(),
+                visibilityPolicy.bucketSize(),
+                visibilityPolicy.restorePerTick());
+        if (previousVisibilityPolicy.controlsPerViewerVisibility()
+                != visibilityPolicy.controlsPerViewerVisibility()) {
+            switchVisibilityMode(visibilityPolicy.controlsPerViewerVisibility());
+        }
         int configuredDespawnTicks = InteractionVisualizer.plugin.getConfiguration().getInt("Entities.Item.Options.DespawnTicks");
         despawnTicks = configuredDespawnTicks > 0 ? configuredDespawnTicks : 6000;
         stripColorBlacklist = InteractionVisualizer.plugin.getConfiguration()
@@ -147,6 +180,9 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         return new ScheduledRunnable() {
             @Override
             public void run() {
+                if (visibilityPolicy.controlsPerViewerVisibility()) {
+                    drainVisibilityQueues();
+                }
                 if (--ticksUntilUpdate <= 0) {
                     ticksUntilUpdate = updateRate;
                     tickAll();
@@ -190,7 +226,10 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             if (label != null) {
                 // EntityRemoveEvent is monitoring-only. Defer entity mutation
                 // until Paper has finished removing the item's passengers.
-                Scheduler.runTask(InteractionVisualizer.plugin, () -> removeLabel(label));
+                Scheduler.runTask(InteractionVisualizer.plugin, () -> {
+                    forgetLabelVisibility(itemId, label);
+                    removeLabel(label);
+                });
             }
         }
     }
@@ -200,18 +239,110 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     }
 
     private void tickAll() {
-        reconcileEligibleViewers();
-        for (Map.Entry<UUID, Item> entry : new HashMap<>(trackedItems).entrySet()) {
-            Item item = entry.getValue();
-            if (!item.isValid() || item.isDead()) {
-                remove(entry.getKey());
-                continue;
+        long started = PerformanceMetrics.isCollecting() ? System.nanoTime() : 0L;
+        try {
+            tickAllInternal();
+        } finally {
+            if (started != 0L) {
+                PerformanceMetrics.droppedItemNanos(System.nanoTime() - started);
             }
-            update(item);
         }
     }
 
-    private void update(Item item) {
+    private void tickAllInternal() {
+        Collection<Player> viewers = reconcileEligibleViewers();
+        List<TrackedItem> validItems = new ArrayList<>(trackedItems.size());
+        UUID singleItemWorldId = null;
+        int singleWorldItemCount = 0;
+        Map<UUID, Integer> itemCountsByWorld = null;
+        Iterator<Map.Entry<UUID, Item>> iterator = trackedItems.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<UUID, Item> entry = iterator.next();
+            Item item = entry.getValue();
+            if (!item.isValid() || item.isDead()) {
+                iterator.remove();
+                removeLabel(entry.getKey());
+                continue;
+            }
+            Location location = item.getLocation();
+            UUID worldId = location.getWorld().getUID();
+            validItems.add(new TrackedItem(entry.getKey(), item, worldId, location));
+            if (singleItemWorldId == null) {
+                singleItemWorldId = worldId;
+                singleWorldItemCount = 1;
+            } else if (itemCountsByWorld == null && singleItemWorldId.equals(worldId)) {
+                singleWorldItemCount++;
+            } else {
+                if (itemCountsByWorld == null) {
+                    itemCountsByWorld = new HashMap<>();
+                    itemCountsByWorld.put(singleItemWorldId, singleWorldItemCount);
+                }
+                itemCountsByWorld.merge(worldId, 1, Integer::sum);
+            }
+        }
+
+        if (viewers.isEmpty() && visibilityPolicy.cullingEnabled()) {
+            for (UUID itemId : new HashSet<>(labels.keySet())) {
+                removeLabel(itemId);
+            }
+            return;
+        }
+
+        DroppedItemSpatialIndex.ViewerIndex viewerIndex = null;
+        if (visibilityPolicy.cullingEnabled()) {
+            viewerIndex = new DroppedItemSpatialIndex.ViewerIndex(viewers.size());
+            for (Player viewer : viewers) {
+                Location location = viewer.getLocation();
+                viewerIndex.addViewer(viewer.getWorld().getUID(),
+                        location.getX(), location.getY(), location.getZ());
+            }
+        }
+
+        DroppedItemSpatialIndex itemIndex = cramp > 0 ? new DroppedItemSpatialIndex() : null;
+        if (itemIndex != null) {
+            for (TrackedItem tracked : validItems) {
+                Location location = tracked.location();
+                itemIndex.addItem(tracked.worldId(),
+                        location.getX(), location.getY(), location.getZ());
+            }
+        }
+        int remainingSingleWorldItems = singleWorldItemCount;
+        for (int trackedIndex = 0; trackedIndex < validItems.size(); trackedIndex++) {
+            TrackedItem tracked = validItems.get(trackedIndex);
+            int remainingWorldItems;
+            if (itemCountsByWorld == null) {
+                remainingWorldItems = --remainingSingleWorldItems;
+            } else {
+                remainingWorldItems = itemCountsByWorld.get(tracked.worldId()) - 1;
+                itemCountsByWorld.put(tracked.worldId(), remainingWorldItems);
+            }
+            update(tracked, itemIndex, viewerIndex, remainingWorldItems);
+        }
+        if (visibilityPolicy.controlsPerViewerVisibility()) {
+            reconcileLabelVisibility(viewers, validItems);
+        }
+    }
+
+    private void update(TrackedItem tracked, DroppedItemSpatialIndex itemIndex,
+                        DroppedItemSpatialIndex.ViewerIndex viewerIndex, int remainingWorldItems) {
+        Item item = tracked.item();
+        Location itemLocation = tracked.location();
+        TextDisplay label = labels.get(tracked.itemId());
+        if (visibilityPolicy.cullingEnabled()) {
+            int trackingDistance = InteractionVisualizer.playerTrackingRange
+                    .getOrDefault(item.getWorld(), DEFAULT_TRACKING_DISTANCE);
+            int effectiveViewDistance = visibilityPolicy.effectiveViewDistance(trackingDistance);
+            int cullingDistance = label == null
+                    ? effectiveViewDistance
+                    : effectiveViewDistance + VIEW_DISTANCE_HYSTERESIS;
+            if (!viewerIndex.hasViewerWithin(tracked.worldId(),
+                    itemLocation.getX(), itemLocation.getY(), itemLocation.getZ(),
+                    cullingDistance, remainingWorldItems)) {
+                removeLabel(tracked.itemId());
+                return;
+            }
+        }
+
         ItemStack stack = item.getItemStack();
         String matchingName = matchingName(stack);
         NamespacedKey customItemId = blacklist.requiresCustomItemId()
@@ -219,13 +350,14 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 : null;
         int ticksLeft = despawnTicks - item.getTicksLived();
         if (stack.isEmpty() || blacklist.matches(matchingName, stack.getType(), customItemId)
-                || item.getPickupDelay() >= Short.MAX_VALUE || ticksLeft <= 0 || isCramping(item)) {
+                || item.getPickupDelay() >= Short.MAX_VALUE || ticksLeft <= 0
+                || (itemIndex != null && itemIndex.exceedsItemLimit(tracked.worldId(),
+                itemLocation.getX(), itemLocation.getY(), itemLocation.getZ(), cramp))) {
             removeLabel(item.getUniqueId());
             return;
         }
 
         Component text = format(stack, ticksLeft);
-        TextDisplay label = labels.get(item.getUniqueId());
         boolean created = false;
         if (label == null || !label.isValid() || !label.getWorld().equals(item.getWorld())) {
             removeLabel(item.getUniqueId());
@@ -235,6 +367,10 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         }
         if (!text.equals(label.text())) {
             label.text(text);
+        }
+        float targetViewRange = labelViewRange();
+        if (Math.abs(label.getViewRange() - targetViewRange) > 1.0E-4F) {
+            label.setViewRange(targetViewRange);
         }
         boolean mounted = item.equals(label.getVehicle()) || item.addPassenger(label);
         if (mounted) {
@@ -257,14 +393,13 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             }
             label.teleport(labelLocation(item));
         }
-        if (created) {
-            // Mount and configure the final render height before revealing the
-            // label so the first tracking bundle cannot flash at item height.
+        if (created && !visibilityPolicy.controlsPerViewerVisibility()) {
             showToEligibleViewers(label);
         }
     }
 
     private TextDisplay spawnLabel(Item item) {
+        PerformanceMetrics.bukkitEntitySpawn();
         return item.getWorld().spawn(labelLocation(item),
                 TextDisplay.class, display -> {
                     display.setPersistent(false);
@@ -274,7 +409,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                     display.setSilent(true);
                     display.setNoPhysics(true);
                     display.setBillboard(Display.Billboard.CENTER);
-                    display.setViewRange(1.0F);
+                    display.setViewRange(labelViewRange());
                     display.setInterpolationDuration(0);
                     display.setTeleportDuration(0);
                     display.setShadowed(true);
@@ -285,6 +420,10 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                     display.setLineWidth(240);
                     display.getPersistentDataContainer().set(ownerKey(), PersistentDataType.STRING, "dropped_item_label");
                 });
+    }
+
+    private float labelViewRange() {
+        return visibilityPolicy.labelViewRange();
     }
 
     private Location labelLocation(Item item) {
@@ -308,7 +447,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 new Quaternionf(current.getRightRotation())));
     }
 
-    private void reconcileEligibleViewers() {
+    private Collection<Player> reconcileEligibleViewers() {
         Map<UUID, Player> desired = new HashMap<>();
         for (Player player : InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY)) {
             if (player.isOnline()) {
@@ -318,35 +457,160 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         for (UUID uuid : new HashSet<>(eligibleViewers)) {
             if (!desired.containsKey(uuid)) {
                 Player player = Bukkit.getPlayer(uuid);
-                if (player != null) {
-                    for (TextDisplay label : labels.values()) {
-                        if (label.isValid()) {
-                            player.hideEntity(InteractionVisualizer.plugin, label);
-                        }
-                    }
+                if (visibilityPolicy.controlsPerViewerVisibility()) {
+                    removeVisibilityState(uuid, player);
+                } else if (player != null) {
+                    setAllLabelsVisible(player, false);
                 }
                 eligibleViewers.remove(uuid);
             }
         }
         for (Map.Entry<UUID, Player> entry : desired.entrySet()) {
-            if (eligibleViewers.add(entry.getKey())) {
-                Player player = entry.getValue();
-                for (TextDisplay label : labels.values()) {
-                    if (label.isValid()) {
-                        player.showEntity(InteractionVisualizer.plugin, label);
+            if (eligibleViewers.add(entry.getKey())
+                    && !visibilityPolicy.controlsPerViewerVisibility()) {
+                setAllLabelsVisible(entry.getValue(), true);
+            }
+        }
+        return desired.values();
+    }
+
+    private void switchVisibilityMode(boolean controlled) {
+        for (UUID playerId : eligibleViewers) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null && player.isOnline()) {
+                setAllLabelsVisible(player, !controlled);
+            }
+        }
+        for (VisibilityState state : visibilityStates.values()) {
+            state.pending.clear();
+        }
+        visibilityStates.clear();
+    }
+
+    private void showToEligibleViewers(TextDisplay label) {
+        for (UUID playerId : eligibleViewers) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null && player.isOnline()) {
+                setLabelVisible(player, label, true);
+            }
+        }
+    }
+
+    private void setAllLabelsVisible(Player player, boolean visible) {
+        for (TextDisplay label : labels.values()) {
+            if (label.isValid()) {
+                setLabelVisible(player, label, visible);
+            }
+        }
+    }
+
+    private static void setLabelVisible(Player player, TextDisplay label, boolean visible) {
+        if (visible) {
+            PerformanceMetrics.bukkitShow();
+            player.showEntity(InteractionVisualizer.plugin, label);
+        } else {
+            PerformanceMetrics.bukkitHide();
+            player.hideEntity(InteractionVisualizer.plugin, label);
+        }
+    }
+
+    private void reconcileLabelVisibility(Collection<Player> viewers, List<TrackedItem> validItems) {
+        for (Player player : viewers) {
+            UUID playerId = player.getUniqueId();
+            VisibilityState state = visibilityStates.computeIfAbsent(playerId,
+                    ignored -> new VisibilityState(visibilityPolicy.bucketSize()));
+            Set<UUID> desired = new HashSet<>();
+            Location playerLocation = player.getLocation();
+            int trackingDistance = InteractionVisualizer.playerTrackingRange
+                    .getOrDefault(player.getWorld(), DEFAULT_TRACKING_DISTANCE);
+            double range = visibilityPolicy.cullingEnabled()
+                    ? visibilityPolicy.effectiveViewDistance(trackingDistance)
+                    : 0.0D;
+            double rangeSquared = range * range;
+
+            for (TrackedItem tracked : validItems) {
+                TextDisplay label = labels.get(tracked.itemId());
+                if (label == null || !label.isValid() || !tracked.item().getWorld().equals(player.getWorld())) {
+                    continue;
+                }
+                if (!visibilityPolicy.cullingEnabled()) {
+                    desired.add(tracked.itemId());
+                    continue;
+                }
+                Location location = tracked.location();
+                double deltaX = location.getX() - playerLocation.getX();
+                double deltaY = location.getY() - playerLocation.getY();
+                double deltaZ = location.getZ() - playerLocation.getZ();
+                if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
+                    desired.add(tracked.itemId());
+                }
+            }
+
+            for (UUID itemId : new HashSet<>(state.shown)) {
+                if (!desired.contains(itemId)) {
+                    TextDisplay label = labels.get(itemId);
+                    if (label != null && label.isValid()) {
+                        setLabelVisible(player, label, false);
                     }
+                    state.shown.remove(itemId);
+                }
+            }
+            for (UUID itemId : state.desired) {
+                if (!desired.contains(itemId)) {
+                    state.pending.cancel(itemId);
+                }
+            }
+            state.desired = desired;
+            for (UUID itemId : desired) {
+                if (!state.shown.contains(itemId)) {
+                    state.pending.request(itemId);
                 }
             }
         }
     }
 
-    private void showToEligibleViewers(TextDisplay label) {
-        for (UUID uuid : eligibleViewers) {
-            Player player = Bukkit.getPlayer(uuid);
-            if (player != null) {
-                player.showEntity(InteractionVisualizer.plugin, label);
+    private void drainVisibilityQueues() {
+        for (Map.Entry<UUID, VisibilityState> entry : visibilityStates.entrySet()) {
+            Player player = Bukkit.getPlayer(entry.getKey());
+            VisibilityState state = entry.getValue();
+            if (player == null || !player.isOnline() || !eligibleViewers.contains(entry.getKey())) {
+                continue;
+            }
+            List<UUID> ready = visibilityPolicy.rateLimitEnabled()
+                    ? state.pending.drain(
+                    visibilityPolicy.bucketSize(), visibilityPolicy.restorePerTick(),
+                    id -> isPendingVisibilityWanted(state, id))
+                    : state.pending.drainAll(id -> isPendingVisibilityWanted(state, id));
+            for (UUID itemId : ready) {
+                TextDisplay label = labels.get(itemId);
+                if (label != null && label.isValid()) {
+                    setLabelVisible(player, label, true);
+                    state.shown.add(itemId);
+                }
             }
         }
+    }
+
+    private boolean isPendingVisibilityWanted(VisibilityState state, UUID itemId) {
+        TextDisplay label = labels.get(itemId);
+        return state.desired.contains(itemId) && !state.shown.contains(itemId)
+                && label != null && label.isValid();
+    }
+
+    private void removeVisibilityState(UUID playerId, Player player) {
+        VisibilityState state = visibilityStates.remove(playerId);
+        if (state == null) {
+            return;
+        }
+        if (player != null) {
+            for (UUID itemId : state.shown) {
+                TextDisplay label = labels.get(itemId);
+                if (label != null && label.isValid()) {
+                    setLabelVisible(player, label, false);
+                }
+            }
+        }
+        state.pending.clear();
     }
 
     private Component format(ItemStack stack, int ticksLeft) {
@@ -390,32 +654,42 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         return stripColorBlacklist ? ChatColorUtils.stripColor(plain) : plain;
     }
 
-    private boolean isCramping(Item item) {
-        return cramp > 0 && item.getWorld()
-                .getNearbyEntitiesByType(Item.class, item.getLocation(), 0.5, 0.5, 0.5)
-                .stream()
-                .filter(nearby -> !isOwned(nearby))
-                .limit(cramp + 1L)
-                .count() > cramp;
-    }
-
     private void remove(UUID itemId) {
         trackedItems.remove(itemId);
         removeLabel(itemId);
     }
 
     private void removeLabel(UUID itemId) {
-        removeLabel(labels.remove(itemId));
+        TextDisplay label = labels.remove(itemId);
+        forgetLabelVisibility(itemId, label);
+        removeLabel(label);
+    }
+
+    private void forgetLabelVisibility(UUID itemId, TextDisplay label) {
+        for (Map.Entry<UUID, VisibilityState> entry : visibilityStates.entrySet()) {
+            VisibilityState state = entry.getValue();
+            state.desired.remove(itemId);
+            state.pending.cancel(itemId);
+            if (state.shown.remove(itemId) && label != null && label.isValid()) {
+                Player player = Bukkit.getPlayer(entry.getKey());
+                if (player != null) {
+                    setLabelVisible(player, label, false);
+                }
+            }
+        }
     }
 
     private void removeLabel(TextDisplay label) {
         if (label != null && label.isValid()) {
-            for (UUID uuid : eligibleViewers) {
-                Player player = Bukkit.getPlayer(uuid);
-                if (player != null) {
-                    player.hideEntity(InteractionVisualizer.plugin, label);
+            if (!visibilityPolicy.controlsPerViewerVisibility()) {
+                for (UUID playerId : eligibleViewers) {
+                    Player player = Bukkit.getPlayer(playerId);
+                    if (player != null) {
+                        setLabelVisible(player, label, false);
+                    }
                 }
             }
+            PerformanceMetrics.bukkitEntityRemove();
             label.remove();
         }
     }
@@ -426,5 +700,19 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     private static NamespacedKey ownerKey() {
         return new NamespacedKey(InteractionVisualizer.plugin, "visual_entity");
+    }
+
+    private record TrackedItem(UUID itemId, Item item, UUID worldId, Location location) {
+    }
+
+    private static final class VisibilityState {
+
+        private Set<UUID> desired = new HashSet<>();
+        private final Set<UUID> shown = new HashSet<>();
+        private final VisibilityTokenBucket<UUID> pending;
+
+        private VisibilityState(int initialTokens) {
+            this.pending = new VisibilityTokenBucket<>(initialTokens);
+        }
     }
 }

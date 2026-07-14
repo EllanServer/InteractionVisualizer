@@ -25,11 +25,15 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
+import com.loohp.interactionvisualizer.api.events.TileEntityActivatedEvent;
+import com.loohp.interactionvisualizer.api.events.TileEntityAddedEvent;
+import com.loohp.interactionvisualizer.api.events.TileEntityDeactivatedEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
 import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
+import com.loohp.interactionvisualizer.managers.PerformanceMetrics;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
@@ -38,7 +42,7 @@ import com.loohp.interactionvisualizer.utils.InventoryUtils;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -50,9 +54,14 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.FurnaceBurnEvent;
+import org.bukkit.event.inventory.FurnaceExtractEvent;
+import org.bukkit.event.inventory.FurnaceSmeltEvent;
+import org.bukkit.event.inventory.FurnaceStartSmeltEvent;
 import org.bukkit.event.inventory.InventoryAction;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.EulerAngle;
@@ -78,9 +87,12 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
     private String noFuelColor = "&c";
     private int progressBarLength = 10;
     private String amountPending = " &7+{Amount}";
+    private final BlockUpdateScheduler<Block> blockUpdates;
 
     public BlastFurnaceDisplay() {
         onReload(new InteractionVisualizerReloadEvent());
+        this.blockUpdates = new BlockUpdateScheduler<>(this::nearbyBlastFurnace,
+                this.checkingPeriod, this.gcPeriod);
     }
 
     @EventHandler
@@ -102,6 +114,9 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
 
     @Override
     public ScheduledTask gc() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return null;
+        }
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = blastfurnaceMap.entrySet().iterator();
             int count = 0;
@@ -149,6 +164,21 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
 
     @Override
     public ScheduledTask run() {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return legacyRun();
+        }
+        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
+            boolean collecting = PerformanceMetrics.isCollecting();
+            long start = collecting ? System.nanoTime() : 0L;
+            int checks = this.blockUpdates.tick(Bukkit.getCurrentTick(),
+                    InteractionVisualizer.blockUpdateMaxDirtyPerTick, this::updateHybridBlock);
+            if (collecting) {
+                PerformanceMetrics.blockUpdateChecks(checks, System.nanoTime() - start);
+            }
+        }, 0, 1);
+    }
+
+    private ScheduledTask legacyRun() {
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyBlastFurnace();
             for (Block block : list) {
@@ -178,15 +208,18 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
                 }
                 Block block = entry.getKey();
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                    if (!isActive(block.getLocation())) {
-                        return;
-                    }
-                    if (!block.getType().equals(Material.BLAST_FURNACE)) {
-                        return;
-                    }
-                    org.bukkit.block.BlastFurnace blastfurnace = (org.bukkit.block.BlastFurnace) block.getState();
+                    boolean collecting = PerformanceMetrics.isCollecting();
+                    long start = collecting ? System.nanoTime() : 0L;
+                    try {
+                        if (!isActive(block.getLocation())) {
+                            return;
+                        }
+                        if (!block.getType().equals(Material.BLAST_FURNACE)) {
+                            return;
+                        }
+                        org.bukkit.block.BlastFurnace blastfurnace = (org.bukkit.block.BlastFurnace) block.getState();
 
-                    {
+                        {
                         Inventory inv = blastfurnace.getInventory();
                         ItemStack itemstack = inv.getItem(0);
                         if (itemstack != null) {
@@ -261,30 +294,123 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
                                 symbol = symbol.replace("{CompletedAmount}", (inv.getItem(2) == null ? 0 : inv.getItem(2).getAmount()) + "");
                             }
                             if (hasFuel(blastfurnace)) {
-                                if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals(symbol) || !stand.isCustomNameVisible()) {
-                                    stand.setCustomNameVisible(true);
-                                    stand.setCustomName(symbol);
-                                    DisplayManager.updateDisplay(stand);
-                                }
+                                FurnaceDisplayUpdater.showProgress(stand, entry.getValue(), symbol);
                             } else {
                                 symbol = noFuelColor + ChatColorUtils.stripColor(symbol);
-                                if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals(symbol) || !stand.isCustomNameVisible()) {
-                                    stand.setCustomNameVisible(true);
-                                    stand.setCustomName(symbol);
-                                    DisplayManager.updateDisplay(stand);
-                                }
+                                FurnaceDisplayUpdater.showProgress(stand, entry.getValue(), symbol);
                             }
                         } else {
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand.getCustomName()).equals("") || stand.isCustomNameVisible()) {
-                                stand.setCustomNameVisible(false);
-                                stand.setCustomName("");
-                                DisplayManager.updateDisplay(stand);
-                            }
+                            FurnaceDisplayUpdater.hideProgress(stand, entry.getValue());
+                        }
+                        }
+                    } finally {
+                        if (collecting) {
+                            PerformanceMetrics.blockUpdateChecks(1, System.nanoTime() - start);
                         }
                     }
                 }, delay, block.getLocation());
             }
         }, 0, checkingPeriod);
+    }
+
+    private boolean updateHybridBlock(Block block) {
+        if (!TileEntityManager.getTileEntities(TileEntityType.BLAST_FURNACE).contains(block)) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isBlastFurnace(block.getType())) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isActive(block.getLocation())) {
+            return false;
+        }
+        Map<String, Object> values = blastfurnaceMap.get(block);
+        if (values == null) {
+            values = new HashMap<>();
+            values.put("Item", "N/A");
+            values.putAll(spawnDisplayEntitys(block));
+            blastfurnaceMap.put(block, values);
+        }
+        org.bukkit.block.Furnace furnace = (org.bukkit.block.Furnace) block.getState();
+        return FurnaceDisplayUpdater.update(furnace, values, KEY, progressBarCharacter, emptyColor,
+                filledColor, noFuelColor, progressBarLength, amountPending);
+    }
+
+    private void markDirty(Block block) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates && block != null && isBlastFurnace(block.getType())) {
+            blockUpdates.markDirty(block, (long) Bukkit.getCurrentTick() + 1L);
+        }
+    }
+
+    private void markDirtyUnlessActive(Block block) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates && block != null && isBlastFurnace(block.getType())) {
+            blockUpdates.markDirtyUnlessActive(block, (long) Bukkit.getCurrentTick() + 1L);
+        }
+    }
+
+    /** Optimized aggregate-listener entry after the inventory location has been resolved once. */
+    public void onBlastFurnaceInventoryChanged(Block block) {
+        markDirty(block);
+    }
+
+    private void markDirty(Inventory inventory) {
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            return;
+        }
+        Location location;
+        try {
+            location = inventory.getLocation();
+        } catch (Exception | AbstractMethodError ignored) {
+            return;
+        }
+        if (location != null) {
+            markDirty(location.getBlock());
+        }
+    }
+
+    public void onBlastFurnaceBurn(FurnaceBurnEvent event) {
+        markDirty(event.getBlock());
+    }
+
+    public void onBlastFurnaceStartSmelt(FurnaceStartSmeltEvent event) {
+        markDirtyUnlessActive(event.getBlock());
+    }
+
+    public void onBlastFurnaceSmelt(FurnaceSmeltEvent event) {
+        markDirtyUnlessActive(event.getBlock());
+    }
+
+    public void onBlastFurnaceExtract(FurnaceExtractEvent event) {
+        markDirty(event.getBlock());
+    }
+
+    public void onBlastFurnaceMoveItem(InventoryMoveItemEvent event) {
+        markDirty(event.getSource());
+        markDirty(event.getDestination());
+    }
+
+    public void onBlastFurnaceAdded(TileEntityAddedEvent event) {
+        if (event.getTileEntityType() == TileEntityType.BLAST_FURNACE) {
+            markDirty(event.getBlock());
+        }
+    }
+
+    public void onBlastFurnaceActivated(TileEntityActivatedEvent event) {
+        if (event.getTileEntityType() == TileEntityType.BLAST_FURNACE) {
+            markDirty(event.getBlock());
+        }
+    }
+
+    public void onBlastFurnaceDeactivated(TileEntityDeactivatedEvent event) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates
+                && event.getTileEntityType() == TileEntityType.BLAST_FURNACE) {
+            removeTrackedDisplay(event.getBlock());
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -348,6 +474,7 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
         if (!event.getView().getTopInventory().getLocation().getBlock().getType().equals(Material.BLAST_FURNACE)) {
             return;
         }
+        markDirty(event.getView().getTopInventory().getLocation().getBlock());
 
         Block block = event.getView().getTopInventory().getLocation().getBlock();
 
@@ -438,6 +565,7 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
 
         for (int slot : event.getRawSlots()) {
             if (slot >= 0 && slot <= 2) {
+                markDirty(event.getView().getTopInventory().getLocation().getBlock());
                 DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
                 break;
             }
@@ -446,12 +574,15 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakBlastFurnace(TileEntityRemovedEvent event) {
-        Block block = event.getBlock();
-        if (!blastfurnaceMap.containsKey(block)) {
+        removeTrackedDisplay(event.getBlock());
+    }
+
+    private void removeTrackedDisplay(Block block) {
+        blockUpdates.remove(block);
+        Map<String, Object> map = blastfurnaceMap.remove(block);
+        if (map == null) {
             return;
         }
-
-        Map<String, Object> map = blastfurnaceMap.get(block);
         if (map.get("Item") instanceof Item) {
             Item item = (Item) map.get("Item");
             DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
@@ -460,7 +591,6 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
             DisplayEntity stand = (DisplayEntity) map.get("Stand");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        blastfurnaceMap.remove(block);
     }
 
     public boolean hasItemToCook(org.bukkit.block.BlastFurnace blastfurnace) {
@@ -490,6 +620,10 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
         return PlayerLocationManager.hasPlayerNearby(loc);
     }
 
+    private boolean isBlastFurnace(Material material) {
+        return material == Material.BLAST_FURNACE;
+    }
+
     public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) {
         Map<String, DisplayEntity> map = new HashMap<>();
         Location origin = block.getLocation();
@@ -512,6 +646,7 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
     }
 
     public void setStand(DisplayEntity stand) {
+        stand.useLegacyNameTagStyle();
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);

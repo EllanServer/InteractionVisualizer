@@ -109,6 +109,7 @@ public class StonecutterDisplay extends VisualizerInteractDisplay implements Lis
                                 DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), entity);
                             }
                             openedStonecutter.remove(block);
+                            playermap.remove((Player) map.get("Player"), block);
                         }
                     }.runTaskLater(InteractionVisualizer.plugin, delay, block.getLocation());
                 }
@@ -271,29 +272,35 @@ public class StonecutterDisplay extends VisualizerInteractDisplay implements Lis
 
         ItemStack itemstack = event.getCurrentItem().clone();
         Player player = (Player) event.getWhoClicked();
+        InventoryView view = event.getView();
 
         if (map.get("Item") instanceof String) {
-            map.put("Item", new Item(block.getLocation().clone().add(0.5, 1.2, 0.5)));
+            Item result = new Item(block.getLocation().clone().add(0.5, 0.75, 0.5));
+            result.setItemStack(itemstack);
+            map.put("Item", result);
+            DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), result);
         }
         Item item = (Item) map.get("Item");
 
         Inventory before = Bukkit.createInventory(null, 9);
-        before.setItem(0, player.getOpenInventory().getItem(0).clone());
+        before.setItem(0, InventoryUtils.cloneItem(view.getItem(0)));
 
         Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
+            if (!player.isOnline() || player.getOpenInventory() != view) {
+                return;
+            }
 
             Inventory after = Bukkit.createInventory(null, 9);
-            after.setItem(0, player.getOpenInventory().getItem(0).clone());
+            after.setItem(0, InventoryUtils.cloneItem(view.getItem(0)));
 
             if (InventoryUtils.compareContents(before, after)) {
                 return;
             }
 
-            item.setLocked(true);
-
             openedStonecutter.remove(block);
 
             item.setItemStack(itemstack);
+            item.setLocked(true);
             DisplayManager.updateItem(item);
             DisplayManager.collectItem(item, player);
         }, 1);
@@ -332,18 +339,14 @@ public class StonecutterDisplay extends VisualizerInteractDisplay implements Lis
 
     @EventHandler
     public void onCloseStonecutter(InventoryCloseEvent event) {
-        if (!playermap.containsKey((Player) event.getPlayer())) {
-            return;
-        }
-
-        Block block = playermap.get((Player) event.getPlayer());
-
-        if (!openedStonecutter.containsKey(block)) {
+        Player player = (Player) event.getPlayer();
+        Block block = playermap.remove(player);
+        if (block == null) {
             return;
         }
 
         Map<String, Object> map = openedStonecutter.get(block);
-        if (!map.get("Player").equals(event.getPlayer())) {
+        if (map == null || !map.get("Player").equals(player)) {
             return;
         }
 
@@ -352,7 +355,6 @@ public class StonecutterDisplay extends VisualizerInteractDisplay implements Lis
             DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), entity);
         }
         openedStonecutter.remove(block);
-        playermap.remove((Player) event.getPlayer());
     }
 
 }

@@ -25,6 +25,7 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
+import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
 import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
@@ -34,7 +35,6 @@ import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -47,7 +47,6 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.util.EulerAngle;
 import org.bukkit.util.Vector;
 
 import java.util.HashMap;
@@ -242,15 +241,11 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                                 symbol += emptyColor + progressBarCharacter;
                             }
 
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand1.getCustomName()).equals(symbol) || !stand1.isCustomNameVisible()) {
-                                stand1.setCustomNameVisible(true);
-                                stand1.setCustomName(symbol);
+                            if (stand1.updateCustomName(symbol, true)) {
                                 DisplayManager.updateDisplay(stand1);
                             }
                         } else {
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand1.getCustomName()).equals("") || stand1.isCustomNameVisible()) {
-                                stand1.setCustomNameVisible(false);
-                                stand1.setCustomName("");
+                            if (stand1.updateCustomName("", false)) {
                                 DisplayManager.updateDisplay(stand1);
                             }
                         }
@@ -275,15 +270,11 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                                 symbol += emptyColor + progressBarCharacter;
                             }
 
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand2.getCustomName()).equals(symbol) || !stand2.isCustomNameVisible()) {
-                                stand2.setCustomNameVisible(true);
-                                stand2.setCustomName(symbol);
+                            if (stand2.updateCustomName(symbol, true)) {
                                 DisplayManager.updateDisplay(stand2);
                             }
                         } else {
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand2.getCustomName()).equals("") || stand2.isCustomNameVisible()) {
-                                stand2.setCustomNameVisible(false);
-                                stand2.setCustomName("");
+                            if (stand2.updateCustomName("", false)) {
                                 DisplayManager.updateDisplay(stand2);
                             }
                         }
@@ -308,15 +299,11 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                                 symbol += emptyColor + progressBarCharacter;
                             }
 
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand3.getCustomName()).equals(symbol) || !stand3.isCustomNameVisible()) {
-                                stand3.setCustomNameVisible(true);
-                                stand3.setCustomName(symbol);
+                            if (stand3.updateCustomName(symbol, true)) {
                                 DisplayManager.updateDisplay(stand3);
                             }
                         } else {
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand3.getCustomName()).equals("") || stand3.isCustomNameVisible()) {
-                                stand3.setCustomNameVisible(false);
-                                stand3.setCustomName("");
+                            if (stand3.updateCustomName("", false)) {
                                 DisplayManager.updateDisplay(stand3);
                             }
                         }
@@ -341,15 +328,11 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
                                 symbol += emptyColor + progressBarCharacter;
                             }
 
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand4.getCustomName()).equals(symbol) || !stand4.isCustomNameVisible()) {
-                                stand4.setCustomNameVisible(true);
-                                stand4.setCustomName(symbol);
+                            if (stand4.updateCustomName(symbol, true)) {
                                 DisplayManager.updateDisplay(stand4);
                             }
                         } else {
-                            if (!PlainTextComponentSerializer.plainText().serialize(stand4.getCustomName()).equals("") || stand4.isCustomNameVisible()) {
-                                stand4.setCustomNameVisible(false);
-                                stand4.setCustomName("");
+                            if (stand4.updateCustomName("", false)) {
                                 DisplayManager.updateDisplay(stand4);
                             }
                         }
@@ -360,8 +343,16 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
+    public void onBreakSoulCampfire(TileEntityRemovedEvent event) {
+        removeSoulCampfire(event.getBlock());
+    }
+
+    /** Retained for callers compiled against the former block-break handler. */
     public void onBreakSoulCampfire(BlockBreakEvent event) {
-        Block block = event.getBlock();
+        removeSoulCampfire(event.getBlock());
+    }
+
+    private void removeSoulCampfire(Block block) {
         if (!soulcampfireMap.containsKey(block)) {
             return;
         }
@@ -403,7 +394,7 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
         Location target = block.getRelative(facing).getLocation();
         Vector direction = rotateVectorAroundY(target.toVector().subtract(origin.toVector()).multiply(0.44194173), 135);
 
-        Location loc = origin.clone().add(0.5, 0.3, 0.5);
+        Location loc = CampfireDisplay.labelOrigin(origin);
         DisplayEntity slot1 = new DisplayEntity(loc.clone().add(direction));
         setStand(slot1);
         DisplayEntity slot2 = new DisplayEntity(loc.clone().add(rotateVectorAroundY(direction.clone(), 90)));
@@ -427,15 +418,7 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
     }
 
     public void setStand(DisplayEntity stand) {
-        stand.setBasePlate(false);
-        stand.setMarker(true);
-        stand.setGravity(false);
-        stand.setSmall(true);
-        stand.setSilent(true);
-        stand.setInvulnerable(true);
-        stand.setVisible(false);
-        stand.setCustomName("");
-        stand.setRightArmPose(EulerAngle.ZERO);
+        CampfireDisplay.configureLabel(stand);
     }
 
     public Vector rotateVectorAroundY(Vector vector, double degrees) {

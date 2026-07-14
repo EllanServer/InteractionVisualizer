@@ -61,10 +61,13 @@ public class ChunkPosition {
 
     @Override
     public boolean equals(Object object) {
-        if (!(object instanceof ChunkPosition)) {
+        if (this == object) {
+            return true;
+        }
+        if (!(object instanceof ChunkPosition other)) {
             return false;
         }
-        return hashCode() == object.hashCode();
+        return x == other.x && z == other.z && world.equals(other.world);
     }
 
     @Override

@@ -120,7 +120,7 @@ public class InteractionVisualizerAPI {
         } else {
             players = SynchronizedFilteredCollection.filter(players, each -> !excludedPlayers.contains(each));
         }
-        return Collections.unmodifiableCollection(players);
+        return SynchronizedFilteredCollection.unmodifiableCollection(players);
     }
 
     /**
@@ -424,58 +424,45 @@ public class InteractionVisualizerAPI {
 
     /**
      * Create a logical item display at the given location.
-     * DOES NOT SPAWN THE ARMORSTAND.
+     * DOES NOT SPAWN THE DISPLAY.
      *
      * @return The InteractionVisualizer DisplayEntity object created.
      */
     public static DisplayEntity createDisplayEntityItemHoldingObject(Location location) {
-        Vector vector = rotateVectorAroundY(location.clone().getDirection().normalize().multiply(0.19), -100).add(location.clone().getDirection().normalize().multiply(-0.11));
-        DisplayEntity stand = new DisplayEntity(location.add(vector));
-        setStand(stand, location.getYaw());
+        Location displayLocation = itemHoldingDisplayLocation(location);
+        DisplayEntity stand = new DisplayEntity(displayLocation);
+        setStand(stand, displayLocation.getYaw());
         return stand;
+    }
+
+    static Location itemHoldingDisplayLocation(Location location) {
+        return location.clone();
     }
 
     /**
      * Get the rotation mode for a mini item holding DisplayEntity.
-     * ONLY WORKS WITH ARMORSTANDS CREATED USING createDisplayEntityItemHoldingObject(Location location)
+     * ONLY WORKS WITH DISPLAYS CREATED USING createDisplayEntityItemHoldingObject(Location location)
      *
-     * @return The same InteractionVisualizer DisplayEntity object.
+     * @return The current holding mode, or null when this is not a compatible item display.
      */
     public static DisplayEntityHoldingMode getDisplayEntityItemHoldingObjectMode(DisplayEntity stand, DisplayEntityHoldingMode mode) {
-        switch (getStandModeRaw(stand).toLowerCase()) {
-            case "Item":
-                return DisplayEntityHoldingMode.ITEM;
-            case "LowBlock":
-                return DisplayEntityHoldingMode.LOWBLOCK;
-            case "Tool":
-                return DisplayEntityHoldingMode.TOOL;
-            case "Standing":
-                return DisplayEntityHoldingMode.STANDING;
-        }
-        return null;
+        // Keep the unused parameter for binary and source compatibility with the
+        // historical public signature.
+        return getStandMode(stand);
     }
 
     /**
      * Sets the rotation mode for a mini item holding DisplayEntity.
-     * ONLY WORKS WITH ARMORSTANDS CREATED USING createDisplayEntityItemHoldingObject(Location location)
+     * ONLY WORKS WITH DISPLAYS CREATED USING createDisplayEntityItemHoldingObject(Location location)
      *
      * @return The same InteractionVisualizer DisplayEntity object.
      */
     public static DisplayEntity rotateDisplayEntityItemHoldingObject(DisplayEntity stand, DisplayEntityHoldingMode mode) {
-        toggleStandMode(stand, mode.toString());
+        String requestedMode = mode.toString();
+        if (!stand.isLocked()) {
+            toggleStandMode(stand, requestedMode);
+        }
         return stand;
-    }
-
-    private static Vector rotateVectorAroundY(Vector vector, double degrees) {
-        double rad = Math.toRadians(degrees);
-
-        double currentX = vector.getX();
-        double currentZ = vector.getZ();
-
-        double cosine = Math.cos(rad);
-        double sine = Math.sin(rad);
-
-        return new Vector((cosine * currentX - sine * currentZ), vector.getY(), (sine * currentX + cosine * currentZ));
     }
 
     private static void setStand(DisplayEntity stand, float yaw) {
@@ -484,6 +471,7 @@ public class InteractionVisualizerAPI {
         stand.setMarker(true);
         stand.setGravity(false);
         stand.setSmall(true);
+        stand.setLegacyRightHandItemTransform(true);
         stand.setInvulnerable(true);
         stand.setVisible(false);
         stand.setSilent(true);
@@ -510,71 +498,48 @@ public class InteractionVisualizerAPI {
     }
 
     private static void toggleStandMode(DisplayEntity stand, String mode) {
-        String plain = PlainTextComponentSerializer.plainText().serialize(stand.getCustomName());
-        if (!plain.equals("IV.Custom.Item")) {
-            if (plain.equals("IV.Custom.Block")) {
-                stand.setCustomName("IV.Custom.Item");
-                stand.setRotation(stand.getLocation().getYaw() - 45, stand.getLocation().getPitch());
-                stand.setRightArmPose(EulerAngle.ZERO);
-                stand.teleport(stand.getLocation().add(0.0, -0.084, 0.0));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.102), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.14)));
+        String requestedMode = canonicalHoldingMode(mode);
+        String previousMode = getStandModeRaw(stand);
+        if (requestedMode.equals(previousMode)) {
+            stand.setRightArmPose(holdingPose(requestedMode));
+            return;
+        }
 
-            }
-            if (plain.equals("IV.Custom.LowBlock")) {
-                stand.setCustomName("IV.Custom.Item");
-                stand.setRotation(stand.getLocation().getYaw() - 45, stand.getLocation().getPitch());
-                stand.setRightArmPose(EulerAngle.ZERO);
-                stand.teleport(stand.getLocation().add(0.0, -0.02, 0.0));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.09), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.15)));
+        // This is the legacy DisplayEntity adapter for the same stable-anchor
+        // semantics as WorkstationDisplayPositioning#setRenderMode. The public
+        // return type cannot be changed to Item without breaking API consumers.
+        Location location = stand.getLocation();
+        float baseYaw = location.getYaw() - (usesDiagonalYaw(previousMode) ? 45.0F : 0.0F);
+        stand.setCustomName("IV.Custom." + requestedMode);
+        stand.setRightArmPose(holdingPose(requestedMode));
+        stand.setRotation(baseYaw + (usesDiagonalYaw(requestedMode) ? 45.0F : 0.0F), location.getPitch());
+    }
 
-            }
-            if (plain.equals("IV.Custom.Tool")) {
-                stand.setCustomName("IV.Custom.Item");
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.3), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.1)));
-                stand.teleport(stand.getLocation().add(0, 0.26, 0));
-                stand.setRightArmPose(EulerAngle.ZERO);
-            }
-            if (plain.equals("IV.Custom.Standing")) {
-                stand.setCustomName("IV.Custom.Item");
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(0.323), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(-0.115)));
-                stand.teleport(stand.getLocation().add(0, 0.32, 0));
-                stand.setRightArmPose(EulerAngle.ZERO);
-            }
+    private static EulerAngle holdingPose(String mode) {
+        return switch (mode.toLowerCase(java.util.Locale.ROOT)) {
+            case "block", "lowblock" -> new EulerAngle(357.9, 0.0, 0.0);
+            case "tool" -> new EulerAngle(357.99, 0.0, 300.0);
+            case "standing" -> new EulerAngle(0.0, 4.7, 4.7);
+            case "item" -> EulerAngle.ZERO;
+            default -> throw new IllegalArgumentException("Unsupported display entity holding mode: " + mode);
+        };
+    }
+
+    private static String canonicalHoldingMode(String mode) {
+        DisplayEntityHoldingMode value = DisplayEntityHoldingMode.fromName(mode);
+        if (value != null) {
+            return value.toString();
         }
-        if (mode.equals("Block")) {
-            stand.setCustomName("IV.Custom.Block");
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.14)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.102), -90)));
-            stand.teleport(stand.getLocation().add(0.0, 0.084, 0.0));
-            stand.setRightArmPose(new EulerAngle(357.9, 0.0, 0.0));
-            stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
+        // Preserve support for the historical internal Block pose even though
+        // it was never exposed as a DisplayEntityHoldingMode enum constant.
+        if ("Block".equalsIgnoreCase(mode)) {
+            return "Block";
         }
-        if (mode.equals("LowBlock")) {
-            stand.setCustomName("IV.Custom.LowBlock");
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.15)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.09), -90)));
-            stand.teleport(stand.getLocation().add(0.0, 0.02, 0.0));
-            stand.setRightArmPose(new EulerAngle(357.9, 0.0, 0.0));
-            stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
-        }
-        if (mode.equals("Tool")) {
-            stand.setCustomName("IV.Custom.Tool");
-            stand.setRightArmPose(new EulerAngle(357.99, 0.0, 300.0));
-            stand.teleport(stand.getLocation().add(0, -0.26, 0));
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.1)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.3), -90)));
-        }
-        if (mode.equals("Standing")) {
-            stand.setCustomName("IV.Custom.Standing");
-            stand.setRightArmPose(new EulerAngle(0.0, 4.7, 4.7));
-            stand.teleport(stand.getLocation().add(0, -0.32, 0));
-            stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(0.115)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(-0.323), -90)));
-        }
+        throw new IllegalArgumentException("Unsupported display entity holding mode: " + mode);
+    }
+
+    private static boolean usesDiagonalYaw(String mode) {
+        return "Block".equalsIgnoreCase(mode) || "LowBlock".equalsIgnoreCase(mode);
     }
 
     /**

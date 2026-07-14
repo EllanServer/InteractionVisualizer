@@ -114,8 +114,8 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
                 return;
             }
             ConcurrentHashMap<String, Object> map = displayingNotes.get(block);
-            DisplayEntity stand = map == null ? new DisplayEntity(textLocation.clone().add(0.0, -0.3, 0.0)) : (DisplayEntity) map.get("Stand");
-            stand.teleport(textLocation.clone().add(0.0, -0.3, 0.0));
+            DisplayEntity stand = map == null ? new DisplayEntity(labelLocation(textLocation)) : (DisplayEntity) map.get("Stand");
+            stand.teleport(labelLocation(textLocation));
             setStand(stand);
 
             map = map == null ? new ConcurrentHashMap<String, Object>() : map;
@@ -147,6 +147,7 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
     }
 
     public void setStand(DisplayEntity stand) {
+        stand.useLegacyNameTagStyle();
         stand.setArms(true);
         stand.setBasePlate(false);
         stand.setMarker(true);
@@ -156,6 +157,12 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
         stand.setInvulnerable(true);
         stand.setVisible(false);
         stand.setCustomNameVisible(true);
+    }
+
+    static Location labelLocation(Location clickedFaceLocation) {
+        // Keep the original marker-entity anchor. DisplayManager applies the
+        // vanilla name-tag attachment and TextDisplay origin compensation.
+        return clickedFaceLocation.clone().add(0.0, -0.3, 0.0);
     }
 
     @SuppressWarnings("DuplicateBranchesInSwitch")

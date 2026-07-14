@@ -23,6 +23,8 @@ package com.loohp.interactionvisualizer;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.config.Config;
 import com.loohp.interactionvisualizer.database.Database;
+import com.loohp.interactionvisualizer.debug.PerformanceBlockScene;
+import com.loohp.interactionvisualizer.debug.PerformanceScene;
 import com.loohp.interactionvisualizer.integration.CustomContentManager;
 import com.loohp.interactionvisualizer.managers.AsyncExecutorManager;
 import com.loohp.interactionvisualizer.managers.LangManager;
@@ -31,6 +33,7 @@ import com.loohp.interactionvisualizer.managers.MaterialManager;
 import com.loohp.interactionvisualizer.managers.MusicManager;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PreferenceManager;
+import com.loohp.interactionvisualizer.managers.PerformanceMetrics;
 import com.loohp.interactionvisualizer.managers.TaskManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.metrics.Charts;
@@ -62,6 +65,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public class InteractionVisualizer extends JavaPlugin {
@@ -102,6 +106,19 @@ public class InteractionVisualizer extends JavaPlugin {
     public static boolean hideIfObstructed = false;
 
     public static boolean defaultDisabledAll = false;
+    /** A/B switch: virtual item remains authoritative while an invisible tracker stays stationary. */
+    public static boolean staticVirtualItemAnchorsDuringAnimation = false;
+    /** A/B switch: eligible stationary virtual items are tracked and rendered entirely by packets. */
+    public static boolean packetOnlyStaticVirtualItems = false;
+    /** A/B switch: smooths visibility recovery bursts; hides are always immediate. */
+    public static boolean visibilityRateLimiting = false;
+    public static int visibilityRateLimitBucketSize = 128;
+    public static int visibilityRateLimitRestorePerTick = 32;
+    /** A/B switch: coalesces block changes and updates tracked blocks from fixed-budget loops. */
+    public static boolean eventDrivenBlockUpdates = false;
+    public static int blockUpdateMaxDirtyPerTick = 64;
+
+    private boolean blockUpdateModeInitialized;
 
     public static ILightManager lightManager;
     public static PreferenceManager preferenceManager;
@@ -188,6 +205,7 @@ public class InteractionVisualizer extends JavaPlugin {
         MaterialManager.setup();
 
         getCommand("interactionvisualizer").setExecutor(new Commands());
+        PerformanceMetrics.register(this);
 
         TaskManager.run();
 
@@ -232,6 +250,7 @@ public class InteractionVisualizer extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        shutdownPerformanceScenes();
         CustomContentManager.shutdown();
         if (preferenceManager != null) {
             preferenceManager.close();
@@ -242,6 +261,33 @@ public class InteractionVisualizer extends JavaPlugin {
         }
         getServer().getConsoleSender().sendMessage(Component.text(
                 "[InteractionVisualizer] Disabled; all display entities removed.", NamedTextColor.RED));
+    }
+
+    private void shutdownPerformanceScenes() {
+        try {
+            PerformanceBlockScene.ShutdownReport report = PerformanceBlockScene.shutdown();
+            if (report.unresolvedCount() != 0) {
+                getLogger().severe("Performance block-scene cleanup left blocks unresolved during disable: "
+                        + report.summary() + "; unloaded or externally modified blocks were left untouched");
+            }
+        } catch (Throwable throwable) {
+            logPerformanceCleanupFailure("Performance block-scene cleanup failed; core disable will continue",
+                    throwable);
+        }
+        try {
+            PerformanceScene.shutdown();
+        } catch (Throwable throwable) {
+            logPerformanceCleanupFailure("Performance display-scene cleanup failed; core disable will continue",
+                    throwable);
+        }
+    }
+
+    private void logPerformanceCleanupFailure(String message, Throwable throwable) {
+        try {
+            getLogger().log(Level.SEVERE, message, throwable);
+        } catch (Throwable ignored) {
+            // Diagnostic logging must never prevent the plugin's core shutdown.
+        }
     }
 
     public SparrowConfiguration getConfiguration() {
@@ -285,6 +331,27 @@ public class InteractionVisualizer extends JavaPlugin {
         }
 
         defaultDisabledAll = getConfiguration().getBoolean("Settings.DefaultDisableAll");
+        staticVirtualItemAnchorsDuringAnimation = getConfiguration().getBoolean(
+                "Settings.Performance.VirtualItems.StaticAnchorDuringAnimation");
+        packetOnlyStaticVirtualItems = getConfiguration().getBoolean(
+                "Settings.Performance.VirtualItems.PacketOnlyStatic");
+        visibilityRateLimiting = getConfiguration().getBoolean(
+                "Settings.Performance.VisibilityRateLimit.Enabled");
+        visibilityRateLimitBucketSize = Math.max(1, getConfiguration().getInt(
+                "Settings.Performance.VisibilityRateLimit.BucketSize"));
+        visibilityRateLimitRestorePerTick = Math.max(1, getConfiguration().getInt(
+                "Settings.Performance.VisibilityRateLimit.RestorePerTick"));
+        boolean configuredEventDrivenBlockUpdates = getConfiguration().getBoolean(
+                "Settings.Performance.BlockUpdates.EventDriven");
+        if (!blockUpdateModeInitialized) {
+            eventDrivenBlockUpdates = configuredEventDrivenBlockUpdates;
+        } else if (eventDrivenBlockUpdates != configuredEventDrivenBlockUpdates) {
+            getLogger().warning("Settings.Performance.BlockUpdates.EventDriven is applied only at startup; "
+                    + "restart the server to change the active block update mode.");
+        }
+        blockUpdateMaxDirtyPerTick = Math.max(1, getConfiguration().getInt(
+                "Settings.Performance.BlockUpdates.MaxDirtyPerTick"));
+        blockUpdateModeInitialized = true;
 
         getServer().getPluginManager().callEvent(new InteractionVisualizerReloadEvent());
     }

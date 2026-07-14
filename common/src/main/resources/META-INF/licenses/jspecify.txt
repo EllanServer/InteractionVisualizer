@@ -1,0 +1,5 @@
+JSpecify 1.0.0
+https://github.com/jspecify/jspecify
+
+Licensed under the Apache License, Version 2.0.
+The complete Apache-2.0 terms are included in META-INF/licenses/caffeine.txt.

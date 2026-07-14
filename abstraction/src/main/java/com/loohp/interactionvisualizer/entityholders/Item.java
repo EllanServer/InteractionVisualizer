@@ -12,9 +12,8 @@
 
 package com.loohp.interactionvisualizer.entityholders;
 
-import com.loohp.interactionvisualizer.utils.ComponentFont;
+import com.loohp.interactionvisualizer.utils.LegacyTextComponentCache;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
@@ -26,19 +25,86 @@ import org.bukkit.util.Vector;
  */
 public class Item extends VisualizerEntity {
 
+    /**
+     * Rendering presentation for one logical item.
+     *
+     * <p>{@link #DROPPED} preserves the Furnace/Sparrow fake-item path. The
+     * remaining modes use a fixed Paper ItemDisplay while sharing the same
+     * logical lifecycle, viewer filtering, updates, and removal API.</p>
+     */
+    public enum RenderMode {
+        DROPPED,
+        ITEM,
+        BLOCK,
+        LOW_BLOCK,
+        TOOL,
+        STANDING,
+        BANNER,
+        FRAME;
+
+        public boolean isFixedDisplay() {
+            return this != DROPPED;
+        }
+    }
+
     private ItemStack item;
+    private RenderMode renderMode;
+    private int frameRotation;
     private boolean gravity;
     private boolean glowing;
     private int pickupDelay;
     private Component customName;
+    private String customNameRawSource;
+    private boolean customNameRawSourceKnown;
     private boolean customNameVisible;
     private Vector velocity;
 
     public Item(Location location) {
+        this(location, RenderMode.DROPPED);
+    }
+
+    public Item(Location location, RenderMode renderMode) {
         super(location);
-        this.item = ItemStack.of(Material.STONE);
+        this.renderMode = java.util.Objects.requireNonNull(renderMode, "renderMode");
+        this.item = renderMode.isFixedDisplay() ? ItemStack.empty() : ItemStack.of(Material.STONE);
         this.gravity = false;
         this.velocity = new Vector();
+    }
+
+    public RenderMode getRenderMode() {
+        return renderMode;
+    }
+
+    public void setRenderMode(RenderMode renderMode) {
+        if (lock) {
+            return;
+        }
+        RenderMode value = java.util.Objects.requireNonNull(renderMode, "renderMode");
+        if (this.renderMode != value) {
+            this.renderMode = value;
+            if (!value.isFixedDisplay() && item.isEmpty()) {
+                item = ItemStack.of(Material.STONE);
+            }
+            markDirty();
+        }
+    }
+
+    public boolean isFixedDisplay() {
+        return renderMode.isFixedDisplay();
+    }
+
+    public int getFrameRotation() {
+        return frameRotation;
+    }
+
+    public void setFrameRotation(int frameRotation) {
+        if (frameRotation < 0 || frameRotation > 7) {
+            throw new IllegalArgumentException("Item frame rotation must be between 0 and 7");
+        }
+        if (!lock && this.frameRotation != frameRotation) {
+            this.frameRotation = frameRotation;
+            markDirty();
+        }
     }
 
     public Component getCustomName() {
@@ -46,15 +112,37 @@ public class Item extends VisualizerEntity {
     }
 
     public void setCustomName(String name) {
-        setCustomName(name == null ? null : ComponentFont.parseFont(
-                LegacyComponentSerializer.legacySection().deserialize(name)));
+        updateCustomName(name);
     }
 
     public void setCustomName(Component name) {
+        customNameRawSource = null;
+        customNameRawSourceKnown = false;
+        assignCustomName(name);
+    }
+
+    public boolean updateCustomName(String name) {
+        if (LegacyTextComponentCache.isEnabled() && customNameRawSourceKnown
+                && java.util.Objects.equals(customNameRawSource, name)) {
+            if (name != null) {
+                LegacyTextComponentCache.recordSameRawFastPath();
+            }
+            return false;
+        }
+        Component parsed = name == null ? null : LegacyTextComponentCache.parse(name);
+        boolean changed = assignCustomName(parsed);
+        customNameRawSource = LegacyTextComponentCache.isEnabled() ? name : null;
+        customNameRawSourceKnown = LegacyTextComponentCache.isEnabled();
+        return changed;
+    }
+
+    private boolean assignCustomName(Component name) {
         if (!java.util.Objects.equals(customName, name)) {
             customName = name;
             markDirty();
+            return true;
         }
+        return false;
     }
 
     public boolean isGlowing() {
@@ -92,7 +180,9 @@ public class Item extends VisualizerEntity {
     }
 
     private void setItemInternal(ItemStack value) {
-        ItemStack normalized = value == null || value.isEmpty() ? ItemStack.of(Material.STONE) : value.clone();
+        ItemStack normalized = value == null || value.isEmpty()
+                ? (renderMode.isFixedDisplay() ? ItemStack.empty() : ItemStack.of(Material.STONE))
+                : value.clone();
         if (!item.equals(normalized)) {
             item = normalized;
             markDirty();
@@ -140,6 +230,7 @@ public class Item extends VisualizerEntity {
 
     @Override
     public double getHeight() {
-        return 0.25;
+        return renderMode == RenderMode.BANNER ? 1.5
+                : (renderMode == RenderMode.FRAME ? 0.75 : (renderMode.isFixedDisplay() ? 0.5 : 0.25));
     }
 }

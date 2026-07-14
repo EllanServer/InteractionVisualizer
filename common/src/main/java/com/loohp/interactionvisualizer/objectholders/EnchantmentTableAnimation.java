@@ -28,19 +28,18 @@ import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.utils.ComponentFont;
+import com.loohp.interactionvisualizer.utils.LegacyTextComponentCache;
 import com.loohp.interactionvisualizer.utils.RomanNumberUtils;
 import com.loohp.interactionvisualizer.utils.TranslationUtils;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TranslatableComponent;
 import net.kyori.adventure.text.format.NamedTextColor;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
 import org.bukkit.block.Block;
 import org.bukkit.enchantments.Enchantment;
-import org.bukkit.entity.Display;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
@@ -148,9 +147,10 @@ public class EnchantmentTableAnimation {
 
         this.enchanting.set(true);
 
+        boolean spawned = false;
         if (!this.item.isPresent()) {
             this.item = Optional.of(new Item(location.clone().add(0.5, 1.3, 0.5)));
-            DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item.get());
+            spawned = true;
         }
 
         Item item = this.item.get();
@@ -159,7 +159,11 @@ public class EnchantmentTableAnimation {
         item.setGravity(false);
         item.setLocked(true);
         item.setVelocity(new Vector(0.0, 0.05, 0.0));
-        DisplayManager.updateItem(item);
+        if (spawned) {
+            DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+        } else {
+            DisplayManager.updateItem(item);
+        }
         for (Player each : InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY)) {
             each.spawnParticle(Particle.PORTAL, location.clone().add(0.5, 2.6, 0.5), 200);
         }
@@ -181,7 +185,7 @@ public class EnchantmentTableAnimation {
                         .get(EnchantmentTableDisplay.getEnchantmentIdOrKey(ench));
                 Component enchantmentName = customName == null || customName.isBlank()
                         ? ench.description()
-                        : ComponentFont.parseFont(LegacyComponentSerializer.legacySection().deserialize(customName));
+                        : LegacyTextComponentCache.parse(customName);
                 DisplayEntity stand = new DisplayEntity(standloc);
                 if (ench.getMaxLevel() != 1 || level != 1) {
                     enchantmentName = enchantmentName.append(ComponentFont.parseFont(Component.text(" " + RomanNumberUtils.toRoman(entry.getValue()), NamedTextColor.AQUA)));
@@ -320,7 +324,7 @@ public class EnchantmentTableAnimation {
     }
 
     private void setStand(DisplayEntity stand) {
-        stand.setBillboard(Display.Billboard.CENTER);
+        stand.useLegacyNameTagStyle();
         stand.setMarker(true);
         stand.setSmall(true);
         stand.setVisible(true);

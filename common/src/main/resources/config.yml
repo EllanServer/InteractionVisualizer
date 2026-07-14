@@ -281,6 +281,17 @@ Entities:
       #This is in ticks (20 ticks = 1 second)
       #Setting this too low might impact performance
       UpdateRate: 20
+      #Experimental server-side distance culling for dropped-item labels
+      VisibilityCulling:
+        #Preserves the legacy label lifecycle unless explicitly enabled after validation
+        Enabled: false
+        ViewDistance: 64
+      #Experimental smoothing for label visibility bursts
+      VisibilityRateLimit:
+        #Independent from Settings.Performance.VisibilityRateLimit and disabled by default
+        Enabled: false
+        BucketSize: 128
+        RestorePerTick: 32
       #Paper does not expose its internal per-item despawn rate. This value
       #drives the public-API timer (6000 ticks = 5 minutes).
       DespawnTicks: 6000
@@ -321,6 +332,25 @@ Settings:
   #MIGHT BE RESOURCE INTENSIVE
   #MIGHT BE RESOURCE INTENSIVE
   HideIfViewObstructed: false
+  Performance:
+    VirtualItems:
+      #A/B switch: keeps invisible tracker anchors still during short item animations.
+      #The client-side virtual item remains corrected every tick; turn this on only after profiling your server.
+      StaticAnchorDuringAnimation: false
+      #A/B switch: eligible stationary virtual items without a visible custom name use no Bukkit tracker entity.
+      #Requires separate packet-capture and client compatibility validation before enabling in production.
+      PacketOnlyStatic: false
+    VisibilityRateLimit:
+      #A/B switch: hides remain immediate; newly visible entities are restored through a per-player token bucket.
+      Enabled: false
+      BucketSize: 128
+      RestorePerTick: 32
+    BlockUpdates:
+      #A/B switch: coalesces event-driven changes and replaces per-block child tasks with fixed-budget loops.
+      #Restart the server after changing this option so runnable display tasks are recreated.
+      EventDriven: false
+      #Dirty-update budget per block display type; active rotation and fallback audit have separate bounded work.
+      MaxDirtyPerTick: 64
 
 Options:
   Updater: true

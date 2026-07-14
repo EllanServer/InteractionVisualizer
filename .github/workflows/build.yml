@@ -29,6 +29,59 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Validate performance tooling
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scripts = @(
+            'tools/perf/phase2-pktmon.ps1',
+            'tools/perf/analyze-presentmon.ps1',
+            'tools/perf/analyze-minecraft-debug-profile.ps1',
+            'tools/perf/analyze-jfr-socket-writes.ps1',
+            'tools/perf/analyze-phase2-abba.ps1',
+            'tools/perf/analyze-phase2-pcap.ps1'
+          )
+          foreach ($script in $scripts) {
+            [void][scriptblock]::Create((Get-Content -Raw -LiteralPath $script))
+          }
+          $pktmonSelfTestJson = & ./tools/perf/phase2-pktmon.ps1 selftest | Out-String
+          $pktmonSelfTest = $pktmonSelfTestJson | ConvertFrom-Json
+          if (-not $pktmonSelfTest.passed) {
+            throw 'PktMon wrapper self-test did not report passed=true.'
+          }
+          $selfTestJson = & ./tools/perf/analyze-presentmon.ps1 -SelfTest | Out-String
+          $selfTest = $selfTestJson | ConvertFrom-Json
+          if (-not $selfTest.passed) {
+            throw 'PresentMon analyzer self-test did not report passed=true.'
+          }
+          $debugProfileSelfTestJson = & ./tools/perf/analyze-minecraft-debug-profile.ps1 -SelfTest | Out-String
+          $debugProfileSelfTest = $debugProfileSelfTestJson | ConvertFrom-Json
+          if (-not $debugProfileSelfTest.passed) {
+            throw 'Minecraft debug-profile analyzer self-test did not report passed=true.'
+          }
+          $jfrSelfTestJson = & ./tools/perf/analyze-jfr-socket-writes.ps1 -SelfTest | Out-String
+          $jfrSelfTest = $jfrSelfTestJson | ConvertFrom-Json
+          if (-not $jfrSelfTest.passed) {
+            throw 'JFR socket-write analyzer self-test did not report passed=true.'
+          }
+          $abbaSelfTestJson = & ./tools/perf/analyze-phase2-abba.ps1 -SelfTest | Out-String
+          $abbaSelfTest = $abbaSelfTestJson | ConvertFrom-Json
+          if (-not $abbaSelfTest.passed) {
+            throw 'Phase 2 ABBA analyzer self-test did not report passed=true.'
+          }
+          $pcapSelfTestJson = & ./tools/perf/analyze-phase2-pcap.ps1 -SelfTest | Out-String
+          $pcapSelfTest = $pcapSelfTestJson | ConvertFrom-Json
+          if (-not $pcapSelfTest.passed) {
+            throw 'Phase 2 pcap analyzer self-test did not report passed=true.'
+          }
+
+      - name: Validate runtime harness syntax
+        shell: bash
+        run: |
+          bash -n tools/perf/prepare-phase2-protocol-client.sh
+          bash -n tools/perf/run-phase2-runtime-once.sh
+          node --check tools/perf/phase2-protocol-client.js
+
       - name: Run checks and build production jar
         run: ./gradlew clean check shadowJar --no-daemon --no-build-cache --rerun-tasks
 

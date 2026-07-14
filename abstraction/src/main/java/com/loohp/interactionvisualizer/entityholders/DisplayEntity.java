@@ -12,9 +12,8 @@
 
 package com.loohp.interactionvisualizer.entityholders;
 
-import com.loohp.interactionvisualizer.utils.ComponentFont;
+import com.loohp.interactionvisualizer.utils.LegacyTextComponentCache;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.entity.Display;
@@ -38,10 +37,18 @@ public class DisplayEntity extends VisualizerEntity {
     private EulerAngle headPose;
     private ItemStack helmet;
     private ItemStack mainHand;
+    private boolean legacyRightHandItemTransform;
+    private boolean legacyNameTagGeometry;
+    private boolean legacyNameTagStyle;
     private Component customName;
+    private String customNameRawSource;
+    private boolean customNameRawSourceKnown;
     private boolean customNameVisible;
+    private boolean defaultBackground;
     private Vector velocity;
     private Display.Billboard billboard;
+    private float textScale;
+    private boolean unboundedTextWidth;
     private float viewRange;
     private int interpolationDuration;
     private int teleportDuration;
@@ -55,8 +62,14 @@ public class DisplayEntity extends VisualizerEntity {
         this.headPose = EulerAngle.ZERO;
         this.helmet = ItemStack.empty();
         this.mainHand = ItemStack.empty();
+        this.legacyRightHandItemTransform = false;
+        this.legacyNameTagGeometry = false;
+        this.legacyNameTagStyle = false;
+        this.defaultBackground = false;
         this.velocity = new Vector();
         this.billboard = Display.Billboard.FIXED;
+        this.textScale = 0.5F;
+        this.unboundedTextWidth = false;
         this.viewRange = 1.0F;
         this.interpolationDuration = 3;
         this.teleportDuration = 3;
@@ -67,15 +80,46 @@ public class DisplayEntity extends VisualizerEntity {
     }
 
     public void setCustomName(String customName) {
-        setCustomName(customName == null ? null : ComponentFont.parseFont(
-                LegacyComponentSerializer.legacySection().deserialize(customName)));
+        updateCustomName(customName);
     }
 
     public void setCustomName(Component customName) {
+        customNameRawSource = null;
+        customNameRawSourceKnown = false;
+        assignCustomName(customName);
+    }
+
+    public boolean updateCustomName(String customName) {
+        if (LegacyTextComponentCache.isEnabled() && customNameRawSourceKnown
+                && java.util.Objects.equals(customNameRawSource, customName)) {
+            if (customName != null) {
+                LegacyTextComponentCache.recordSameRawFastPath();
+            }
+            return false;
+        }
+        Component parsed = customName == null ? null : LegacyTextComponentCache.parse(customName);
+        boolean changed = assignCustomName(parsed);
+        customNameRawSource = LegacyTextComponentCache.isEnabled() ? customName : null;
+        customNameRawSourceKnown = LegacyTextComponentCache.isEnabled();
+        return changed;
+    }
+
+    public boolean updateCustomName(String customName, boolean visible) {
+        boolean changed = updateCustomName(customName);
+        if (customNameVisible != visible) {
+            setCustomNameVisible(visible);
+            return true;
+        }
+        return changed;
+    }
+
+    private boolean assignCustomName(Component customName) {
         if (!java.util.Objects.equals(this.customName, customName)) {
             this.customName = customName;
             markDirty();
+            return true;
         }
+        return false;
     }
 
     public boolean isCustomNameVisible() {
@@ -89,8 +133,25 @@ public class DisplayEntity extends VisualizerEntity {
         }
     }
 
+    public boolean isDefaultBackground() {
+        return defaultBackground;
+    }
+
+    public void setDefaultBackground(boolean defaultBackground) {
+        if (this.defaultBackground != defaultBackground) {
+            this.defaultBackground = defaultBackground;
+            markDirty();
+        }
+    }
+
     public boolean isTextDisplay() {
-        return customNameVisible;
+        /*
+         * Legacy name-tag holders remain text-shaped even while their name is
+         * temporarily hidden.  Otherwise a lectern (and every other toggled
+         * hologram) is first created as an empty ItemDisplay and must be
+         * destroyed/re-spawned as a TextDisplay when its text becomes visible.
+         */
+        return legacyNameTagGeometry || customNameVisible;
     }
 
     public ItemStack getDisplayItem() {
@@ -99,7 +160,65 @@ public class DisplayEntity extends VisualizerEntity {
     }
 
     public ItemDisplay.ItemDisplayTransform getItemDisplayTransform() {
-        return helmet.isEmpty() ? ItemDisplay.ItemDisplayTransform.FIXED : ItemDisplay.ItemDisplayTransform.HEAD;
+        if (helmet != null && !helmet.isEmpty()) {
+            return ItemDisplay.ItemDisplayTransform.HEAD;
+        }
+        return usesLegacyRightHandItemTransform()
+                ? ItemDisplay.ItemDisplayTransform.THIRDPERSON_RIGHTHAND
+                : ItemDisplay.ItemDisplayTransform.FIXED;
+    }
+
+    /**
+     * The public item-holding API still exposes its historical stand-shaped
+     * state. An explicit profile flag distinguishes that compatibility surface
+     * from ordinary fixed ItemDisplays without parsing its reserved custom name
+     * on every refresh.
+     */
+    public boolean usesLegacyRightHandItemTransform() {
+        return legacyRightHandItemTransform && (helmet == null || helmet.isEmpty());
+    }
+
+    public void setLegacyRightHandItemTransform(boolean legacyRightHandItemTransform) {
+        if (!lock && this.legacyRightHandItemTransform != legacyRightHandItemTransform) {
+            this.legacyRightHandItemTransform = legacyRightHandItemTransform;
+            markDirty();
+        }
+    }
+
+    /**
+     * Marks this text as a replacement for a visible custom name on the
+     * legacy marker entity. The client renders TextDisplay text from a
+     * different origin, so the renderer also uses this marker to apply the
+     * exact name-tag anchor compensation.
+     */
+    public boolean usesLegacyNameTagStyle() {
+        return legacyNameTagStyle;
+    }
+
+    /**
+     * Restores only the legacy name tag's 1:1 glyph size and attachment
+     * origin, leaving background and billboard choices untouched.
+     */
+    public boolean usesLegacyNameTagGeometry() {
+        return legacyNameTagGeometry;
+    }
+
+    public void useLegacyNameTagGeometry() {
+        if (!legacyNameTagGeometry) {
+            legacyNameTagGeometry = true;
+            markDirty();
+        }
+        setTextScale(1.0F);
+    }
+
+    public void useLegacyNameTagStyle() {
+        useLegacyNameTagGeometry();
+        if (!legacyNameTagStyle) {
+            legacyNameTagStyle = true;
+            markDirty();
+        }
+        setDefaultBackground(true);
+        setBillboard(Display.Billboard.CENTER);
     }
 
     public void setItemInMainHand(ItemStack item) {
@@ -211,6 +330,29 @@ public class DisplayEntity extends VisualizerEntity {
         Display.Billboard value = billboard == null ? Display.Billboard.FIXED : billboard;
         if (this.billboard != value) {
             this.billboard = value;
+            markDirty();
+        }
+    }
+
+    public float getTextScale() {
+        return textScale;
+    }
+
+    public void setTextScale(float textScale) {
+        float value = Float.isFinite(textScale) ? Math.max(0.0F, textScale) : 0.5F;
+        if (this.textScale != value) {
+            this.textScale = value;
+            markDirty();
+        }
+    }
+
+    public boolean usesUnboundedTextWidth() {
+        return unboundedTextWidth || legacyNameTagStyle;
+    }
+
+    public void setUnboundedTextWidth(boolean unboundedTextWidth) {
+        if (this.unboundedTextWidth != unboundedTextWidth) {
+            this.unboundedTextWidth = unboundedTextWidth;
             markDirty();
         }
     }
