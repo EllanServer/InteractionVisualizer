@@ -33,13 +33,16 @@ import com.loohp.interactionvisualizer.utils.LocationUtils;
 import com.loohp.interactionvisualizer.utils.MaterialUtils;
 import com.loohp.interactionvisualizer.utils.MaterialUtils.MaterialMode;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
+import com.loohp.interactionvisualizer.utils.WorkstationDisplayPositioning;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
+import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
 import org.bukkit.block.Block;
+import org.bukkit.entity.Display;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -97,6 +100,7 @@ public class AnvilDisplay extends VisualizerInteractDisplay implements Listener 
             Map<String, Object> map = new HashMap<>();
             map.put("Player", player);
             map.put("2", "N/A");
+            map.put("2Label", "N/A");
             map.putAll(spawnDisplayEntitys(player, block));
             openedAnvil.put(block, map);
         }
@@ -119,9 +123,9 @@ public class AnvilDisplay extends VisualizerInteractDisplay implements Listener 
                 item.setVelocity(new Vector(0, 0, 0));
                 item.setPickupDelay(32767);
                 item.setGravity(false);
-                item.setCustomName(itemstack.getItemMeta().displayName());
-                item.setCustomNameVisible(true);
+                DisplayEntity label = spawnResultLabel(item.getLocation(), itemstack.getItemMeta().displayName());
                 map.put("2", item);
+                map.put("2Label", label);
                 DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
                 DisplayManager.updateItem(item);
             } else {
@@ -132,13 +136,14 @@ public class AnvilDisplay extends VisualizerInteractDisplay implements Listener 
             if (itemstack != null) {
                 if (!item.getItemStack().equals(itemstack)) {
                     item.setItemStack(itemstack);
-                    item.setCustomName(itemstack.getItemMeta().displayName());
-                    item.setCustomNameVisible(true);
                     DisplayManager.updateItem(item);
+                    DisplayEntity label = resultLabel(map, item.getLocation(), itemstack.getItemMeta().displayName());
+                    DisplayManager.updateDisplay(label);
                 }
             } else {
                 map.put("2", "N/A");
                 DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                removeResultLabel(map);
             }
         }
         for (int i = 0; i < 2; i++) {
@@ -246,12 +251,14 @@ public class AnvilDisplay extends VisualizerInteractDisplay implements Listener 
             result.setVelocity(new Vector());
             result.setPickupDelay(32767);
             result.setGravity(false);
-            result.setCustomName(itemstack.getItemMeta().displayName());
-            result.setCustomNameVisible(true);
+            DisplayEntity label = spawnResultLabel(result.getLocation(), itemstack.getItemMeta().displayName());
             map.put("2", result);
+            map.put("2Label", label);
             DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), result);
         }
         Item item = (Item) map.get("2");
+        DisplayEntity resultLabel = resultLabel(map, item.getLocation(), itemstack.getItemMeta().displayName());
+        DisplayManager.updateDisplay(resultLabel);
 
         Inventory before = Bukkit.createInventory(null, 9);
         before.setItem(0, InventoryUtils.cloneItem(view.getItem(0)));
@@ -292,6 +299,7 @@ public class AnvilDisplay extends VisualizerInteractDisplay implements Listener 
             }, 6);
 
             Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
+                DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), resultLabel);
                 DisplayManager.updateItem(item);
                 DisplayManager.collectItem(item, player);
 
@@ -403,7 +411,54 @@ public class AnvilDisplay extends VisualizerInteractDisplay implements Listener 
                 }
             }
         }
+        removeResultLabel(map);
         openedAnvil.remove(block);
+    }
+
+    private DisplayEntity spawnResultLabel(Location itemLocation, Component name) {
+        DisplayEntity label = createResultLabel(itemLocation, name);
+        DisplayManager.spawnDisplay(
+                InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), label);
+        return label;
+    }
+
+    private DisplayEntity resultLabel(Map<String, Object> map, Location itemLocation, Component name) {
+        Object value = map.get("2Label");
+        if (value instanceof DisplayEntity label) {
+            label.setCustomName(name);
+            return label;
+        }
+        DisplayEntity label = spawnResultLabel(itemLocation, name);
+        map.put("2Label", label);
+        return label;
+    }
+
+    private void removeResultLabel(Map<String, Object> map) {
+        Object value = map.put("2Label", "N/A");
+        if (value instanceof DisplayEntity label) {
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), label);
+        }
+    }
+
+    static DisplayEntity createResultLabel(Location itemLocation, Component name) {
+        DisplayEntity label = new DisplayEntity(resultLabelLocation(itemLocation));
+        configureResultLabel(label, name);
+        return label;
+    }
+
+    static Location resultLabelLocation(Location itemLocation) {
+        return itemLocation.clone().add(0.0, 0.55, 0.0);
+    }
+
+    static void configureResultLabel(DisplayEntity label, Component name) {
+        label.setCustomName(name);
+        label.setCustomNameVisible(true);
+        label.setBillboard(Display.Billboard.CENTER);
+        label.setDefaultBackground(true);
+        label.setTextScale(1.0F);
+        label.setUnboundedTextWidth(true);
+        label.setInterpolationDuration(0);
+        label.setTeleportDuration(0);
     }
 
     public MaterialMode standMode(Item stand) {
@@ -418,79 +473,16 @@ public class AnvilDisplay extends VisualizerInteractDisplay implements Listener 
     }
 
     public void toggleStandMode(Item stand, MaterialMode mode) {
-        Item.RenderMode previous = stand.getRenderMode();
-        if (previous != Item.RenderMode.ITEM) {
-            if (previous == Item.RenderMode.BLOCK) {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.setRotation(stand.getLocation().getYaw() - 45, stand.getLocation().getPitch());
-                stand.teleport(stand.getLocation().add(0.0, -0.084, 0.0));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.102), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.14)));
-
-            }
-            if (previous == Item.RenderMode.LOW_BLOCK) {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.setRotation(stand.getLocation().getYaw() - 45, stand.getLocation().getPitch());
-                stand.teleport(stand.getLocation().add(0.0, -0.02, 0.0));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.09), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.15)));
-
-            }
-            if (previous == Item.RenderMode.TOOL) {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.3), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.1)));
-                stand.teleport(stand.getLocation().add(0, 0.26, 0));
-            }
-            if (previous == Item.RenderMode.STANDING) {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(0.323), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(-0.115)));
-                stand.teleport(stand.getLocation().add(0, 0.32, 0));
-            }
-        }
-        if (mode == MaterialMode.BLOCK) {
-            stand.setRenderMode(Item.RenderMode.BLOCK);
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.14)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.102), -90)));
-            stand.teleport(stand.getLocation().add(0.0, 0.084, 0.0));
-            stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
-        }
-        if (mode == MaterialMode.LOWBLOCK) {
-            stand.setRenderMode(Item.RenderMode.LOW_BLOCK);
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.15)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.09), -90)));
-            stand.teleport(stand.getLocation().add(0.0, 0.02, 0.0));
-            stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
-        }
-        if (mode == MaterialMode.TOOL) {
-            stand.setRenderMode(Item.RenderMode.TOOL);
-            stand.teleport(stand.getLocation().add(0, -0.26, 0));
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.1)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.3), -90)));
-        }
-        if (mode == MaterialMode.STANDING) {
-            stand.setRenderMode(Item.RenderMode.STANDING);
-            stand.teleport(stand.getLocation().add(0, -0.32, 0));
-            stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(0.115)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(-0.323), -90)));
-        }
+        WorkstationDisplayPositioning.setRenderMode(stand, mode);
     }
 
-    public Map<String, Item> spawnDisplayEntitys(Player player, Block block) { //.add(0.68, 0.600781, 0.35)
+    public Map<String, Item> spawnDisplayEntitys(Player player, Block block) {
         Map<String, Item> map = new HashMap<>();
-        Location loc = block.getLocation().clone().add(0.5, 0.600781, 0.5);
-        DisplayEntity center = new DisplayEntity(loc);
         float yaw = getCardinalDirection(player);
-        center.setRotation(yaw, center.getLocation().getPitch());
-        setStand(center);
-        center.setCustomName("IV.Anvil.Center");
-        Vector vector = rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.19), -100).add(center.getLocation().clone().getDirection().normalize().multiply(-0.11));
-        DisplayEntity middle = new DisplayEntity(loc.clone().add(vector));
-        middle.setRotation(yaw, middle.getLocation().getPitch());
-        Item slot0 = new Item(middle.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)), Item.RenderMode.ITEM);
+        Location origin = block.getLocation();
+        Item slot0 = WorkstationDisplayPositioning.gridItem(origin, yaw, -0.2, 0.0);
         setStand(slot0, yaw + 20);
-        Item slot1 = new Item(middle.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)), Item.RenderMode.ITEM);
+        Item slot1 = WorkstationDisplayPositioning.gridItem(origin, yaw, 0.2, 0.0);
         setStand(slot1, yaw - 20);
 
         map.put("0", slot0);

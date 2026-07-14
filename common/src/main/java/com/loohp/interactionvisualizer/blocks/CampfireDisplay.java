@@ -386,7 +386,7 @@ public class CampfireDisplay extends VisualizerRunnableDisplay implements Listen
         Location target = block.getRelative(facing).getLocation();
         Vector direction = rotateVectorAroundY(target.toVector().subtract(origin.toVector()).multiply(0.44194173), 135);
 
-        Location loc = origin.clone().add(0.5, 0.3, 0.5);
+        Location loc = labelOrigin(origin);
         DisplayEntity slot1 = new DisplayEntity(loc.clone().add(direction));
         setStand(slot1);
         DisplayEntity slot2 = new DisplayEntity(loc.clone().add(rotateVectorAroundY(direction.clone(), 90)));
@@ -409,7 +409,16 @@ public class CampfireDisplay extends VisualizerRunnableDisplay implements Listen
         return map;
     }
 
+    static Location labelOrigin(Location origin) {
+        return origin.clone().add(0.5, 0.3, 0.5);
+    }
+
     public void setStand(DisplayEntity stand) {
+        configureLabel(stand);
+    }
+
+    static void configureLabel(DisplayEntity stand) {
+        stand.useLegacyNameTagStyle();
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);

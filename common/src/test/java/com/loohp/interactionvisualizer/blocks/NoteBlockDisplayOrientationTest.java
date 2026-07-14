@@ -37,6 +37,7 @@ class NoteBlockDisplayOrientationTest {
         assertEquals(Display.Billboard.CENTER, label.getBillboard());
         assertTrue(label.isDefaultBackground());
         assertEquals(1.0F, label.getTextScale());
+        assertTrue(label.usesLegacyNameTagStyle());
         assertTrue(label.cacheCode() > initialRevision);
 
         int configuredRevision = label.cacheCode();
@@ -45,14 +46,14 @@ class NoteBlockDisplayOrientationTest {
     }
 
     @Test
-    void textDisplayUsesTheClickedFaceLocationWithoutArmorStandCompensation() {
+    void textDisplayKeepsTheOriginalArmorStandAnchor() {
         Location clickedFace = new Location(null, 12.5, 64.8, -3.5);
 
         Location label = NoteBlockDisplay.labelLocation(clickedFace);
 
         assertNotSame(clickedFace, label);
         assertEquals(clickedFace.getX(), label.getX());
-        assertEquals(clickedFace.getY(), label.getY());
+        assertEquals(clickedFace.getY() - 0.3, label.getY());
         assertEquals(clickedFace.getZ(), label.getZ());
     }
 }

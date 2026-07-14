@@ -40,7 +40,6 @@ import org.bukkit.Material;
 import org.bukkit.Particle;
 import org.bukkit.block.Block;
 import org.bukkit.enchantments.Enchantment;
-import org.bukkit.entity.Display;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
@@ -325,7 +324,7 @@ public class EnchantmentTableAnimation {
     }
 
     private void setStand(DisplayEntity stand) {
-        stand.setBillboard(Display.Billboard.CENTER);
+        stand.useLegacyNameTagStyle();
         stand.setMarker(true);
         stand.setSmall(true);
         stand.setVisible(true);

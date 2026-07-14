@@ -25,6 +25,7 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI;
 import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
+import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
 import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
@@ -46,7 +47,6 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.util.EulerAngle;
 import org.bukkit.util.Vector;
 
 import java.util.HashMap;
@@ -343,8 +343,16 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
+    public void onBreakSoulCampfire(TileEntityRemovedEvent event) {
+        removeSoulCampfire(event.getBlock());
+    }
+
+    /** Retained for callers compiled against the former block-break handler. */
     public void onBreakSoulCampfire(BlockBreakEvent event) {
-        Block block = event.getBlock();
+        removeSoulCampfire(event.getBlock());
+    }
+
+    private void removeSoulCampfire(Block block) {
         if (!soulcampfireMap.containsKey(block)) {
             return;
         }
@@ -386,7 +394,7 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
         Location target = block.getRelative(facing).getLocation();
         Vector direction = rotateVectorAroundY(target.toVector().subtract(origin.toVector()).multiply(0.44194173), 135);
 
-        Location loc = origin.clone().add(0.5, 0.3, 0.5);
+        Location loc = CampfireDisplay.labelOrigin(origin);
         DisplayEntity slot1 = new DisplayEntity(loc.clone().add(direction));
         setStand(slot1);
         DisplayEntity slot2 = new DisplayEntity(loc.clone().add(rotateVectorAroundY(direction.clone(), 90)));
@@ -410,15 +418,7 @@ public class SoulCampfireDisplay extends VisualizerRunnableDisplay implements Li
     }
 
     public void setStand(DisplayEntity stand) {
-        stand.setBasePlate(false);
-        stand.setMarker(true);
-        stand.setGravity(false);
-        stand.setSmall(true);
-        stand.setSilent(true);
-        stand.setInvulnerable(true);
-        stand.setVisible(false);
-        stand.setCustomName("");
-        stand.setRightArmPose(EulerAngle.ZERO);
+        CampfireDisplay.configureLabel(stand);
     }
 
     public Vector rotateVectorAroundY(Vector vector, double degrees) {

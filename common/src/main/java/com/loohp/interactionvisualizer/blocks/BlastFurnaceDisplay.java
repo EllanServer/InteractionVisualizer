@@ -646,6 +646,7 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
     }
 
     public void setStand(DisplayEntity stand) {
+        stand.useLegacyNameTagStyle();
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);

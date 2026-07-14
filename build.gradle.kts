@@ -151,7 +151,7 @@ val compilePaper26_2 = tasks.register<JavaCompile>("compilePaper26_2") {
 }
 
 val verifyPaperOnlyArchitecture = tasks.register("verifyPaperOnlyArchitecture") {
-    description = "Confines NMS reflection to the client pickup bridge and rejects legacy layers."
+    description = "Confines NMS reflection to the isolated client packet bridges and rejects legacy layers."
     group = LifecycleBasePlugin.VERIFICATION_GROUP
     val sources = sourceSets.main.get().allJava
     inputs.files(sources)
@@ -177,11 +177,15 @@ val verifyPaperOnlyArchitecture = tasks.register("verifyPaperOnlyArchitecture") 
         val pickupBridge = file(
             "common/src/main/java/com/loohp/interactionvisualizer/integration/packet/ClientPickupAnimationBridge.java",
         ).canonicalFile
+        val textDisplayBridge = file(
+            "common/src/main/java/com/loohp/interactionvisualizer/integration/packet/ClientTextDisplayBridge.java",
+        ).canonicalFile
+        val packetBridges = setOf(pickupBridge, textDisplayBridge)
         val bridgeTokens = setOf("net.minecraft", "org.bukkit.craftbukkit")
         val violations = sources.files.flatMap { source ->
             val text = source.readText()
             forbidden.filter(text::contains).mapNotNull { token ->
-                val allowed = source.canonicalFile == pickupBridge && token in bridgeTokens
+                val allowed = source.canonicalFile in packetBridges && token in bridgeTokens
                 if (allowed) null else "${source.relativeTo(rootDir)}: $token"
             }
         }

@@ -41,7 +41,6 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.Skull;
 import org.bukkit.block.data.type.NoteBlock;
-import org.bukkit.entity.Display;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -148,9 +147,7 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
     }
 
     public void setStand(DisplayEntity stand) {
-        stand.setBillboard(Display.Billboard.CENTER);
-        stand.setDefaultBackground(true);
-        stand.setTextScale(1.0F);
+        stand.useLegacyNameTagStyle();
         stand.setArms(true);
         stand.setBasePlate(false);
         stand.setMarker(true);
@@ -163,10 +160,9 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
     }
 
     static Location labelLocation(Location clickedFaceLocation) {
-        // The legacy name-tag anchor sat 0.3 blocks below the intended label
-        // because Minecraft rendered its custom name above the entity. A
-        // TextDisplay renders directly at its own location.
-        return clickedFaceLocation.clone();
+        // Keep the original marker-entity anchor. DisplayManager applies the
+        // vanilla name-tag attachment and TextDisplay origin compensation.
+        return clickedFaceLocation.clone().add(0.0, -0.3, 0.0);
     }
 
     @SuppressWarnings("DuplicateBranchesInSwitch")

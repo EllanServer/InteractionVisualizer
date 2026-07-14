@@ -13,11 +13,14 @@
 package com.loohp.interactionvisualizer.managers;
 
 import com.loohp.interactionvisualizer.InteractionVisualizer;
+import com.loohp.interactionvisualizer.entityholders.BillboardDisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
+import com.loohp.interactionvisualizer.entityholders.DynamicVisualizerEntity.PathType;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.entityholders.ItemFrame;
 import com.loohp.interactionvisualizer.entityholders.VisualizerEntity;
 import com.loohp.interactionvisualizer.integration.packet.ClientPickupAnimationBridge;
+import com.loohp.interactionvisualizer.integration.packet.ClientTextDisplayBridge;
 import com.loohp.interactionvisualizer.objectholders.SynchronizedFilteredCollection;
 import com.loohp.interactionvisualizer.utils.DisplayTransformFactory;
 import io.papermc.paper.event.packet.PlayerChunkLoadEvent;
@@ -33,6 +36,7 @@ import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.entity.Display;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.TextDisplay;
@@ -42,8 +46,10 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityRemoveEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.event.vehicle.VehicleMoveEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataType;
@@ -66,10 +72,10 @@ import java.util.logging.Level;
 /**
  * Main-thread Paper entity renderer.
  *
- * <p>Paper's native tracker owns range and chunk lifecycle for displays and
- * animated/name-bearing items. Eligible static items can instead follow the
- * player's sent-chunk lifecycle and use only Sparrow client-side {@code ITEM}
- * packets, retaining vanilla bob/spin rendering without server item physics.</p>
+ * <p>Paper's native tracker owns ordinary displays and animated/name-bearing
+ * items. Legacy name tags and eligible static items instead follow each
+ * player's sent-chunk lifecycle as packet-only entities, avoiding server
+ * entity ticks while retaining the original per-viewer visual behavior.</p>
  */
 public final class DisplayManager implements Listener {
 
@@ -78,6 +84,7 @@ public final class DisplayManager implements Listener {
     private static final double ITEM_HORIZONTAL_DRAG_PER_TICK = 0.98F;
     private static final double ITEM_VERTICAL_DRAG_PER_TICK = 0.98;
     private static final double ITEM_VOID_MARGIN = 64.0;
+    private static final double DYNAMIC_POSITION_EPSILON = 1.0E-12;
     private static final int VIRTUAL_REMOVE_BATCH_SIZE = 256;
 
     public static final Map<VisualizerEntity, Collection<Player>> active = new ConcurrentHashMap<>();
@@ -97,8 +104,14 @@ public final class DisplayManager implements Listener {
     private static final Map<Item, Location> renderedItemLocations = new ConcurrentHashMap<>();
     private static final Set<Item> packetOnlyItems = ConcurrentHashMap.newKeySet();
     private static final Set<Item> fixedItemDisplays = ConcurrentHashMap.newKeySet();
+    private static final Map<DisplayEntity, VirtualTextState> virtualTextDisplays = new ConcurrentHashMap<>();
+    private static final Map<UUID, Map<BillboardDisplayEntity, DynamicViewerPosition>> dynamicViewerPositions = new ConcurrentHashMap<>();
+    private static final Set<UUID> dirtyDynamicViewers = ConcurrentHashMap.newKeySet();
     private static final Map<UUID, VisibilityShowQueue<VisualizerEntity>> visibilityShowQueues = new ConcurrentHashMap<>();
     private static boolean itemAnimationTickScheduled;
+    private static boolean dynamicViewerTickScheduled;
+    private static boolean dynamicTeleportFailureLogged;
+    private static boolean virtualTextAvailable;
     private static boolean visibilityTickScheduled;
 
     public DisplayManager() {
@@ -121,6 +134,12 @@ public final class DisplayManager implements Listener {
             plugin().getLogger().log(Level.WARNING,
                     "Vanilla client pickup animations are unavailable; affected items will be removed immediately",
                     ClientPickupAnimationBridge.initializationFailure());
+        }
+        virtualTextAvailable = ClientTextDisplayBridge.initialize();
+        if (!virtualTextAvailable) {
+            throw new IllegalStateException(
+                    "This Paper runtime cannot provide exact packet-only legacy text displays",
+                    ClientTextDisplayBridge.initializationFailure());
         }
         runSync(() -> removeOwnedEntities(false));
     }
@@ -161,6 +180,9 @@ public final class DisplayManager implements Listener {
                         // the real anchor without synchronously loading the chunk.
                         reconcileViewers(logical);
                     }
+                } else if (logical instanceof DisplayEntity display && usesVirtualText(display)
+                        && !virtualTextDisplays.containsKey(display)) {
+                    schedule(logical, true);
                 } else if (logical.getBukkitEntity().isEmpty() && requiresActualEntity(logical)) {
                     Location location = logical.getLocation();
                     if (location.getWorld().isChunkLoaded(location.getBlockX() >> 4, location.getBlockZ() >> 4)) {
@@ -176,13 +198,20 @@ public final class DisplayManager implements Listener {
         });
     }
 
-    /** Billboard rotation is handled client-side by TextDisplay. */
+    /** Retained API hook; viewer movement now drives exact path updates. */
     public static void dynamicEntity() {
     }
 
     public static void shutdown() {
         Runnable cleanup = () -> {
-            for (VisualizerEntity logical : new HashSet<>(active.keySet())) {
+            // An asynchronous removal can leave active before its main-thread
+            // cleanup task runs. Include every representation index so disable
+            // and hot reload still destroy client-only IDs instead of leaving
+            // ghosts that no longer have bookkeeping.
+            Set<VisualizerEntity> cleanupCandidates = shutdownCleanupCandidates(
+                    active.keySet(), shownViewers.keySet(), virtualTextDisplays.keySet(),
+                    virtualItemIds.keySet(), actualUuidByLogical.keySet());
+            for (VisualizerEntity logical : cleanupCandidates) {
                 org.bukkit.entity.Entity actual = logical.getBukkitEntity().orElse(null);
                 if (actual != null) {
                     discardActual(logical, actual);
@@ -206,11 +235,17 @@ public final class DisplayManager implements Listener {
             renderedItemLocations.clear();
             packetOnlyItems.clear();
             fixedItemDisplays.clear();
+            virtualTextDisplays.clear();
+            dynamicViewerPositions.clear();
+            dirtyDynamicViewers.clear();
             for (VisibilityShowQueue<VisualizerEntity> queue : visibilityShowQueues.values()) {
                 queue.clear();
             }
             visibilityShowQueues.clear();
             itemAnimationTickScheduled = false;
+            dynamicViewerTickScheduled = false;
+            dynamicTeleportFailureLogged = false;
+            virtualTextAvailable = false;
             visibilityTickScheduled = false;
             playerStatus.clear();
             removeOwnedEntities(true);
@@ -220,6 +255,16 @@ public final class DisplayManager implements Listener {
         } else {
             runSync(cleanup);
         }
+    }
+
+    @SafeVarargs
+    static Set<VisualizerEntity> shutdownCleanupCandidates(
+            Collection<? extends VisualizerEntity>... candidateGroups) {
+        Set<VisualizerEntity> candidates = new HashSet<>();
+        for (Collection<? extends VisualizerEntity> group : candidateGroups) {
+            candidates.addAll(group);
+        }
+        return candidates;
     }
 
     public static void sendHandMovement(Collection<Player> viewers, Player player) {
@@ -347,7 +392,10 @@ public final class DisplayManager implements Listener {
             VirtualItemIdBuffer virtualItemIdsToRemove = new VirtualItemIdBuffer();
             for (Map.Entry<VisualizerEntity, Set<UUID>> entry : shownViewers.entrySet()) {
                 if (entry.getValue().remove(player.getUniqueId())) {
-                    if (entry.getKey() instanceof Item item) {
+                    if (entry.getKey() instanceof DisplayEntity display
+                            && virtualTextDisplays.containsKey(display)) {
+                        removeVirtualText(display, player.getUniqueId(), player);
+                    } else if (entry.getKey() instanceof Item item) {
                         Integer id = forgetVirtualItem(item, player.getUniqueId());
                         if (id != null) {
                             virtualItemIdsToRemove.add(id);
@@ -368,8 +416,13 @@ public final class DisplayManager implements Listener {
         runSync(() -> {
             playerStatus.putIfAbsent(player, ConcurrentHashMap.newKeySet());
             for (VisualizerEntity logical : active.keySet()) {
-                if (logical.getBukkitEntity().isPresent() || packetOnlyItems.contains(logical)) {
+                boolean virtualTextReady = logical instanceof DisplayEntity display
+                        && usesVirtualText(display) && virtualTextDisplays.containsKey(display);
+                if (logical.getBukkitEntity().isPresent() || packetOnlyItems.contains(logical)
+                        || virtualTextReady) {
                     reconcileViewer(logical, player);
+                } else if (logical instanceof DisplayEntity display && usesVirtualText(display)) {
+                    schedule(logical, true);
                 } else if (requiresActualEntity(logical)) {
                     schedule(logical, true);
                 }
@@ -423,6 +476,10 @@ public final class DisplayManager implements Listener {
 
     private static void syncDisplay(DisplayEntity logical) {
         PerformanceMetrics.displaySync();
+        if (usesVirtualText(logical)) {
+            syncVirtualTextDisplay(logical);
+            return;
+        }
         boolean text = logical.isTextDisplay();
         org.bukkit.entity.Entity current = logical.getBukkitEntity().orElse(null);
         if (current != null && (!current.getWorld().equals(logical.getWorld())
@@ -443,9 +500,12 @@ public final class DisplayManager implements Listener {
         Display actual;
         if (current == null) {
             clearViewerTracking(logical);
+            Location spawnLocation = text
+                    ? DisplayTransformFactory.textDisplayLocation(logical)
+                    : logical.getLocation();
             actual = text
-                    ? logical.getWorld().spawn(logical.getLocation(), TextDisplay.class, DisplayManager::initializeDisplay)
-                    : logical.getWorld().spawn(logical.getLocation(), org.bukkit.entity.ItemDisplay.class, DisplayManager::initializeDisplay);
+                    ? logical.getWorld().spawn(spawnLocation, TextDisplay.class, DisplayManager::initializeDisplay)
+                    : logical.getWorld().spawn(spawnLocation, org.bukkit.entity.ItemDisplay.class, DisplayManager::initializeDisplay);
             PerformanceMetrics.bukkitEntitySpawn();
             logical.bind(actual);
             trackActual(logical, actual);
@@ -455,23 +515,79 @@ public final class DisplayManager implements Listener {
 
         applyBase(actual, logical);
         if (actual instanceof TextDisplay textDisplay) {
-            textDisplay.text(logical.getCustomName() == null ? Component.empty() : logical.getCustomName());
-            textDisplay.setLineWidth(200);
-            textDisplay.setAlignment(TextDisplay.TextAlignment.CENTER);
-            textDisplay.setDefaultBackground(logical.isDefaultBackground());
-            textDisplay.setBackgroundColor(Color.fromARGB(0));
-            textDisplay.setShadowed(true);
-            // These displays replace legacy marker-entity name tags. Several
-            // native holograms intentionally sit inside or against their
-            // source block, so depth testing would hide the visual entirely.
-            textDisplay.setSeeThrough(true);
-            textDisplay.setTransformationMatrix(DisplayTransformFactory.text(logical));
+            applyTextDisplay(textDisplay, logical);
         } else {
             org.bukkit.entity.ItemDisplay itemDisplay = (org.bukkit.entity.ItemDisplay) actual;
             itemDisplay.setItemStack(logical.getDisplayItem());
-            itemDisplay.setItemDisplayTransform(logical.getItemDisplayTransform());
+            itemDisplay.setItemDisplayTransform(DisplayTransformFactory.itemDisplayTransform(logical));
             itemDisplay.setTransformationMatrix(DisplayTransformFactory.item(logical));
         }
+    }
+
+    private static void syncVirtualTextDisplay(DisplayEntity logical) {
+        org.bukkit.entity.Entity current = logical.getBukkitEntity().orElse(null);
+        if (current != null) {
+            discardActual(logical, current);
+        } else {
+            untrackActual(logical);
+            logical.unbind();
+        }
+
+        VirtualTextState state = virtualTextDisplays.get(logical);
+        if (state == null) {
+            state = new VirtualTextState(ClientTextDisplayBridge.create(), logical);
+            VirtualTextState raced = virtualTextDisplays.putIfAbsent(logical, state);
+            if (raced != null) {
+                state = raced;
+            }
+        }
+
+        Component text = logical.getCustomName() == null ? Component.empty() : logical.getCustomName();
+        boolean metadataChanged = !Objects.equals(state.text, text);
+        boolean positionChanged = state.positionProfileChanged(logical);
+        state.capture(logical, text);
+        index(logical);
+
+        if (!shouldRender(logical)) {
+            clearViewerTracking(logical);
+            return;
+        }
+
+        Set<UUID> shown = shownViewers.get(logical);
+        if (shown == null || shown.isEmpty() || (!metadataChanged && !positionChanged)) {
+            return;
+        }
+        for (UUID viewer : new HashSet<>(shown)) {
+            Player player = Bukkit.getPlayer(viewer);
+            if (player == null || !player.isOnline()) {
+                forgetShownViewer(logical, viewer, player);
+                continue;
+            }
+            try {
+                if (metadataChanged) {
+                    state.display.updateMetaData(player, text);
+                }
+                if (positionChanged) {
+                    synchronizeVirtualTextPosition(logical, player, true);
+                }
+            } catch (RuntimeException | LinkageError exception) {
+                hideViewer(logical, viewer, player);
+                logVirtualTextFailure("update", logical, exception);
+            }
+        }
+    }
+
+    static void applyTextDisplay(TextDisplay textDisplay, DisplayEntity logical) {
+        textDisplay.text(logical.getCustomName() == null ? Component.empty() : logical.getCustomName());
+        textDisplay.setLineWidth(logical.usesUnboundedTextWidth() ? Integer.MAX_VALUE : 200);
+        textDisplay.setAlignment(TextDisplay.TextAlignment.CENTER);
+        textDisplay.setDefaultBackground(logical.isDefaultBackground());
+        textDisplay.setBackgroundColor(Color.fromARGB(0));
+        textDisplay.setShadowed(false);
+        // Preserve normal depth testing: floating text must be hidden by
+        // opaque blocks between it and the viewer.
+        textDisplay.setSeeThrough(false);
+        textDisplay.setTransformationMatrix(DisplayTransformFactory.text(logical));
     }
 
     private static void initializeDisplay(Display display) {
@@ -482,7 +598,9 @@ public final class DisplayManager implements Listener {
     }
 
     private static void applyBase(Display actual, DisplayEntity logical) {
-        Location target = logical.getLocation();
+        Location target = actual instanceof TextDisplay
+                ? DisplayTransformFactory.textDisplayLocation(logical)
+                : logical.getLocation();
         if (!actual.getWorld().equals(target.getWorld()) || actual.getLocation().distanceSquared(target) > 1.0E-8
                 || actual.getYaw() != target.getYaw() || actual.getPitch() != target.getPitch()) {
             PerformanceMetrics.bukkitEntityTeleport();
@@ -774,7 +892,7 @@ public final class DisplayManager implements Listener {
 
     private static boolean requiresActualEntity(VisualizerEntity logical) {
         if (logical instanceof DisplayEntity display) {
-            return shouldRender(display);
+            return !usesVirtualText(display) && shouldRender(display);
         }
         if (logical instanceof ItemFrame frame) {
             return shouldRender(frame);
@@ -785,8 +903,14 @@ public final class DisplayManager implements Listener {
         return false;
     }
 
-    private static boolean shouldRender(DisplayEntity logical) {
-        return logical.isTextDisplay() ? !isEmpty(logical.getCustomName()) : !logical.getDisplayItem().isEmpty();
+    private static boolean usesVirtualText(DisplayEntity logical) {
+        return virtualTextAvailable && logical.usesLegacyNameTagStyle();
+    }
+
+    static boolean shouldRender(DisplayEntity logical) {
+        return logical.isTextDisplay()
+                ? logical.isCustomNameVisible() && !isEmpty(logical.getCustomName())
+                : !logical.getDisplayItem().isEmpty();
     }
 
     private static boolean shouldRender(ItemFrame logical) {
@@ -961,6 +1085,66 @@ public final class DisplayManager implements Listener {
                 movement.getZ() * ITEM_HORIZONTAL_DRAG_PER_TICK);
     }
 
+    private static boolean spawnVirtualText(DisplayEntity logical, Player player) {
+        VirtualTextState state = virtualTextDisplays.get(logical);
+        Set<UUID> shown = shownViewers.get(logical);
+        Location anchor = logical.getLocation();
+        UUID viewer = player.getUniqueId();
+        if (!usesVirtualText(logical) || state == null || !active.containsKey(logical)
+                || shown == null || !shown.contains(viewer) || !shouldRender(logical)
+                || !player.isOnline() || !player.getWorld().equals(anchor.getWorld())
+                || !player.isChunkSent(Chunk.getChunkKey(anchor))) {
+            return false;
+        }
+
+        Location target = virtualTextLocation(logical, player);
+        try {
+            state.display.spawn(player, target, state.text);
+            PerformanceMetrics.virtualSpawnBundle();
+            if (logical instanceof BillboardDisplayEntity billboard) {
+                rememberDynamicViewer(billboard, viewer, target);
+            }
+            return true;
+        } catch (RuntimeException | LinkageError exception) {
+            forgetDynamicViewer(logical, viewer);
+            logVirtualTextFailure("spawn", logical, exception);
+            return false;
+        }
+    }
+
+    private static Location virtualTextLocation(DisplayEntity logical, Player player) {
+        Location logicalLocation = logical.getLocation();
+        if (logical instanceof BillboardDisplayEntity billboard) {
+            Location eye = player.getEyeLocation();
+            logicalLocation = billboard.getViewingLocation(eye, eye.getDirection());
+        }
+        return DisplayTransformFactory.textDisplayLocation(logical, logicalLocation);
+    }
+
+    private static void removeVirtualText(DisplayEntity logical, UUID viewer, Player player) {
+        forgetDynamicViewer(logical, viewer);
+        VirtualTextState state = virtualTextDisplays.get(logical);
+        if (state == null || player == null || !player.isOnline()) {
+            return;
+        }
+        try {
+            state.display.destroy(player);
+            PerformanceMetrics.virtualRemovePacket();
+        } catch (RuntimeException | LinkageError exception) {
+            logVirtualTextFailure("remove", logical, exception);
+        }
+    }
+
+    private static void logVirtualTextFailure(String operation, DisplayEntity logical,
+                                              Throwable exception) {
+        Plugin plugin = plugin();
+        if (plugin != null) {
+            plugin.getLogger().log(Level.WARNING,
+                    "Failed to " + operation + " a packet-only text display at "
+                            + logical.getLocation(), exception);
+        }
+    }
+
     private static boolean spawnVirtualItem(Item logical, Player player) {
         // Follow the backend that is currently installed, not a render-mode
         // mutation that may still be waiting for its main-thread sync.
@@ -1078,9 +1262,12 @@ public final class DisplayManager implements Listener {
 
     private static void collectVirtualItem(Item logical, Player collector) {
         try {
-            Map<UUID, Integer> ids = virtualItemIds.get(logical);
             int amount = Math.max(1, logical.getItemStack().getAmount());
             boolean pickupPacketAvailable = ClientPickupAnimationBridge.initialize();
+            if (pickupPacketAvailable) {
+                materializeRateLimitedPickupViewers(logical, collector);
+            }
+            Map<UUID, Integer> ids = virtualItemIds.get(logical);
             if (ids != null) {
                 for (UUID viewerId : new HashSet<>(ids.keySet())) {
                     Integer itemEntityId = forgetVirtualItem(logical, viewerId);
@@ -1110,6 +1297,58 @@ public final class DisplayManager implements Listener {
         } finally {
             remove(null, logical, true);
         }
+    }
+
+    /**
+     * A native pickup lasts only three client ticks, so it cannot wait behind the
+     * visibility token bucket. Materialize only eligible viewers that do not yet
+     * own the fake item, then let the normal pickup path claim and remove it in
+     * the same server tick. This preserves rate limiting for persistent displays
+     * without reintroducing a server-side pickup trajectory or delayed task.
+     */
+    private static void materializeRateLimitedPickupViewers(Item logical, Player collector) {
+        if (!InteractionVisualizer.visibilityRateLimiting) {
+            return;
+        }
+        Collection<Player> desiredPlayers = active.get(logical);
+        if (desiredPlayers == null || !collector.isOnline()) {
+            return;
+        }
+
+        boolean packetOnly = packetOnlyItems.contains(logical);
+        Location packetOnlyLocation = packetOnly ? logical.getLocation() : null;
+        for (Player player : desiredPlayers) {
+            if (player == null) {
+                continue;
+            }
+            UUID viewer = player.getUniqueId();
+            Map<UUID, Integer> ids = virtualItemIds.get(logical);
+            boolean hasVirtualItem = ids != null && ids.containsKey(viewer);
+            boolean collectorReachable = player.isOnline() && player.getWorld().equals(collector.getWorld());
+            boolean renderable = collectorReachable
+                    && isViewerRenderable(logical, player, packetOnlyLocation, packetOnly);
+            if (!shouldMaterializeRateLimitedPickupViewer(
+                    true, renderable, collectorReachable, hasVirtualItem)) {
+                continue;
+            }
+
+            cancelVisibilityShow(logical, viewer);
+            Set<UUID> shown = shownViewers.get(logical);
+            if (shown == null || !shown.contains(viewer)) {
+                showViewerNow(logical, player);
+            }
+            // Entity tracking can be deferred even after showEntity(). Claim the
+            // virtual item synchronously so the following take packet always has
+            // a source entity that the client already knows about.
+            spawnVirtualItem(logical, player);
+        }
+    }
+
+    static boolean shouldMaterializeRateLimitedPickupViewer(boolean rateLimiting,
+                                                             boolean renderable,
+                                                             boolean collectorReachable,
+                                                             boolean hasVirtualItem) {
+        return rateLimiting && renderable && collectorReachable && !hasVirtualItem;
     }
 
     private static Integer forgetVirtualItem(Item logical, UUID viewer) {
@@ -1285,6 +1524,9 @@ public final class DisplayManager implements Listener {
 
     private static void clearViewerTracking(VisualizerEntity logical, org.bukkit.entity.Entity actual) {
         cancelVisibilityShows(logical);
+        if (logical instanceof BillboardDisplayEntity billboard) {
+            forgetDynamicEntity(billboard);
+        }
         if (logical instanceof Item item) {
             destroyVirtualItems(item);
         }
@@ -1294,6 +1536,9 @@ public final class DisplayManager implements Listener {
         }
         for (UUID uuid : shown) {
             Player player = Bukkit.getPlayer(uuid);
+            if (logical instanceof DisplayEntity display && virtualTextDisplays.containsKey(display)) {
+                removeVirtualText(display, uuid, player);
+            }
             if (player != null) {
                 if (actual != null) {
                     PerformanceMetrics.bukkitHide();
@@ -1330,6 +1575,10 @@ public final class DisplayManager implements Listener {
     }
 
     private static boolean isViewerRenderable(VisualizerEntity logical, Player player) {
+        if (logical instanceof DisplayEntity display && usesVirtualText(display)) {
+            return isViewerRenderable(logical, player, display.getLocation(),
+                    virtualTextDisplays.containsKey(display) && shouldRender(display));
+        }
         if (logical instanceof Item item && packetOnlyItems.contains(item)) {
             return isViewerRenderable(logical, player, item.getLocation(), true);
         }
@@ -1340,6 +1589,13 @@ public final class DisplayManager implements Listener {
                                                Location packetOnlyLocation, boolean packetOnlyQualified) {
         if (player == null || !player.isOnline()) {
             return false;
+        }
+        if (logical instanceof DisplayEntity display && usesVirtualText(display)) {
+            if (packetOnlyLocation == null || !player.getWorld().equals(packetOnlyLocation.getWorld())) {
+                return false;
+            }
+            PerformanceMetrics.virtualViewerChecks(1);
+            return packetOnlyQualified && player.isChunkSent(Chunk.getChunkKey(packetOnlyLocation));
         }
         if (logical instanceof Item && packetOnlyItems.contains((Item) logical)) {
             if (packetOnlyLocation == null || !player.getWorld().equals(packetOnlyLocation.getWorld())) {
@@ -1399,7 +1655,9 @@ public final class DisplayManager implements Listener {
         }
 
         boolean shownSuccessfully;
-        if (logical instanceof Item item && packetOnlyItems.contains(item)) {
+        if (logical instanceof DisplayEntity display && usesVirtualText(display)) {
+            shownSuccessfully = spawnVirtualText(display, player);
+        } else if (logical instanceof Item item && packetOnlyItems.contains(item)) {
             shownSuccessfully = spawnVirtualItem(item, player);
         } else {
             org.bukkit.entity.Entity actual = logical.getBukkitEntity().orElse(null);
@@ -1424,6 +1682,11 @@ public final class DisplayManager implements Listener {
         if (shown != null && shown.isEmpty()) {
             shownViewers.remove(logical, shown);
         }
+        if (wasShown && logical instanceof DisplayEntity display && virtualTextDisplays.containsKey(display)) {
+            removeVirtualText(display, viewer, player);
+        } else {
+            forgetDynamicViewer(logical, viewer);
+        }
         if (logical instanceof Item item) {
             removeVirtualItem(item, viewer, player);
         }
@@ -1442,6 +1705,7 @@ public final class DisplayManager implements Listener {
 
     private static Integer forgetShownViewer(VisualizerEntity logical, UUID viewer, Player player) {
         cancelVisibilityShow(logical, viewer);
+        forgetDynamicViewer(logical, viewer);
         Set<UUID> shown = shownViewers.get(logical);
         if (shown != null) {
             shown.remove(viewer);
@@ -1544,6 +1808,138 @@ public final class DisplayManager implements Listener {
         return Integer.toUnsignedLong(Bukkit.getCurrentTick());
     }
 
+    private static void markDynamicViewerDirty(Player player) {
+        UUID viewer = player.getUniqueId();
+        Map<BillboardDisplayEntity, DynamicViewerPosition> positions = dynamicViewerPositions.get(viewer);
+        if (positions == null || positions.isEmpty()) {
+            return;
+        }
+        dirtyDynamicViewers.add(viewer);
+        scheduleDynamicViewerTick();
+    }
+
+    private static void scheduleDynamicViewerTick() {
+        if (dynamicViewerTickScheduled || dirtyDynamicViewers.isEmpty()) {
+            return;
+        }
+        dynamicViewerTickScheduled = true;
+        Bukkit.getScheduler().runTaskLater(plugin(), () -> {
+            dynamicViewerTickScheduled = false;
+            Set<UUID> viewers = new HashSet<>(dirtyDynamicViewers);
+            dirtyDynamicViewers.removeAll(viewers);
+            for (UUID viewer : viewers) {
+                Player player = Bukkit.getPlayer(viewer);
+                if (player != null && player.isOnline()) {
+                    synchronizeDynamicViewer(player);
+                }
+            }
+            scheduleDynamicViewerTick();
+        }, 2L);
+    }
+
+    private static void synchronizeDynamicViewer(Player player) {
+        Map<BillboardDisplayEntity, DynamicViewerPosition> positions =
+                dynamicViewerPositions.get(player.getUniqueId());
+        if (positions == null || positions.isEmpty()) {
+            return;
+        }
+        for (BillboardDisplayEntity billboard : positions.keySet()) {
+            synchronizeDynamicViewer(billboard, player, false);
+        }
+    }
+
+    private static void synchronizeDynamicViewer(BillboardDisplayEntity logical, Player player,
+                                                  boolean force) {
+        synchronizeVirtualTextPosition(logical, player, force);
+    }
+
+    private static boolean synchronizeVirtualTextPosition(DisplayEntity logical, Player player,
+                                                           boolean force) {
+        UUID viewer = player.getUniqueId();
+        Set<UUID> shown = shownViewers.get(logical);
+        VirtualTextState state = virtualTextDisplays.get(logical);
+        Location anchor = logical.getLocation();
+        if (shown == null || !shown.contains(viewer) || state == null
+                || !player.isOnline() || !player.getWorld().equals(anchor.getWorld())) {
+            forgetDynamicViewer(logical, viewer);
+            return false;
+        }
+
+        Location target = virtualTextLocation(logical, player);
+        if (!force && logical instanceof BillboardDisplayEntity billboard) {
+            Map<BillboardDisplayEntity, DynamicViewerPosition> positions = dynamicViewerPositions.get(viewer);
+            DynamicViewerPosition previous = positions == null ? null : positions.get(billboard);
+            if (previous != null && previous.matches(target)) {
+                return true;
+            }
+        }
+
+        try {
+            state.display.teleport(player, target);
+            PerformanceMetrics.virtualTeleportBundle();
+            if (logical instanceof BillboardDisplayEntity billboard) {
+                rememberDynamicViewer(billboard, viewer, target);
+            }
+            return true;
+        } catch (RuntimeException | LinkageError exception) {
+            forgetDynamicViewer(logical, viewer);
+            if (!dynamicTeleportFailureLogged) {
+                dynamicTeleportFailureLogged = true;
+                plugin().getLogger().log(Level.WARNING,
+                        "Unable to synchronize a per-viewer hologram path; further failures are suppressed",
+                        exception);
+            }
+            // A failed teleport must not leave a static label permanently at
+            // its old anchor. Recreate the same client-only ID at the freshly
+            // computed position; the normal visibility gate controls retries.
+            hideViewer(logical, viewer, player);
+            if (isViewerDesired(logical, player)) {
+                requestViewerShow(logical, player);
+            }
+            return false;
+        }
+    }
+
+    private static void rememberDynamicViewer(BillboardDisplayEntity logical, UUID viewer,
+                                              Location target) {
+        dynamicViewerPositions.computeIfAbsent(viewer, ignored -> new ConcurrentHashMap<>())
+                .put(logical, DynamicViewerPosition.at(target));
+    }
+
+    private static void forgetDynamicViewer(VisualizerEntity logical, UUID viewer) {
+        if (!(logical instanceof BillboardDisplayEntity billboard)) {
+            return;
+        }
+        Map<BillboardDisplayEntity, DynamicViewerPosition> positions = dynamicViewerPositions.get(viewer);
+        if (positions != null) {
+            positions.remove(billboard);
+            if (positions.isEmpty()) {
+                dynamicViewerPositions.remove(viewer, positions);
+            }
+        }
+    }
+
+    private static void forgetDynamicViewer(UUID viewer) {
+        dirtyDynamicViewers.remove(viewer);
+        dynamicViewerPositions.remove(viewer);
+    }
+
+    private static void forgetDynamicEntity(BillboardDisplayEntity logical) {
+        for (Map.Entry<UUID, Map<BillboardDisplayEntity, DynamicViewerPosition>> entry
+                : dynamicViewerPositions.entrySet()) {
+            Map<BillboardDisplayEntity, DynamicViewerPosition> positions = entry.getValue();
+            positions.remove(logical);
+            if (positions.isEmpty()) {
+                dynamicViewerPositions.remove(entry.getKey(), positions);
+            }
+        }
+    }
+
+    static boolean dynamicInputChanged(Location from, Location to) {
+        return to != null && (from.getX() != to.getX() || from.getZ() != to.getZ()
+                || from.getYaw() != to.getYaw());
+    }
+
     private static void forgetPacketOnlyViewer(Player player) {
         UUID viewer = player.getUniqueId();
         clearVisibilityShowQueue(viewer);
@@ -1552,7 +1948,9 @@ public final class DisplayManager implements Listener {
             return;
         }
         for (VisualizerEntity logical : new HashSet<>(status)) {
-            if (logical instanceof Item item && packetOnlyItems.contains(item)) {
+            if (logical instanceof DisplayEntity display && virtualTextDisplays.containsKey(display)) {
+                forgetShownViewer(display, viewer, player);
+            } else if (logical instanceof Item item && packetOnlyItems.contains(item)) {
                 forgetShownViewer(item, viewer, player);
             }
         }
@@ -1580,7 +1978,10 @@ public final class DisplayManager implements Listener {
         Collection<Player> desiredPlayers = active.get(logical);
         Location packetOnlyLocation = null;
         boolean packetOnlyQualified = false;
-        if (logical instanceof Item item && packetOnlyItems.contains(item)) {
+        if (logical instanceof DisplayEntity display && usesVirtualText(display)) {
+            packetOnlyLocation = display.getLocation();
+            packetOnlyQualified = virtualTextDisplays.containsKey(display) && shouldRender(display);
+        } else if (logical instanceof Item item && packetOnlyItems.contains(item)) {
             // Qualification and location are entity-invariant for this main-thread
             // reconciliation. Evaluate them once rather than once per viewer.
             packetOnlyLocation = item.getLocation();
@@ -1656,6 +2057,9 @@ public final class DisplayManager implements Listener {
                     logical.unbind();
                     clearViewerTracking(logical);
                 }
+                if (logical instanceof DisplayEntity display) {
+                    virtualTextDisplays.remove(display);
+                }
             } else if (players != null) {
                 for (Player player : players) {
                     if (player != null) {
@@ -1670,6 +2074,9 @@ public final class DisplayManager implements Listener {
         active.remove(logical);
         renderedRevision.remove(logical);
         forceScheduled.remove(logical);
+        if (logical instanceof BillboardDisplayEntity billboard) {
+            forgetDynamicEntity(billboard);
+        }
         if (logical instanceof Item item) {
             itemAnimations.remove(item);
             renderedItemStacks.remove(item);
@@ -1709,20 +2116,47 @@ public final class DisplayManager implements Listener {
         }
     }
 
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onMove(PlayerMoveEvent event) {
+        if (dynamicInputChanged(event.getFrom(), event.getTo())) {
+            markDynamicViewerDirty(event.getPlayer());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onVehicleMove(VehicleMoveEvent event) {
+        if (dynamicInputChanged(event.getFrom(), event.getTo())) {
+            markDynamicPassengersDirty(event.getVehicle());
+        }
+    }
+
+    private static void markDynamicPassengersDirty(Entity vehicle) {
+        for (Entity passenger : vehicle.getPassengers()) {
+            if (passenger instanceof Player player) {
+                markDynamicViewerDirty(player);
+            } else {
+                markDynamicPassengersDirty(passenger);
+            }
+        }
+    }
+
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
+        forgetDynamicViewer(event.getPlayer().getUniqueId());
         forgetPacketOnlyViewer(event.getPlayer());
         Bukkit.getScheduler().runTask(plugin(), () -> sendPlayerPackets(event.getPlayer()));
     }
 
     @EventHandler
     public void onWorldChange(PlayerChangedWorldEvent event) {
+        forgetDynamicViewer(event.getPlayer().getUniqueId());
         forgetPacketOnlyViewer(event.getPlayer());
         Bukkit.getScheduler().runTask(plugin(), () -> sendPlayerPackets(event.getPlayer()));
     }
 
     @EventHandler
     public void onRespawn(PlayerRespawnEvent event) {
+        forgetDynamicViewer(event.getPlayer().getUniqueId());
         forgetPacketOnlyViewer(event.getPlayer());
         Bukkit.getScheduler().runTask(plugin(), () -> sendPlayerPackets(event.getPlayer()));
     }
@@ -1730,6 +2164,7 @@ public final class DisplayManager implements Listener {
     @EventHandler
     public void onLeave(PlayerQuitEvent event) {
         UUID uuid = event.getPlayer().getUniqueId();
+        forgetDynamicViewer(uuid);
         clearVisibilityShowQueue(uuid);
         for (Map.Entry<VisualizerEntity, Set<UUID>> entry : shownViewers.entrySet()) {
             entry.getValue().remove(uuid);
@@ -1794,7 +2229,10 @@ public final class DisplayManager implements Listener {
         Set<VisualizerEntity> logicals = logicalsByChunk.get(key);
         if (logicals != null) {
             for (VisualizerEntity logical : logicals) {
-                if (active.containsKey(logical) && logical.getBukkitEntity().isEmpty()) {
+                boolean missingRepresentation = logical instanceof DisplayEntity display && usesVirtualText(display)
+                        ? !virtualTextDisplays.containsKey(display)
+                        : logical.getBukkitEntity().isEmpty();
+                if (active.containsKey(logical) && missingRepresentation) {
                     schedule(logical, true);
                 }
             }
@@ -1937,6 +2375,69 @@ public final class DisplayManager implements Listener {
             boolean accept(T value);
         }
 
+    }
+
+    private static final class VirtualTextState {
+
+        private final ClientTextDisplayBridge display;
+        private Component text;
+        private Location anchor;
+        private double radius;
+        private PathType path;
+
+        private VirtualTextState(ClientTextDisplayBridge display, DisplayEntity logical) {
+            this.display = display;
+            this.text = Component.empty();
+            this.anchor = null;
+            this.radius = Double.NaN;
+            this.path = null;
+        }
+
+        private boolean positionProfileChanged(DisplayEntity logical) {
+            Location current = logical.getLocation();
+            if (!sameLocation(anchor, current)) {
+                return true;
+            }
+            if (logical instanceof BillboardDisplayEntity billboard) {
+                return radius != billboard.getRadius() || path != billboard.getPathType();
+            }
+            return !Double.isNaN(radius) || path != null;
+        }
+
+        private void capture(DisplayEntity logical, Component text) {
+            this.text = text;
+            this.anchor = logical.getLocation();
+            if (logical instanceof BillboardDisplayEntity billboard) {
+                this.radius = billboard.getRadius();
+                this.path = billboard.getPathType();
+            } else {
+                this.radius = Double.NaN;
+                this.path = null;
+            }
+        }
+
+        private static boolean sameLocation(Location first, Location second) {
+            return first != null && second != null
+                    && Objects.equals(first.getWorld(), second.getWorld())
+                    && first.getX() == second.getX()
+                    && first.getY() == second.getY()
+                    && first.getZ() == second.getZ()
+                    && first.getYaw() == second.getYaw()
+                    && first.getPitch() == second.getPitch();
+        }
+    }
+
+    private record DynamicViewerPosition(double x, double y, double z) {
+
+        private static DynamicViewerPosition at(Location location) {
+            return new DynamicViewerPosition(location.getX(), location.getY(), location.getZ());
+        }
+
+        private boolean matches(Location location) {
+            return Math.abs(x - location.getX()) <= DYNAMIC_POSITION_EPSILON
+                    && Math.abs(y - location.getY()) <= DYNAMIC_POSITION_EPSILON
+                    && Math.abs(z - location.getZ()) <= DYNAMIC_POSITION_EPSILON;
+        }
     }
 
     private static final class ItemAnimationState {

@@ -33,6 +33,7 @@ import com.loohp.interactionvisualizer.utils.LocationUtils;
 import com.loohp.interactionvisualizer.utils.MaterialUtils;
 import com.loohp.interactionvisualizer.utils.MaterialUtils.MaterialMode;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
+import com.loohp.interactionvisualizer.utils.WorkstationDisplayPositioning;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
@@ -411,79 +412,16 @@ public class GrindstoneDisplay extends VisualizerInteractDisplay implements List
     }
 
     public void toggleStandMode(Item stand, MaterialMode mode) {
-        Item.RenderMode previous = stand.getRenderMode();
-        if (previous != Item.RenderMode.ITEM) {
-            if (previous == Item.RenderMode.BLOCK) {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.setRotation(stand.getLocation().getYaw() - 45, stand.getLocation().getPitch());
-                stand.teleport(stand.getLocation().add(0.0, -0.084, 0.0));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.102), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.14)));
-
-            }
-            if (previous == Item.RenderMode.LOW_BLOCK) {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.setRotation(stand.getLocation().getYaw() - 45, stand.getLocation().getPitch());
-                stand.teleport(stand.getLocation().add(0.0, -0.02, 0.0));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.09), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.15)));
-
-            }
-            if (previous == Item.RenderMode.TOOL) {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.3), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.1)));
-                stand.teleport(stand.getLocation().add(0, 0.26, 0));
-            }
-            if (previous == Item.RenderMode.STANDING) {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(0.323), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(-0.115)));
-                stand.teleport(stand.getLocation().add(0, 0.32, 0));
-            }
-        }
-        if (mode == MaterialMode.BLOCK) {
-            stand.setRenderMode(Item.RenderMode.BLOCK);
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.14)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.102), -90)));
-            stand.teleport(stand.getLocation().add(0.0, 0.084, 0.0));
-            stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
-        }
-        if (mode == MaterialMode.LOWBLOCK) {
-            stand.setRenderMode(Item.RenderMode.LOW_BLOCK);
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.15)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.09), -90)));
-            stand.teleport(stand.getLocation().add(0.0, 0.02, 0.0));
-            stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
-        }
-        if (mode == MaterialMode.TOOL) {
-            stand.setRenderMode(Item.RenderMode.TOOL);
-            stand.teleport(stand.getLocation().add(0, -0.26, 0));
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.1)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.3), -90)));
-        }
-        if (mode == MaterialMode.STANDING) {
-            stand.setRenderMode(Item.RenderMode.STANDING);
-            stand.teleport(stand.getLocation().add(0, -0.32, 0));
-            stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(0.115)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(-0.323), -90)));
-        }
+        WorkstationDisplayPositioning.setRenderMode(stand, mode);
     }
 
-    public Map<String, Item> spawnDisplayEntitys(Player player, Block block) { //.add(0.68, 0.600781, 0.35)
+    public Map<String, Item> spawnDisplayEntitys(Player player, Block block) {
         Map<String, Item> map = new HashMap<>();
-        Location loc = block.getLocation().clone().add(0.5, 0.600781, 0.5);
-        DisplayEntity center = new DisplayEntity(loc);
         float yaw = getCardinalDirection(player);
-        center.setRotation(yaw, center.getLocation().getPitch());
-        setStand(center);
-        center.setCustomName("IV.Grindstone.Center");
-        Vector vector = rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.19), -100).add(center.getLocation().clone().getDirection().normalize().multiply(-0.11));
-        DisplayEntity middle = new DisplayEntity(loc.clone().add(vector));
-        middle.setRotation(yaw, middle.getLocation().getPitch());
-        Item slot0 = new Item(middle.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)), Item.RenderMode.ITEM);
+        Location origin = block.getLocation();
+        Item slot0 = WorkstationDisplayPositioning.gridItem(origin, yaw, -0.2, 0.0);
         setStand(slot0, yaw + 20);
-        Item slot1 = new Item(middle.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)), Item.RenderMode.ITEM);
+        Item slot1 = WorkstationDisplayPositioning.gridItem(origin, yaw, 0.2, 0.0);
         setStand(slot1, yaw - 20);
 
         map.put("0", slot0);

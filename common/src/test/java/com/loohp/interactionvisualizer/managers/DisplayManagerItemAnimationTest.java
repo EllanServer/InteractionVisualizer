@@ -178,6 +178,16 @@ class DisplayManagerItemAnimationTest {
         }
     }
 
+    @Test
+    void rateLimitedOneShotPickupMaterializesOnlyEligibleMissingViewer() {
+        assertTrue(DisplayManager.shouldMaterializeRateLimitedPickupViewer(true, true, true, false));
+
+        assertFalse(DisplayManager.shouldMaterializeRateLimitedPickupViewer(false, true, true, false));
+        assertFalse(DisplayManager.shouldMaterializeRateLimitedPickupViewer(true, false, true, false));
+        assertFalse(DisplayManager.shouldMaterializeRateLimitedPickupViewer(true, true, false, false));
+        assertFalse(DisplayManager.shouldMaterializeRateLimitedPickupViewer(true, true, true, true));
+    }
+
     private static Item newUninitializedItem() throws ReflectiveOperationException {
         Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
         Field unsafeField = unsafeClass.getDeclaredField("theUnsafe");

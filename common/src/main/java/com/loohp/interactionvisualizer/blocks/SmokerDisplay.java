@@ -654,6 +654,7 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
     }
 
     public void setStand(DisplayEntity stand) {
+        stand.useLegacyNameTagStyle();
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);

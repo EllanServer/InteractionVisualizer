@@ -468,19 +468,15 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
 
     public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) {
         Map<String, DisplayEntity> map = new HashMap<>();
-        Location origin = block.getLocation();
-
         BlockData blockData = block.getState().getBlockData();
         BlockFace facing = ((Directional) blockData).getFacing();
-        Location target = block.getRelative(facing).getLocation();
-        Vector direction = target.toVector().subtract(origin.toVector()).multiply(0.7);
 
-        Location loc0 = block.getLocation().clone().add(direction).add(0.5, 0.25, 0.5);
+        Location loc0 = labelLocation(block.getLocation(), facing, 0.25);
         loc0.setDirection(facing.getDirection());
         DisplayEntity line0 = new DisplayEntity(loc0.clone());
         setStand(line0);
 
-        Location loc1 = block.getLocation().clone().add(direction).add(0.5, 0, 0.5);
+        Location loc1 = labelLocation(block.getLocation(), facing, 0.0);
         loc1.setDirection(facing.getDirection());
         DisplayEntity line1 = new DisplayEntity(loc1.clone());
         setStand(line1);
@@ -494,6 +490,11 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         return map;
     }
 
+    static Location labelLocation(Location blockLocation, BlockFace facing, double lineOffset) {
+        Vector direction = facing.getDirection().multiply(0.7);
+        return blockLocation.clone().add(direction).add(0.5, lineOffset, 0.5);
+    }
+
     public void setStand(DisplayEntity stand) {
         stand.setBasePlate(false);
         stand.setMarker(true);
@@ -504,6 +505,7 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         stand.setVisible(false);
         stand.setCustomName("");
         stand.setRightArmPose(EulerAngle.ZERO);
+        stand.useLegacyNameTagGeometry();
     }
 
 }

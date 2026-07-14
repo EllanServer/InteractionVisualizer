@@ -26,7 +26,6 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
-import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
@@ -34,6 +33,7 @@ import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
 import com.loohp.interactionvisualizer.utils.MaterialUtils;
+import com.loohp.interactionvisualizer.utils.WorkstationDisplayPositioning;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import org.bukkit.GameMode;
@@ -329,98 +329,30 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
     }
 
     public void toggleStandMode(Item stand, Item.RenderMode mode) {
-        if (stand.getRenderMode() == mode) {
-            return;
-        }
-
-        switch (stand.getRenderMode()) {
-            case BLOCK -> {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.setRotation(stand.getLocation().getYaw() - 45, stand.getLocation().getPitch());
-                stand.teleport(stand.getLocation().add(0.0, -0.084, 0.0));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(-0.102), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(-0.14)));
-            }
-            case LOW_BLOCK -> {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.setRotation(stand.getLocation().getYaw() - 45, stand.getLocation().getPitch());
-                stand.teleport(stand.getLocation().add(0.0, -0.02, 0.0));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(-0.09), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(-0.15)));
-            }
-            case TOOL -> {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(0.3), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(0.1)));
-                stand.teleport(stand.getLocation().add(0, 0.26, 0));
-            }
-            case STANDING -> {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(0.323), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(-0.115)));
-                stand.teleport(stand.getLocation().add(0, 0.32, 0));
-            }
-            case ITEM -> {
-            }
-            default -> stand.setRenderMode(Item.RenderMode.ITEM);
-        }
-
-        switch (mode) {
-            case ITEM -> stand.setRenderMode(Item.RenderMode.ITEM);
-            case BLOCK -> {
-                stand.setRenderMode(Item.RenderMode.BLOCK);
-                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(0.14)));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(0.102), -90)));
-                stand.teleport(stand.getLocation().add(0.0, 0.084, 0.0));
-                stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
-            }
-            case LOW_BLOCK -> {
-                stand.setRenderMode(Item.RenderMode.LOW_BLOCK);
-                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(0.15)));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(0.09), -90)));
-                stand.teleport(stand.getLocation().add(0.0, 0.02, 0.0));
-                stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
-            }
-            case TOOL -> {
-                stand.setRenderMode(Item.RenderMode.TOOL);
-                stand.teleport(stand.getLocation().add(0, -0.26, 0));
-                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(-0.1)));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(-0.3), -90)));
-            }
-            case STANDING -> {
-                stand.setRenderMode(Item.RenderMode.STANDING);
-                stand.teleport(stand.getLocation().add(0, -0.32, 0));
-                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(0.115)));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(-0.323), -90)));
-            }
-            default -> throw new IllegalArgumentException("Unsupported crafter render mode: " + mode);
-        }
+        WorkstationDisplayPositioning.setRenderMode(stand, mode);
     }
 
-    public Map<String, Item> spawnDisplayEntitys(Block block) { //.add(0.68, 0.600781, 0.35)
+    public Map<String, Item> spawnDisplayEntitys(Block block) {
         Map<String, Item> map = new HashMap<>();
-        Location loc = block.getLocation().clone().add(0.5, 0.600781, 0.5);
-        DisplayEntity center = new DisplayEntity(loc);
         float yaw = getCardinalDirection(block);
-        center.setRotation(yaw, center.getLocation().getPitch());
-        Vector vector = rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.19), -100).add(center.getLocation().clone().getDirection().normalize().multiply(-0.11));
-        Item slot5 = new Item(loc.clone().add(vector), Item.RenderMode.ITEM);
+        Location origin = block.getLocation();
+        Item slot5 = WorkstationDisplayPositioning.gridItem(origin, yaw, 0.0, 0.0);
         setStand(slot5, yaw);
-        Item slot2 = new Item(slot5.getLocation().clone().add(center.getLocation().clone().getDirection().normalize().multiply(0.2)), Item.RenderMode.ITEM);
+        Item slot2 = WorkstationDisplayPositioning.gridItem(origin, yaw, 0.0, 0.2);
         setStand(slot2, yaw);
-        Item slot1 = new Item(slot2.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)), Item.RenderMode.ITEM);
+        Item slot1 = WorkstationDisplayPositioning.gridItem(origin, yaw, -0.2, 0.2);
         setStand(slot1, yaw);
-        Item slot3 = new Item(slot2.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)), Item.RenderMode.ITEM);
+        Item slot3 = WorkstationDisplayPositioning.gridItem(origin, yaw, 0.2, 0.2);
         setStand(slot3, yaw);
-        Item slot4 = new Item(slot5.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)), Item.RenderMode.ITEM);
+        Item slot4 = WorkstationDisplayPositioning.gridItem(origin, yaw, -0.2, 0.0);
         setStand(slot4, yaw);
-        Item slot6 = new Item(slot5.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)), Item.RenderMode.ITEM);
+        Item slot6 = WorkstationDisplayPositioning.gridItem(origin, yaw, 0.2, 0.0);
         setStand(slot6, yaw);
-        Item slot8 = new Item(slot5.getLocation().clone().add(center.getLocation().getDirection().clone().normalize().multiply(-0.2)), Item.RenderMode.ITEM);
+        Item slot8 = WorkstationDisplayPositioning.gridItem(origin, yaw, 0.0, -0.2);
         setStand(slot8, yaw);
-        Item slot7 = new Item(slot8.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), -90)), Item.RenderMode.ITEM);
+        Item slot7 = WorkstationDisplayPositioning.gridItem(origin, yaw, -0.2, -0.2);
         setStand(slot7, yaw);
-        Item slot9 = new Item(slot8.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.2), 90)), Item.RenderMode.ITEM);
+        Item slot9 = WorkstationDisplayPositioning.gridItem(origin, yaw, 0.2, -0.2);
         setStand(slot9, yaw);
 
         map.put("1", slot1);
@@ -450,16 +382,18 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
         stand.setRotation(yaw, stand.getLocation().getPitch());
     }
 
+    /**
+     * Retained for binary compatibility with integrations compiled against the
+     * historical public helper.
+     */
     public Vector rotateVectorAroundY(Vector vector, double degrees) {
-        double rad = Math.toRadians(degrees);
-
+        double radians = Math.toRadians(degrees);
         double currentX = vector.getX();
         double currentZ = vector.getZ();
-
-        double cosine = Math.cos(rad);
-        double sine = Math.sin(rad);
-
-        return new Vector((cosine * currentX - sine * currentZ), vector.getY(), (sine * currentX + cosine * currentZ));
+        double cosine = Math.cos(radians);
+        double sine = Math.sin(radians);
+        return new Vector(cosine * currentX - sine * currentZ, vector.getY(),
+                sine * currentX + cosine * currentZ);
     }
 
     public float getCardinalDirection(Block block) {

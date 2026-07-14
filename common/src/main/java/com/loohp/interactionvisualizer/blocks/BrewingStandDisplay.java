@@ -388,6 +388,11 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
     }
 
     public void setStand(DisplayEntity stand) {
+        configureLabel(stand);
+    }
+
+    static void configureLabel(DisplayEntity stand) {
+        stand.useLegacyNameTagStyle();
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);

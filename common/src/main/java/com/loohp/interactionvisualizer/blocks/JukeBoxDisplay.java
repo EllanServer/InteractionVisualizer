@@ -26,6 +26,7 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerRunnableDisplay;
 import com.loohp.interactionvisualizer.api.events.InteractionVisualizerReloadEvent;
 import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
@@ -41,6 +42,7 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
+import org.bukkit.entity.Display;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -57,6 +59,10 @@ import java.util.concurrent.ConcurrentHashMap;
 public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listener {
 
     public static final EntryKey KEY = new EntryKey("jukebox");
+    private static final String ITEM_KEY = "Item";
+    private static final String LABEL_KEY = "Label";
+    private static final String EMPTY_VISUAL = "N/A";
+    private static final double LABEL_Y_OFFSET = 0.55D;
 
     public ConcurrentHashMap<Block, Map<String, Object>> jukeboxMap = new ConcurrentHashMap<>();
     private int checkingPeriod = 20;
@@ -94,23 +100,21 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
                 }
                 Entry<Block, Map<String, Object>> entry = itr.next();
                 Block block = entry.getKey();
+                Map<String, Object> values = entry.getValue();
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
+                    if (!ownsVisualState(jukeboxMap.get(block), values)) {
+                        return;
+                    }
                     if (!isActive(block.getLocation())) {
-                        Map<String, Object> map = entry.getValue();
-                        if (map.get("Item") instanceof Item) {
-                            Item item = (Item) map.get("Item");
-                            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                        if (jukeboxMap.remove(block, values)) {
+                            removeVisuals(values);
                         }
-                        jukeboxMap.remove(block);
                         return;
                     }
                     if (!block.getType().equals(Material.JUKEBOX)) {
-                        Map<String, Object> map = entry.getValue();
-                        if (map.get("Item") instanceof Item) {
-                            Item item = (Item) map.get("Item");
-                            DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+                        if (jukeboxMap.remove(block, values)) {
+                            removeVisuals(values);
                         }
-                        jukeboxMap.remove(block);
                         return;
                     }
                 }, delay, block.getLocation());
@@ -127,7 +131,8 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
                     if (jukeboxMap.get(block) == null && isActive(block.getLocation())) {
                         if (block.getType().equals(Material.JUKEBOX)) {
                             HashMap<String, Object> map = new HashMap<>();
-                            map.put("Item", "N/A");
+                            map.put(ITEM_KEY, EMPTY_VISUAL);
+                            map.put(LABEL_KEY, EMPTY_VISUAL);
                             jukeboxMap.put(block, map);
                         }
                     }
@@ -147,7 +152,11 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
                     delay++;
                 }
                 Block block = entry.getKey();
+                Map<String, Object> values = entry.getValue();
                 Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
+                    if (!ownsVisualState(jukeboxMap.get(block), values)) {
+                        return;
+                    }
                     if (!isActive(block.getLocation())) {
                         return;
                     }
@@ -158,65 +167,36 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
 
                     {
                         ItemStack itemstack = jukebox.getRecord() == null ? null : (jukebox.getRecord().getType().equals(Material.AIR) ? null : jukebox.getRecord().clone());
+                        if (itemstack == null) {
+                            removeVisuals(values);
+                            return;
+                        }
 
-                        if (entry.getValue().get("Item") instanceof String) {
-                            if (itemstack != null) {
-                                Item item = new Item(jukebox.getLocation().clone().add(0.5, 1.0, 0.5));
-
-                                String disc = jukebox.getPlaying().toString();
-                                Component text;
-                                if (showDiscName) {
-                                    Component displayName = itemstack.getItemMeta().displayName();
-                                    if (displayName != null) {
-                                        text = ComponentFont.parseFont(displayName.colorIfAbsent(getColor(disc)));
-                                    } else {
-                                        text = Component.translatable(TranslationUtils.getRecord(disc));
-                                        text = text.color(getColor(disc));
-                                    }
-                                    item.setCustomName(text);
-                                    item.setCustomNameVisible(true);
-                                } else {
-                                    item.setCustomName("");
-                                    item.setCustomNameVisible(false);
-                                }
+                        Item item;
+                        if (values.get(ITEM_KEY) instanceof Item existing) {
+                            item = existing;
+                            boolean changed = suppressNativeName(item);
+                            if (!item.getItemStack().equals(itemstack)) {
                                 item.setItemStack(itemstack);
-                                item.setVelocity(new Vector(0, 0, 0));
-                                item.setPickupDelay(32767);
-                                item.setGravity(false);
-                                entry.getValue().put("Item", item);
-                                DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+                                changed = true;
+                            }
+                            if (changed) {
                                 DisplayManager.updateItem(item);
-                            } else {
-                                entry.getValue().put("Item", "N/A");
                             }
                         } else {
-                            Item item = (Item) entry.getValue().get("Item");
-                            if (itemstack != null) {
-                                if (!item.getItemStack().equals(itemstack)) {
-                                    item.setItemStack(itemstack);
-                                    String disc = jukebox.getPlaying().toString();
-                                    Component text;
-                                    if (showDiscName) {
-                                        Component displayName = itemstack.getItemMeta().displayName();
-                                        if (displayName != null) {
-                                            text = ComponentFont.parseFont(displayName.colorIfAbsent(getColor(disc)));
-                                        } else {
-                                            text = Component.translatable(TranslationUtils.getRecord(disc));
-                                            text = text.color(getColor(disc));
-                                        }
-                                        item.setCustomName(text);
-                                        item.setCustomNameVisible(true);
-                                    } else {
-                                        item.setCustomName("");
-                                        item.setCustomNameVisible(false);
-                                    }
-                                    DisplayManager.updateItem(item);
-                                }
-                            } else {
-                                entry.getValue().put("Item", "N/A");
-                                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
-                            }
+                            item = new Item(jukebox.getLocation().clone().add(0.5, 1.0, 0.5));
+                            item.setItemStack(itemstack);
+                            item.setVelocity(new Vector(0, 0, 0));
+                            item.setPickupDelay(32767);
+                            item.setGravity(false);
+                            suppressNativeName(item);
+                            values.put(ITEM_KEY, item);
+                            DisplayManager.sendItemSpawn(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+                            DisplayManager.updateItem(item);
                         }
+
+                        Component text = showDiscName ? discName(itemstack, jukebox.getPlaying().toString()) : null;
+                        reconcileLabel(values, item.getLocation(), text);
                     }
                 }, delay, block.getLocation());
             }
@@ -230,12 +210,85 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
             return;
         }
 
-        Map<String, Object> map = jukeboxMap.get(block);
-        if (map.get("Item") instanceof Item) {
-            Item item = (Item) map.get("Item");
+        Map<String, Object> values = jukeboxMap.remove(block);
+        removeVisuals(values);
+    }
+
+    private Component discName(ItemStack itemstack, String disc) {
+        Component displayName = itemstack.getItemMeta().displayName();
+        if (displayName != null) {
+            return ComponentFont.parseFont(displayName.colorIfAbsent(getColor(disc)));
+        }
+        return Component.translatable(TranslationUtils.getRecord(disc)).color(getColor(disc));
+    }
+
+    private void reconcileLabel(Map<String, Object> values, Location itemLocation, Component text) {
+        Object current = values.get(LABEL_KEY);
+        if (text == null) {
+            if (current instanceof DisplayEntity label) {
+                DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), label);
+            }
+            values.put(LABEL_KEY, EMPTY_VISUAL);
+            return;
+        }
+
+        if (current instanceof DisplayEntity label) {
+            if (!text.equals(label.getCustomName()) || !label.isCustomNameVisible()) {
+                label.setCustomName(text);
+                label.setCustomNameVisible(true);
+                DisplayManager.updateDisplay(label);
+            }
+            return;
+        }
+
+        DisplayEntity label = new DisplayEntity(labelLocation(itemLocation));
+        configureLabel(label);
+        label.setCustomName(text);
+        values.put(LABEL_KEY, label);
+        DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), label);
+        DisplayManager.updateDisplay(label);
+    }
+
+    private void removeVisuals(Map<String, Object> values) {
+        if (values == null) {
+            return;
+        }
+        if (values.get(ITEM_KEY) instanceof Item item) {
             DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
         }
-        jukeboxMap.remove(block);
+        if (values.get(LABEL_KEY) instanceof DisplayEntity label) {
+            DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), label);
+        }
+        values.put(ITEM_KEY, EMPTY_VISUAL);
+        values.put(LABEL_KEY, EMPTY_VISUAL);
+    }
+
+    static Location labelLocation(Location itemLocation) {
+        return itemLocation.clone().add(0.0, LABEL_Y_OFFSET, 0.0);
+    }
+
+    static void configureLabel(DisplayEntity label) {
+        label.setBillboard(Display.Billboard.CENTER);
+        label.setDefaultBackground(true);
+        label.setTextScale(1.0F);
+        label.setUnboundedTextWidth(true);
+        label.setInterpolationDuration(0);
+        label.setTeleportDuration(0);
+        label.setGravity(false);
+        label.setInvulnerable(true);
+        label.setSilent(true);
+        label.setCustomNameVisible(true);
+    }
+
+    static boolean suppressNativeName(Item item) {
+        boolean changed = item.getCustomName() != null || item.isCustomNameVisible();
+        item.setCustomName((Component) null);
+        item.setCustomNameVisible(false);
+        return changed;
+    }
+
+    static boolean ownsVisualState(Map<String, Object> current, Map<String, Object> scheduled) {
+        return current == scheduled;
     }
 
     public Set<Block> nearbyJukeBox() {

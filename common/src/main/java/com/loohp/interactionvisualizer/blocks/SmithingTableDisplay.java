@@ -33,6 +33,7 @@ import com.loohp.interactionvisualizer.utils.InventoryUtils;
 import com.loohp.interactionvisualizer.utils.MaterialUtils;
 import com.loohp.interactionvisualizer.utils.MaterialUtils.MaterialMode;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
+import com.loohp.interactionvisualizer.utils.WorkstationDisplayPositioning;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import org.bukkit.Bukkit;
 import org.bukkit.FluidCollisionMode;
@@ -176,8 +177,8 @@ public class SmithingTableDisplay extends VisualizerInteractDisplay implements L
 
         Location loc1 = ((Item) map.get("0")).getLocation();
         InteractionVisualizer.lightManager.deleteLight(loc1);
-        int skylight = loc1.getBlock().getRelative(BlockFace.UP).getLightFromSky();
-        int blocklight = loc1.getBlock().getRelative(BlockFace.UP).getLightFromBlocks() - 1;
+        int skylight = block.getRelative(BlockFace.UP).getLightFromSky();
+        int blocklight = block.getRelative(BlockFace.UP).getLightFromBlocks() - 1;
         blocklight = Math.max(blocklight, 0);
         if (skylight > 0) {
             InteractionVisualizer.lightManager.createLight(loc1, skylight, LightType.SKY);
@@ -411,82 +412,18 @@ public class SmithingTableDisplay extends VisualizerInteractDisplay implements L
     }
 
     public void toggleStandMode(Item stand, MaterialMode mode) {
-        Item.RenderMode previous = stand.getRenderMode();
-        if (previous != Item.RenderMode.ITEM) {
-            if (previous == Item.RenderMode.BLOCK) {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.setRotation(stand.getLocation().getYaw() - 45, stand.getLocation().getPitch());
-                stand.teleport(stand.getLocation().add(0.0, -0.084, 0.0));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.102), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.14)));
-
-            }
-            if (previous == Item.RenderMode.LOW_BLOCK) {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.setRotation(stand.getLocation().getYaw() - 45, stand.getLocation().getPitch());
-                stand.teleport(stand.getLocation().add(0.0, -0.02, 0.0));
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.09), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.15)));
-
-            }
-            if (previous == Item.RenderMode.TOOL) {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.3), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.1)));
-                stand.teleport(stand.getLocation().add(0, 0.26, 0));
-            }
-            if (previous == Item.RenderMode.STANDING) {
-                stand.setRenderMode(Item.RenderMode.ITEM);
-                stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(0.323), -90)));
-                stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(-0.115)));
-                stand.teleport(stand.getLocation().add(0, 0.32, 0));
-            }
-        }
-        if (mode == MaterialMode.BLOCK) {
-            stand.setRenderMode(Item.RenderMode.BLOCK);
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.14)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.102), -90)));
-            stand.teleport(stand.getLocation().add(0.0, 0.084, 0.0));
-            stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
-        }
-        if (mode == MaterialMode.LOWBLOCK) {
-            stand.setRenderMode(Item.RenderMode.LOW_BLOCK);
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(0.15)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(0.09), -90)));
-            stand.teleport(stand.getLocation().add(0.0, 0.02, 0.0));
-            stand.setRotation(stand.getLocation().getYaw() + 45, stand.getLocation().getPitch());
-        }
-        if (mode == MaterialMode.TOOL) {
-            stand.setRenderMode(Item.RenderMode.TOOL);
-            stand.teleport(stand.getLocation().add(0, -0.26, 0));
-            stand.teleport(stand.getLocation().add(stand.getLocation().clone().getDirection().normalize().multiply(-0.1)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().clone().getDirection().normalize().multiply(-0.3), -90)));
-        }
-        if (mode == MaterialMode.STANDING) {
-            stand.setRenderMode(Item.RenderMode.STANDING);
-            stand.teleport(stand.getLocation().add(0, -0.32, 0));
-            stand.teleport(stand.getLocation().add(stand.getLocation().getDirection().normalize().multiply(0.115)));
-            stand.teleport(stand.getLocation().add(rotateVectorAroundY(stand.getLocation().getDirection().normalize().multiply(-0.323), -90)));
-        }
+        WorkstationDisplayPositioning.setRenderMode(stand, mode);
     }
 
-    public Map<String, Item> spawnDisplayEntitys(Player player, Block block, int maxSlot) { //.add(0.68, 0.600781, 0.35)
+    public Map<String, Item> spawnDisplayEntitys(Player player, Block block, int maxSlot) {
         Map<String, Item> map = new HashMap<>();
-        Location loc = block.getLocation().clone().add(0.5, 0.600781, 0.5);
-        DisplayEntity center = new DisplayEntity(loc);
         float yaw = getCardinalDirection(player);
-        center.setRotation(yaw, center.getLocation().getPitch());
-        setStand(center);
-        center.setCustomName("IV.SmithingTable.Center");
-        Vector vector = rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.19), -100).add(center.getLocation().clone().getDirection().normalize().multiply(-0.11));
-        DisplayEntity middle = new DisplayEntity(loc.clone().add(vector));
-        middle.setRotation(yaw, middle.getLocation().getPitch());
-
-        Item slot0 = new Item(middle.getLocation(), Item.RenderMode.ITEM);
+        Location origin = block.getLocation();
+        Item slot0 = WorkstationDisplayPositioning.gridItem(origin, yaw, 0.0, 0.0);
         setStand(slot0, yaw);
-        Item slot1 = new Item(middle.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.3), -90)), Item.RenderMode.ITEM);
+        Item slot1 = WorkstationDisplayPositioning.gridItem(origin, yaw, -0.3, 0.0);
         setStand(slot1, yaw + 20);
-        Item slot2 = new Item(middle.getLocation().clone().add(rotateVectorAroundY(center.getLocation().clone().getDirection().normalize().multiply(0.3), 90)), Item.RenderMode.ITEM);
+        Item slot2 = WorkstationDisplayPositioning.gridItem(origin, yaw, 0.3, 0.0);
         setStand(slot2, yaw - 20);
 
         if (maxSlot == 2) {

@@ -642,6 +642,7 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
     }
 
     public void setStand(DisplayEntity stand) {
+        stand.useLegacyNameTagStyle();
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);
