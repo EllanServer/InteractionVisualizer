@@ -458,7 +458,7 @@ public final class DisplayManager implements Listener {
             textDisplay.text(logical.getCustomName() == null ? Component.empty() : logical.getCustomName());
             textDisplay.setLineWidth(200);
             textDisplay.setAlignment(TextDisplay.TextAlignment.CENTER);
-            textDisplay.setDefaultBackground(false);
+            textDisplay.setDefaultBackground(logical.isDefaultBackground());
             textDisplay.setBackgroundColor(Color.fromARGB(0));
             textDisplay.setShadowed(true);
             // These displays replace legacy marker-entity name tags. Several

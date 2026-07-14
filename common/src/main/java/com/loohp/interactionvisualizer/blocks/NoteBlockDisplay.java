@@ -41,6 +41,7 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.Skull;
 import org.bukkit.block.data.type.NoteBlock;
+import org.bukkit.entity.Display;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -114,8 +115,8 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
                 return;
             }
             ConcurrentHashMap<String, Object> map = displayingNotes.get(block);
-            DisplayEntity stand = map == null ? new DisplayEntity(textLocation.clone().add(0.0, -0.3, 0.0)) : (DisplayEntity) map.get("Stand");
-            stand.teleport(textLocation.clone().add(0.0, -0.3, 0.0));
+            DisplayEntity stand = map == null ? new DisplayEntity(labelLocation(textLocation)) : (DisplayEntity) map.get("Stand");
+            stand.teleport(labelLocation(textLocation));
             setStand(stand);
 
             map = map == null ? new ConcurrentHashMap<String, Object>() : map;
@@ -147,6 +148,9 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
     }
 
     public void setStand(DisplayEntity stand) {
+        stand.setBillboard(Display.Billboard.CENTER);
+        stand.setDefaultBackground(true);
+        stand.setTextScale(1.0F);
         stand.setArms(true);
         stand.setBasePlate(false);
         stand.setMarker(true);
@@ -156,6 +160,13 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
         stand.setInvulnerable(true);
         stand.setVisible(false);
         stand.setCustomNameVisible(true);
+    }
+
+    static Location labelLocation(Location clickedFaceLocation) {
+        // The legacy name-tag anchor sat 0.3 blocks below the intended label
+        // because Minecraft rendered its custom name above the entity. A
+        // TextDisplay renders directly at its own location.
+        return clickedFaceLocation.clone();
     }
 
     @SuppressWarnings("DuplicateBranchesInSwitch")

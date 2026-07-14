@@ -41,8 +41,10 @@ public class DisplayEntity extends VisualizerEntity {
     private String customNameRawSource;
     private boolean customNameRawSourceKnown;
     private boolean customNameVisible;
+    private boolean defaultBackground;
     private Vector velocity;
     private Display.Billboard billboard;
+    private float textScale;
     private float viewRange;
     private int interpolationDuration;
     private int teleportDuration;
@@ -56,8 +58,10 @@ public class DisplayEntity extends VisualizerEntity {
         this.headPose = EulerAngle.ZERO;
         this.helmet = ItemStack.empty();
         this.mainHand = ItemStack.empty();
+        this.defaultBackground = false;
         this.velocity = new Vector();
         this.billboard = Display.Billboard.FIXED;
+        this.textScale = 0.5F;
         this.viewRange = 1.0F;
         this.interpolationDuration = 3;
         this.teleportDuration = 3;
@@ -117,6 +121,17 @@ public class DisplayEntity extends VisualizerEntity {
     public void setCustomNameVisible(boolean visible) {
         if (customNameVisible != visible) {
             customNameVisible = visible;
+            markDirty();
+        }
+    }
+
+    public boolean isDefaultBackground() {
+        return defaultBackground;
+    }
+
+    public void setDefaultBackground(boolean defaultBackground) {
+        if (this.defaultBackground != defaultBackground) {
+            this.defaultBackground = defaultBackground;
             markDirty();
         }
     }
@@ -243,6 +258,18 @@ public class DisplayEntity extends VisualizerEntity {
         Display.Billboard value = billboard == null ? Display.Billboard.FIXED : billboard;
         if (this.billboard != value) {
             this.billboard = value;
+            markDirty();
+        }
+    }
+
+    public float getTextScale() {
+        return textScale;
+    }
+
+    public void setTextScale(float textScale) {
+        float value = Float.isFinite(textScale) ? Math.max(0.0F, textScale) : 0.5F;
+        if (this.textScale != value) {
+            this.textScale = value;
             markDirty();
         }
     }

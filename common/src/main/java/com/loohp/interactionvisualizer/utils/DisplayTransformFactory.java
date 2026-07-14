@@ -87,7 +87,7 @@ public final class DisplayTransformFactory {
         if (state instanceof BillboardDisplayEntity billboard && billboard.getRadius() != 0.0) {
             matrix.translate(0.0F, 0.0F, (float) -billboard.getRadius());
         }
-        return matrix.scale(0.5F);
+        return matrix.scale(state.getTextScale());
     }
 
     public static Matrix4f itemFrame(ItemFrame state) {

@@ -41,6 +41,7 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
+import org.bukkit.entity.Display;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -264,6 +265,7 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
     }
 
     public void setStand(DisplayEntity stand) {
+        stand.setBillboard(labelBillboard());
         stand.setBasePlate(false);
         stand.setMarker(true);
         stand.setGravity(false);
@@ -273,6 +275,12 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
         stand.setVisible(false);
         stand.setCustomName("");
         stand.setRightArmPose(EulerAngle.ZERO);
+    }
+
+    static Display.Billboard labelBillboard() {
+        // Legacy marker-entity name tags always faced the viewer. Preserve
+        // that behavior when the label is rendered by a TextDisplay.
+        return Display.Billboard.CENTER;
     }
 
 }

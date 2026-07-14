@@ -11,6 +11,8 @@
 
 package com.loohp.interactionvisualizer.utils;
 
+import com.loohp.interactionvisualizer.entityholders.DisplayEntity;
+import com.loohp.interactionvisualizer.entityholders.EntityHolderTestFactory;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -20,6 +22,18 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class DisplayTransformFactoryTest {
+
+    @Test
+    void textTransformUsesThePerDisplayScale() throws ReflectiveOperationException {
+        DisplayEntity text = EntityHolderTestFactory.allocate(DisplayEntity.class);
+        text.setTextScale(0.75F);
+
+        Matrix4f transform = DisplayTransformFactory.text(text);
+
+        assertEquals(0.75F, transform.m00(), 1.0E-6F);
+        assertEquals(0.75F, transform.m11(), 1.0E-6F);
+        assertEquals(0.75F, transform.m22(), 1.0E-6F);
+    }
 
     @Test
     void bannerModePlacesTheGuiRenderedBannerAboveTheLoom() {
