@@ -30,6 +30,8 @@ measure_seconds="$COMPARE_MEASURE_SECONDS"
 server_port="${COMPARE_SERVER_PORT:-25565}"
 protocol_trace_enabled="${COMPARE_PROTOCOL_TRACE_ENABLED:-0}"
 protocol_trace_max_events="${COMPARE_PROTOCOL_TRACE_MAX_EVENTS:-500000}"
+protocol_trace_packet_allowlist="${COMPARE_PROTOCOL_TRACE_PACKET_ALLOWLIST:-}"
+protocol_trace_aggregate_packet_allowlist="${COMPARE_PROTOCOL_TRACE_AGGREGATE_PACKET_ALLOWLIST:-}"
 
 [[ "$variant" == A || "$variant" == B ]] \
   || { echo "COMPARE_VARIANT must be A or B" >&2; exit 64; }
@@ -40,6 +42,28 @@ protocol_trace_max_events="${COMPARE_PROTOCOL_TRACE_MAX_EVENTS:-500000}"
 [[ "$protocol_trace_max_events" =~ ^[0-9]+$ ]] \
   && (( protocol_trace_max_events >= 100000 && protocol_trace_max_events <= 1000000 )) \
   || { echo "COMPARE_PROTOCOL_TRACE_MAX_EVENTS must be between 100000 and 1000000" >&2; exit 64; }
+[[ -z "$protocol_trace_packet_allowlist" \
+    || "$protocol_trace_packet_allowlist" =~ ^[A-Za-z0-9_-]+(,[A-Za-z0-9_-]+)*$ ]] \
+  || { echo "COMPARE_PROTOCOL_TRACE_PACKET_ALLOWLIST must be a comma-separated packet-name list" >&2; exit 64; }
+[[ -z "$protocol_trace_aggregate_packet_allowlist" \
+    || "$protocol_trace_aggregate_packet_allowlist" =~ ^[A-Za-z0-9_-]+(,[A-Za-z0-9_-]+)*$ ]] \
+  || { echo "COMPARE_PROTOCOL_TRACE_AGGREGATE_PACKET_ALLOWLIST must be a comma-separated packet-name list" >&2; exit 64; }
+declare -A protocol_trace_packet_modes=()
+if [[ -n "$protocol_trace_packet_allowlist" ]]; then
+  IFS=',' read -ra protocol_trace_capture_packets <<< "$protocol_trace_packet_allowlist"
+  for packet_name in "${protocol_trace_capture_packets[@]}"; do
+    protocol_trace_packet_modes["${packet_name,,}"]=capture
+  done
+fi
+if [[ -n "$protocol_trace_aggregate_packet_allowlist" ]]; then
+  IFS=',' read -ra protocol_trace_aggregate_packets <<< "$protocol_trace_aggregate_packet_allowlist"
+  for packet_name in "${protocol_trace_aggregate_packets[@]}"; do
+    normalized_packet_name="${packet_name,,}"
+    [[ -z "${protocol_trace_packet_modes[$normalized_packet_name]+x}" ]] \
+      || { echo "Protocol trace capture and aggregate allowlists overlap: $normalized_packet_name" >&2; exit 64; }
+    protocol_trace_packet_modes["$normalized_packet_name"]=aggregate
+  done
+fi
 [[ "$scene_size" =~ ^[0-9]+$ ]] && (( scene_size >= 1 && scene_size <= 4096 )) \
   || { echo "COMPARE_SCENE_SIZE must be between 1 and 4096" >&2; exit 64; }
 for duration in "$warmup_seconds" "$settle_seconds" "$measure_seconds"; do
@@ -368,6 +392,8 @@ if [[ "$protocol_trace_enabled" == 1 ]]; then
   protocol_trace_environment=(
     "PHASE2_PROTOCOL_TRACE_FILE=$protocol_trace_path"
     "PHASE2_PROTOCOL_TRACE_MAX_EVENTS=$protocol_trace_max_events"
+    "PHASE2_PROTOCOL_TRACE_PACKET_ALLOWLIST=$protocol_trace_packet_allowlist"
+    "PHASE2_PROTOCOL_TRACE_AGGREGATE_PACKET_ALLOWLIST=$protocol_trace_aggregate_packet_allowlist"
   )
 fi
 env \
@@ -426,7 +452,7 @@ send_console "iv toggle itemdrop all true IVBench"
 send_console "iv toggle hologram all true IVBench"
 sleep 2
 assert_client_alive
-trace_window_start="$(python3 -c 'import time; print(f"{time.time():.6f}")')"
+trace_window_start_epoch_ms="$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
 send_console "ivcompare clear"
 sleep 1
 send_console "ivcompare setup $scenario $scene_size IVBench"
@@ -454,7 +480,7 @@ wait_for_log "IV_COMPARE_START label=$run_id variant=$variant" 30
 sleep "$measure_seconds"
 send_console "ivcompare stop"
 wait_for_log "IV_COMPARE {\"schemaVersion\":1,\"label\":\"$run_id\"" 60
-trace_window_end="$(python3 -c 'import time; print(f"{time.time():.6f}")')"
+trace_window_end_epoch_ms="$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
 assert_client_alive
 
 driver_result="$run_directory/plugins/InteractionVisualizerRuntimeCompare/results/$run_id.json"
@@ -549,7 +575,9 @@ python3 - "$run_directory/run-manifest.json" "$run_id" "$scenario" "$variant" \
   "$scene_size" "$warmup_seconds" "$settle_seconds" "$measure_seconds" \
   "$plugin_sha256" "$driver_sha256" "$paper_sha256" "$config_sha256" \
   "$runtime_config_sha256" "$client_manifest_sha256" "$script_sha256" "$jvm_sha256" \
-  "$protocol_trace_enabled" "$trace_window_start" "$trace_window_end" \
+  "$protocol_trace_enabled" "$protocol_trace_packet_allowlist" \
+  "$protocol_trace_aggregate_packet_allowlist" \
+  "$trace_window_start_epoch_ms" "$trace_window_end_epoch_ms" \
   "$available_cpu_count" "$server_cpu_set" "$client_cpu_set" <<'PY'
 from pathlib import Path
 import json
@@ -559,7 +587,8 @@ import sys
     output, run_id, scenario, variant, scene_size, warmup, settle, measure,
     plugin_sha, driver_sha, paper_sha, config_sha, runtime_config_sha,
     client_sha, script_sha, jvm_sha,
-    trace_enabled, trace_window_start, trace_window_end,
+    trace_enabled, trace_packet_allowlist, trace_aggregate_packet_allowlist,
+    trace_window_start_epoch_ms, trace_window_end_epoch_ms,
     available_cpu_count, server_cpu_set, client_cpu_set,
 ) = sys.argv[1:]
 Path(output).write_text(json.dumps({
@@ -581,8 +610,16 @@ Path(output).write_text(json.dumps({
     "runnerScriptSha256": script_sha,
     "jvmArgumentsSha256": jvm_sha,
     "protocolTraceEnabled": trace_enabled == "1",
-    "traceWindowStartEpochSeconds": float(trace_window_start),
-    "traceWindowEndEpochSeconds": float(trace_window_end),
+    "protocolTracePacketAllowlist": (
+        sorted(trace_packet_allowlist.lower().split(","))
+        if trace_packet_allowlist else None
+    ),
+    "protocolTraceAggregatePacketAllowlist": (
+        sorted(trace_aggregate_packet_allowlist.lower().split(","))
+        if trace_aggregate_packet_allowlist else None
+    ),
+    "traceWindowStartEpochMs": int(trace_window_start_epoch_ms),
+    "traceWindowEndEpochMs": int(trace_window_end_epoch_ms),
     "availableCpuCount": int(available_cpu_count),
     "serverCpuSet": [int(value) for value in server_cpu_set.split(",")],
     "clientCpuSet": [int(value) for value in client_cpu_set.split(",")],
@@ -624,16 +661,32 @@ if [[ "$protocol_trace_enabled" == 1 ]]; then
   test -s "$protocol_trace_path"
   node "$protocol_trace_analyzer_source" \
     --trace "$protocol_trace_path" \
-    --window-start-epoch-seconds "$trace_window_start" \
-    --window-end-epoch-seconds "$trace_window_end" \
+    --window-start-epoch-ms "$trace_window_start_epoch_ms" \
+    --window-end-epoch-ms "$trace_window_end_epoch_ms" \
     --output "$protocol_trace_analysis_path" \
     --overwrite > "$run_directory/protocol-trace-analysis.stdout.json"
-  python3 - "$protocol_trace_analysis_path" "$scenario" "$variant" "$scene_size" <<'PY'
+  python3 - "$protocol_trace_analysis_path" "$scenario" "$variant" "$scene_size" \
+    "$protocol_trace_packet_allowlist" \
+    "$protocol_trace_aggregate_packet_allowlist" <<'PY'
 import json
 import sys
 
-analysis_path, scenario, variant, scene_size_text = sys.argv[1:]
+(
+    analysis_path, scenario, variant, scene_size_text, packet_allowlist,
+    aggregate_packet_allowlist,
+) = sys.argv[1:]
 analysis = json.load(open(analysis_path, encoding="utf-8"))
+expected_allowlist = (
+    sorted(packet_allowlist.lower().split(",")) if packet_allowlist else None
+)
+if analysis.get("input", {}).get("capturePacketAllowlist") != expected_allowlist:
+    raise SystemExit("protocol trace packet allowlist provenance mismatch")
+expected_aggregate_allowlist = (
+    sorted(aggregate_packet_allowlist.lower().split(","))
+    if aggregate_packet_allowlist else None
+)
+if analysis.get("input", {}).get("aggregatePacketAllowlist") != expected_aggregate_allowlist:
+    raise SystemExit("protocol trace aggregate packet allowlist provenance mismatch")
 if analysis.get("status", {}).get("formalEvidenceReady") is not True:
     raise SystemExit("protocol trace is not complete formal evidence")
 if analysis.get("traceCoverage", {}).get("windowEventCount", 0) <= 0:
@@ -642,6 +695,15 @@ spawn_observations = analysis.get("identity", {}).get("spawn", {}).get("observat
 metadata_observations = analysis.get("counts", {}).get("byPacket", {}).get(
     "entity_metadata", 0
 )
+if expected_aggregate_allowlist and "entity_metadata" in expected_aggregate_allowlist:
+    aggregated_metadata = analysis.get("counts", {}).get(
+        "byPacketAggregated", {}
+    ).get("entity_metadata", 0)
+    window_aggregated = analysis.get("traceCoverage", {}).get(
+        "windowAggregatedEventCount", -1
+    )
+    if aggregated_metadata != metadata_observations or window_aggregated != metadata_observations:
+        raise SystemExit("aggregated metadata provenance/count mismatch")
 scene_size = int(scene_size_text)
 if scenario == "dropped-items" and spawn_observations < scene_size:
     raise SystemExit(

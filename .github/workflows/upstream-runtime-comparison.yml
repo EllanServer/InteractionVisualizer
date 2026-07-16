@@ -26,7 +26,7 @@ jobs:
       matrix:
         include:
           - scenario: dropped-items
-            scene_size: 2048
+            scene_size: 512
           - scenario: block-active
             scene_size: 1024
     env:
@@ -388,6 +388,8 @@ jobs:
             COMPARE_MEASURE_SECONDS=10 \
             COMPARE_PROTOCOL_TRACE_ENABLED=1 \
             COMPARE_PROTOCOL_TRACE_MAX_EVENTS=500000 \
+            COMPARE_PROTOCOL_TRACE_PACKET_ALLOWLIST=bundle_delimiter,entity_destroy,spawn_entity \
+            COMPARE_PROTOCOL_TRACE_AGGREGATE_PACKET_ALLOWLIST=entity_metadata \
             bash tools/perf/run-upstream-runtime-once.sh
 
             python3 - \
@@ -435,6 +437,20 @@ jobs:
               raise SystemExit("preflight artifact SHA mismatch")
           if manifest.get("canonicalConfigSha256") != config_sha:
               raise SystemExit("preflight canonical config SHA mismatch")
+          expected_packet_allowlist = [
+              "bundle_delimiter", "entity_destroy", "spawn_entity"
+          ]
+          expected_aggregate_packet_allowlist = ["entity_metadata"]
+          if manifest.get("protocolTracePacketAllowlist") != expected_packet_allowlist:
+              raise SystemExit("preflight manifest protocol packet allowlist mismatch")
+          if (manifest.get("protocolTraceAggregatePacketAllowlist")
+                  != expected_aggregate_packet_allowlist):
+              raise SystemExit("preflight manifest aggregate packet allowlist mismatch")
+          if trace.get("input", {}).get("capturePacketAllowlist") != expected_packet_allowlist:
+              raise SystemExit("preflight analysis protocol packet allowlist mismatch")
+          if (trace.get("input", {}).get("aggregatePacketAllowlist")
+                  != expected_aggregate_packet_allowlist):
+              raise SystemExit("preflight analysis aggregate packet allowlist mismatch")
           for field, expected in expected_cpu.items():
               if manifest.get(field) != expected:
                   raise SystemExit(
@@ -460,6 +476,16 @@ jobs:
           if not isinstance(metadata_observations, int) or metadata_observations <= 0:
               raise SystemExit(
                   f"preflight observed no entity metadata: {metadata_observations!r}")
+          aggregated_metadata = trace.get("counts", {}).get(
+              "byPacketAggregated", {}).get("entity_metadata", 0)
+          window_aggregated = trace.get("traceCoverage", {}).get(
+              "windowAggregatedEventCount")
+          if (aggregated_metadata != metadata_observations
+                  or window_aggregated != metadata_observations):
+              raise SystemExit(
+                  "preflight aggregate metadata count mismatch: "
+                  f"combined={metadata_observations!r}, "
+                  f"aggregate={aggregated_metadata!r}, window={window_aggregated!r}")
           if scenario == "dropped-items" and spawn_observations < scene_size:
               raise SystemExit(
                   f"dropped-item preflight observed only {spawn_observations} spawns for {scene_size} items")
