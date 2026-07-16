@@ -489,8 +489,8 @@ fi
 assert_client_alive
 send_console "ivcompare status"
 wait_for_log "IV_COMPARE_STATUS collecting=false scenario=$scenario expected=$scene_size actual=$scene_size player=IVBench targetEnabled=true activeFurnaces=$expected_active_furnaces" 30
-send_console "ivcompare start $run_id $variant"
-wait_for_log "IV_COMPARE_START label=$run_id variant=$variant" 30
+send_console "ivcompare start $run_id $variant $runtime_profile"
+wait_for_log "IV_COMPARE_START label=$run_id variant=$variant runtimeProfile=$runtime_profile" 30
 sleep "$measure_seconds"
 send_console "ivcompare stop"
 wait_for_log "IV_COMPARE {\"schemaVersion\":1,\"label\":\"$run_id\"" 60

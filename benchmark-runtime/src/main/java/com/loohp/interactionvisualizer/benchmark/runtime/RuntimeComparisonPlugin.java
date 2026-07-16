@@ -165,8 +165,8 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
     }
 
     private boolean start(CommandSender sender, String[] args) {
-        if (args.length != 3) {
-            sender.sendMessage("Usage: /ivcompare start <label> <A|B>");
+        if (args.length != 4) {
+            sender.sendMessage("Usage: /ivcompare start <label> <A|B> <legacy-parity|optimized-candidate>");
             return true;
         }
         if (collecting) {
@@ -187,7 +187,8 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
         }
         label = sanitize(args[1]);
         variant = requestedVariant;
-        requestedFlags = readRequestedFlags(target);
+        String runtimeProfile = args[3].toLowerCase(Locale.ROOT);
+        requestedFlags = requestedFlagsForProfile(runtimeProfile);
         effectiveFlags = inspectEffectiveFlags(target.getClass());
         assertOptimizationProfile(variant, requestedFlags, effectiveFlags);
         tickSamples = 0;
@@ -196,7 +197,10 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
         startedNanos = System.nanoTime();
         skipNextTickSample = true;
         collecting = true;
-        String record = "IV_COMPARE_START label=" + label + " variant=" + variant;
+        String record = "IV_COMPARE_START label=" + label + " variant=" + variant
+                + " runtimeProfile=" + runtimeProfile
+                + " requestedPacketOnlyStatic=" + requestedFlags.packetOnlyStatic()
+                + " requestedEventDrivenBlockUpdates=" + requestedFlags.eventDrivenBlockUpdates();
         getLogger().info(record);
         sender.sendMessage(record);
         return true;
@@ -459,15 +463,13 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
         return sanitized.substring(0, Math.min(64, sanitized.length()));
     }
 
-    static RequestedFlags readRequestedFlags(Plugin target) {
-        if (!(target instanceof JavaPlugin javaPlugin)) {
-            throw new IllegalStateException("InteractionVisualizer target is not a JavaPlugin");
-        }
-        return new RequestedFlags(
-                javaPlugin.getConfig().getBoolean(
-                        "Settings.Performance.VirtualItems.PacketOnlyStatic"),
-                javaPlugin.getConfig().getBoolean(
-                        "Settings.Performance.BlockUpdates.EventDriven"));
+    static RequestedFlags requestedFlagsForProfile(String runtimeProfile) {
+        return switch (runtimeProfile) {
+            case "legacy-parity" -> RequestedFlags.disabled();
+            case "optimized-candidate" -> new RequestedFlags(true, true);
+            default -> throw new IllegalArgumentException(
+                    "runtime profile must be legacy-parity or optimized-candidate");
+        };
     }
 
     static EffectiveFlags inspectEffectiveFlags(Class<?> targetClass) {

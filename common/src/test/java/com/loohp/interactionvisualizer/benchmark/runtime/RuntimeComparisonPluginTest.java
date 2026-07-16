@@ -23,6 +23,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RuntimeComparisonPluginTest {
 
     @Test
+    void requestedFlagsComeFromTheControlledRuntimeProfile() {
+        assertEquals(
+                new RuntimeComparisonPlugin.RequestedFlags(false, false),
+                RuntimeComparisonPlugin.requestedFlagsForProfile("legacy-parity"));
+        assertEquals(
+                new RuntimeComparisonPlugin.RequestedFlags(true, true),
+                RuntimeComparisonPlugin.requestedFlagsForProfile("optimized-candidate"));
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimeComparisonPlugin.requestedFlagsForProfile("unknown"));
+    }
+
+    @Test
     void legacyTargetIsRecordedAsUnsupported() {
         RuntimeComparisonPlugin.EffectiveFlags flags =
                 RuntimeComparisonPlugin.inspectEffectiveFlags(LegacyTarget.class);
