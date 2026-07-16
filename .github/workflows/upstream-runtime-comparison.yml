@@ -13,20 +13,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  compare-upstream-runtime:
-    name: Paper 26.1.2-74 ${{ matrix.scenario }} run ${{ matrix.run_number }}
+  prepare-upstream-runtime:
+    name: Prepare immutable comparison stack
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.action != 'labeled' ||
       github.event.label.name == 'upstream-runtime-formal'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      max-parallel: 24
-      matrix:
-        scenario: [dropped-items, block-active]
-        run_number: ${{ fromJSON((github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '[1,2,3,4,5,6,7,8,9,10,11,12]' || '[1,2,3,4]') }}
+    timeout-minutes: 15
     env:
       UPSTREAM_BUILD_NUMBER: "163"
       UPSTREAM_SOURCE_SHA: c7f9dd0457451537653bf4b4c0eb0e4298c51187
@@ -36,14 +30,6 @@ jobs:
       PAPER_BUILD: "74"
       PAPER_SHA256: 1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7
       COMPARE_RUNTIME_PROFILE: optimized-candidate
-      CAMPAIGN_KIND: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && 'formal' || 'smoke' }}
-      CAMPAIGN_RUNS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '12' || '4' }}
-      CAMPAIGN_WARMUP_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '60' || '10' }}
-      CAMPAIGN_SETTLE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '20' || '5' }}
-      CAMPAIGN_MEASURE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '120' || '10' }}
-      CAMPAIGN_SCENARIO: ${{ matrix.scenario }}
-      CAMPAIGN_SCENE_SIZE: ${{ matrix.scenario == 'dropped-items' && '512' || '1024' }}
-      CAMPAIGN_RUN_NUMBER: ${{ matrix.run_number }}
       EXPECTED_HARNESS_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
     steps:
@@ -78,10 +64,10 @@ jobs:
           node tools/perf/analyze-phase2-protocol-trace.js --self-test
           pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 -SelfTest
 
-      - name: Build and test comparison harness
+      - name: Build and test comparison harness once
         run: ./gradlew clean check runtimeComparisonJar --no-daemon --no-build-cache --rerun-tasks
 
-      - name: Build fixed production candidate in a detached worktree
+      - name: Build fixed production candidate once
         run: |
           set -euo pipefail
           PRODUCTION_WORKTREE="$RUNNER_TEMP/interactionvisualizer-production-b3c2453"
@@ -95,7 +81,7 @@ jobs:
             ./gradlew clean shadowJar --no-daemon --no-build-cache --rerun-tasks
           )
 
-      - name: Select candidate artifacts and create canonical configuration
+      - name: Select candidate artifacts and canonical configuration
         run: |
           set -euo pipefail
           [[ "$COMPARE_RUNTIME_PROFILE" == optimized-candidate ]]
@@ -147,7 +133,7 @@ jobs:
           PY
           test -s compare-dependencies/canonical-config.yml
 
-      - name: Download and verify official upstream build 163
+      - name: Download and verify official upstream once
         env:
           JENKINS_BUILD_URL: https://ci.loohpjames.com/job/InteractionVisualizer/163
         run: |
@@ -201,7 +187,7 @@ jobs:
           grep -Fxq 'main: com.loohp.interactionvisualizer.InteractionVisualizer' \
             compare-dependencies/upstream-plugin.yml
 
-      - name: Download and verify Paper 26.1.2 build 74
+      - name: Download and verify Paper once
         env:
           PAPER_USER_AGENT: InteractionVisualizer-Upstream-Comparison/1.0 (https://github.com/EllanServer/InteractionVisualizer)
         run: |
@@ -235,12 +221,156 @@ jobs:
           printf '%s  %s\n' "$PAPER_SHA256" compare-dependencies/paper.jar \
             | sha256sum --check --strict
 
-      - name: Prepare immutable protocol client
+      - name: Prepare immutable protocol client once
         run: bash tools/perf/prepare-phase2-protocol-client.sh compare-dependencies/protocol-client
+
+      - name: Seal prepared comparison stack
+        run: |
+          set -euo pipefail
+          harness_source_sha=$(git rev-parse HEAD)
+          candidate_source_sha=$(git -C "$PRODUCTION_WORKTREE" rev-parse HEAD)
+          [[ "$harness_source_sha" == "$EXPECTED_HARNESS_SHA" ]]
+          [[ "$candidate_source_sha" == "$PRODUCTION_CANDIDATE_SHA" ]]
+          sha256sum \
+            compare-dependencies/upstream.jar \
+            compare-dependencies/rewrite.jar \
+            compare-dependencies/runtime-comparison-driver.jar \
+            compare-dependencies/canonical-config.yml \
+            compare-dependencies/paper.jar \
+            compare-dependencies/protocol-client/client-build-manifest.json \
+            > compare-dependencies/prepared-files.sha256
+          python3 - compare-dependencies/prepared-stack.json \
+            "$harness_source_sha" "$candidate_source_sha" "$COMPARE_RUNTIME_PROFILE" \
+            "$UPSTREAM_SOURCE_SHA" "$UPSTREAM_ARTIFACT_SHA256" "$PAPER_SHA256" <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+
+          output, harness, candidate, profile, upstream_source, upstream_sha, paper_sha = sys.argv[1:]
+          Path(output).write_text(json.dumps({
+              "schemaVersion": 1,
+              "harnessSourceSha": harness,
+              "candidateSourceSha": candidate,
+              "runtimeProfile": profile,
+              "upstreamSourceSha": upstream_source,
+              "upstreamArtifactSha256": upstream_sha,
+              "paperSha256": paper_sha,
+              "distribution": "single-build-artifact",
+          }, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Package prepared comparison stack
+        run: |
+          set -euo pipefail
+          mkdir prepared-transfer
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+            -czf prepared-transfer/comparison-stack.tar.gz compare-dependencies
+          sha256sum prepared-transfer/comparison-stack.tar.gz \
+            > prepared-transfer/comparison-stack.sha256
+
+      - name: Upload prepared comparison stack
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-runtime-prepared-${{ github.run_id }}
+          path: prepared-transfer
+          if-no-files-found: error
+          retention-days: 1
+
+  compare-upstream-runtime:
+    name: Paper 26.1.2-74 ${{ matrix.scenario }} run ${{ matrix.run_number }}
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'upstream-runtime-formal'
+    runs-on: ubuntu-latest
+    needs: prepare-upstream-runtime
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 24
+      matrix:
+        scenario: [dropped-items, block-active]
+        run_number: ${{ fromJSON((github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '[1,2,3,4,5,6,7,8,9,10,11,12]' || '[1,2,3,4]') }}
+    env:
+      UPSTREAM_BUILD_NUMBER: "163"
+      UPSTREAM_SOURCE_SHA: c7f9dd0457451537653bf4b4c0eb0e4298c51187
+      UPSTREAM_ARTIFACT_SIZE: "5799385"
+      UPSTREAM_ARTIFACT_SHA256: a7ffc2ba053c74681feabc698e9fdb959ebd4f8252206fedd8801979e3de30c0
+      PRODUCTION_CANDIDATE_SHA: c28db0146ec2f35eaf066b4202b33f08d06bbc4b
+      PAPER_BUILD: "74"
+      PAPER_SHA256: 1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7
+      COMPARE_RUNTIME_PROFILE: optimized-candidate
+      CAMPAIGN_KIND: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && 'formal' || 'smoke' }}
+      CAMPAIGN_RUNS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '12' || '4' }}
+      CAMPAIGN_WARMUP_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '60' || '10' }}
+      CAMPAIGN_SETTLE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '20' || '5' }}
+      CAMPAIGN_MEASURE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '120' || '10' }}
+      CAMPAIGN_SCENARIO: ${{ matrix.scenario }}
+      CAMPAIGN_SCENE_SIZE: ${{ matrix.scenario == 'dropped-items' && '512' || '1024' }}
+      CAMPAIGN_RUN_NUMBER: ${{ matrix.run_number }}
+      EXPECTED_HARNESS_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Check out candidate head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Distribute prepared comparison stack locally
+        uses: actions/download-artifact@v4
+        with:
+          name: upstream-runtime-prepared-${{ github.run_id }}
+          path: prepared-transfer
+
+      - name: Verify and unpack prepared comparison stack
+        run: |
+          set -euo pipefail
+          sha256sum --check --strict prepared-transfer/comparison-stack.sha256
+          tar -xzf prepared-transfer/comparison-stack.tar.gz
 
       - name: Establish immutable campaign provenance
         run: |
           set -euo pipefail
+          sha256sum --check --strict compare-dependencies/prepared-files.sha256
+          (
+            cd compare-dependencies/protocol-client
+            sha256sum --check --strict client-files.sha256
+          )
+          python3 - compare-dependencies/prepared-stack.json \
+            "$EXPECTED_HARNESS_SHA" "$PRODUCTION_CANDIDATE_SHA" \
+            "$COMPARE_RUNTIME_PROFILE" "$UPSTREAM_SOURCE_SHA" \
+            "$UPSTREAM_ARTIFACT_SHA256" "$PAPER_SHA256" <<'PY'
+          import json
+          import sys
+
+          source, harness, candidate, profile, upstream_source, upstream_sha, paper_sha = sys.argv[1:]
+          data = json.load(open(source, encoding="utf-8"))
+          expected = {
+              "schemaVersion": 1,
+              "harnessSourceSha": harness,
+              "candidateSourceSha": candidate,
+              "runtimeProfile": profile,
+              "upstreamSourceSha": upstream_source,
+              "upstreamArtifactSha256": upstream_sha,
+              "paperSha256": paper_sha,
+              "distribution": "single-build-artifact",
+          }
+          if data != expected:
+              raise SystemExit(f"prepared comparison stack mismatch: {data!r} != {expected!r}")
+          PY
           read -r available_cpu_count server_cpu_set client_cpu_set < <(
             python3 - <<'PY'
           import os
@@ -253,7 +383,7 @@ jobs:
           )
           harness_source_sha=$(git rev-parse HEAD)
           [[ "$harness_source_sha" == "$EXPECTED_HARNESS_SHA" ]]
-          candidate_source_sha=$(git -C "$PRODUCTION_WORKTREE" rev-parse HEAD)
+          candidate_source_sha="$PRODUCTION_CANDIDATE_SHA"
           [[ "$candidate_source_sha" == "$PRODUCTION_CANDIDATE_SHA" ]]
           rewrite_sha=$(sha256sum compare-dependencies/rewrite.jar | awk '{print $1}')
           driver_sha=$(sha256sum compare-dependencies/runtime-comparison-driver.jar | awk '{print $1}')
@@ -294,6 +424,7 @@ jobs:
               printf '%s\n' \
                 "runtimeProfile=$COMPARE_RUNTIME_PROFILE" \
                 'samplingMode=independent-runners' \
+                'dependencyDistribution=single-build-artifact' \
                 'requestedPacketOnlyStatic=true' \
                 'requestedEventDrivenBlockUpdates=true'
               printf '%s\n' "harnessSourceSha=$harness_source_sha"
@@ -351,6 +482,7 @@ jobs:
               "protocolClientKeepAliveTimeoutMs": 300000,
               "runtimeProfile": runtime_profile,
               "samplingMode": "independent-runners",
+              "dependencyDistribution": "single-build-artifact",
               "requestedFlags": {
                   "packetOnlyStatic": runtime_profile == "optimized-candidate",
                   "eventDrivenBlockUpdates": runtime_profile == "optimized-candidate",
@@ -856,6 +988,7 @@ jobs:
               "runs": int(runs),
               "runtimeProfile": "optimized-candidate",
               "samplingMode": "independent-runners",
+              "dependencyDistribution": "single-build-artifact",
               "networkTimeoutSeconds": 300,
               "protocolClientKeepAliveTimeoutMs": 300000,
           }
@@ -1199,6 +1332,7 @@ jobs:
               "conclusion": conclusion,
               "formalComplete": formal,
               "samplingMode": "independent-runners",
+              "dependencyDistribution": "single-build-artifact",
               "registeredGates": {
                   "primaryMeanImprovement": {
                       "medianBRatioToAMaximum": 0.90,
@@ -1332,6 +1466,8 @@ jobs:
                   raise SystemExit(f"{scenario} runtime profile mismatch")
               if document.get("samplingMode") != "independent-runners":
                   raise SystemExit(f"{scenario} sampling mode mismatch")
+              if document.get("dependencyDistribution") != "single-build-artifact":
+                  raise SystemExit(f"{scenario} dependency distribution mismatch")
               if document.get("requestedFlags") != {
                   "packetOnlyStatic": True,
                   "eventDrivenBlockUpdates": True,
