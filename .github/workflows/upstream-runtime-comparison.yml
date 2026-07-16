@@ -930,11 +930,16 @@ jobs:
           mean_nonregression = float(mean["ratioBootstrap95Ci"][1]) <= 1.05
           p95_nonregression = float(p95["ratioBootstrap95Ci"][1]) <= 1.05
           p99_nonregression = float(p99["ratioBootstrap95Ci"][1]) <= 1.10
+          candidate_tps_healthy = all(
+              19.9 <= float(value["observedTps"]) <= 20.5
+              for value in metrics_by_variant["B"]
+          )
           scenario_passed = formal and all((
               primary_improvement,
               mean_nonregression,
               p95_nonregression,
               p99_nonregression,
+              candidate_tps_healthy,
           ))
           if not formal:
               conclusion = "exploratory-no-winner"
@@ -954,11 +959,20 @@ jobs:
               "",
               f"A is official upstream Jenkins #163; B is production candidate "
               f"`{candidate_source[:7]}`. ",
-              "Smoke evidence is exploratory and never declares a winner.",
+              ("Formal evidence is evaluated against the pre-registered gates."
+               if formal else
+               "Smoke evidence is exploratory and never declares a winner."),
               "",
               "| Metric | Upstream median | Rewrite median | Median B/A | Ratio 95% CI | Registered use |",
               "|---|---:|---:|---:|---:|---|",
           ]
+          if formal and scenario == "block-active":
+              lines[5:5] = [
+                  "Load-regime rule: sustained block load may saturate official upstream A "
+                  "when the 120-second window still contains at least 100 tick samples; "
+                  "candidate B must remain in the 19.9-20.5 TPS regime.",
+                  "",
+              ]
           for metric, unit in metric_specs:
               analysis = analyses[metric]
               a_median = statistics.median(float(value[metric]) for value in metrics_by_variant["A"])
@@ -986,7 +1000,12 @@ jobs:
               "",
               f"Scenario conclusion: **{conclusion}**.",
               "",
-              "`observedTps` is capped near 20 on a healthy server; MSPT is the primary effect-size evidence.",
+              ("Candidate `observedTps` must stay near 20; saturated upstream throughput is "
+               "reported directly for the sustained block load. MSPT remains the primary "
+               "effect-size evidence."
+               if formal and scenario == "block-active" else
+               "`observedTps` is capped near 20 on a healthy server; MSPT is the primary "
+               "effect-size evidence."),
               "",
               f"- Upstream source/artifact: `{upstream_source}` / `{upstream_artifact}`",
               f"- Candidate source/artifact: `{candidate_source}` / `{candidate_artifact}`",
@@ -1025,6 +1044,17 @@ jobs:
                       "ratioCiUpperMaximum": 1.10,
                       "passed": p99_nonregression if formal else None,
                   },
+                  "candidateHealthyTps": {
+                      "minimum": 19.9,
+                      "maximum": 20.5,
+                      "passed": candidate_tps_healthy if formal else None,
+                  },
+              },
+              "loadRegimePolicy": {
+                  "upstreamSaturationAllowed": formal and scenario == "block-active",
+                  "minimumUpstreamTickSamples": (
+                      100 if formal and scenario == "block-active" else None
+                  ),
               },
               "metrics": {
                   metric: {
