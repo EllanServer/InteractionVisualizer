@@ -33,6 +33,9 @@ measure_seconds="$COMPARE_MEASURE_SECONDS"
 # This only prevents the synthetic observer from being kicked while the
 # official upstream stalls; it does not alter the server's 20 TPS target.
 network_timeout_seconds=300
+# Match the 4 GiB production server represented by the supplied Spark profile.
+# A and B always receive the same fixed heap.
+server_heap_gib=4
 server_port="${COMPARE_SERVER_PORT:-25565}"
 protocol_trace_enabled="${COMPARE_PROTOCOL_TRACE_ENABLED:-0}"
 protocol_trace_max_events="${COMPARE_PROTOCOL_TRACE_MAX_EVENTS:-500000}"
@@ -250,8 +253,8 @@ client_manifest_sha256="$(sha256sum "$client_root/client-build-manifest.json" | 
 script_sha256="$(sha256sum "${BASH_SOURCE[0]}" | awk '{print $1}')"
 
 jvm_arguments=(
-  -Xms2G
-  -Xmx2G
+  "-Xms${server_heap_gib}G"
+  "-Xmx${server_heap_gib}G"
   -XX:+UseG1GC
   -XX:+AlwaysPreTouch
   "-Xlog:gc*=info,safepoint=info:file=$jvm_log_name:time,uptime,level,tags:filecount=0"
@@ -666,7 +669,8 @@ python3 - "$run_directory/run-manifest.json" "$run_id" "$scenario" "$variant" \
   "$protocol_trace_aggregate_packet_allowlist" \
   "$trace_window_start_epoch_ms" "$trace_window_end_epoch_ms" \
   "$available_cpu_count" "$server_cpu_set" "$client_cpu_set" \
-  "$runtime_profile" "$campaign_kind" "$network_timeout_seconds" "$metrics_path" <<'PY'
+  "$runtime_profile" "$campaign_kind" "$network_timeout_seconds" \
+  "$server_heap_gib" "$metrics_path" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -678,7 +682,8 @@ import sys
     trace_enabled, trace_packet_allowlist, trace_aggregate_packet_allowlist,
     trace_window_start_epoch_ms, trace_window_end_epoch_ms,
     available_cpu_count, server_cpu_set, client_cpu_set,
-    runtime_profile, campaign_kind, network_timeout_seconds, metrics_path,
+    runtime_profile, campaign_kind, network_timeout_seconds, server_heap_gib,
+    metrics_path,
 ) = sys.argv[1:]
 metrics = json.load(open(metrics_path, encoding="utf-8"))
 Path(output).write_text(json.dumps({
@@ -690,6 +695,7 @@ Path(output).write_text(json.dumps({
     "runtimeProfile": runtime_profile,
     "campaignKind": campaign_kind,
     "networkTimeoutSeconds": int(network_timeout_seconds),
+    "serverHeapGiB": int(server_heap_gib),
     "requestedFlags": metrics["requestedFlags"],
     "effectiveFlags": metrics["effectiveFlags"],
     "sceneSize": int(scene_size),

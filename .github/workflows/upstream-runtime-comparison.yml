@@ -400,7 +400,7 @@ jobs:
           runner_sha=$(sha256sum tools/perf/run-upstream-runtime-once.sh | awk '{print $1}')
           protocol_source_sha=$(sha256sum tools/perf/phase2-protocol-client.js | awk '{print $1}')
           protocol_analyzer_sha=$(sha256sum tools/perf/analyze-phase2-protocol-trace.js | awk '{print $1}')
-          jvm_fingerprint='-Xms2G -Xmx2G -XX:+UseG1GC -XX:+AlwaysPreTouch -Xlog:gc*=info,safepoint=info:file=jvm-gc-safepoint.log:time,uptime,level,tags:filecount=0 -Dfile.encoding=UTF-8'
+          jvm_fingerprint='-Xms4G -Xmx4G -XX:+UseG1GC -XX:+AlwaysPreTouch -Xlog:gc*=info,safepoint=info:file=jvm-gc-safepoint.log:time,uptime,level,tags:filecount=0 -Dfile.encoding=UTF-8'
           jvm_sha=$(printf '%s' "$jvm_fingerprint" | sha256sum | awk '{print $1}')
           stack_sha=$(
             {
@@ -634,6 +634,8 @@ jobs:
               raise SystemExit("preflight runtime profile mismatch")
           if manifest.get("campaignKind") != "preflight":
               raise SystemExit("preflight campaign kind mismatch")
+          if manifest.get("serverHeapGiB") != 4:
+              raise SystemExit("preflight server heap mismatch")
           expected_shutdown = {
               "mode": "clean",
               "stopGraceSeconds": 120,
@@ -855,6 +857,7 @@ jobs:
               "clientCpuSet": expected_client_cpu_set,
               "runtimeProfile": runtime_profile,
               "campaignKind": campaign_kind,
+              "serverHeapGiB": 4,
               "requestedFlags": expected_requested_flags,
               "effectiveFlags": expected_effective_flags,
           }
@@ -1162,6 +1165,8 @@ jobs:
                   raise SystemExit(f"runtime profile drifted in {row['RunId']}")
               if run_manifest.get("networkTimeoutSeconds") != 300:
                   raise SystemExit(f"network timeout drifted in {row['RunId']}")
+              if run_manifest.get("serverHeapGiB") != 4:
+                  raise SystemExit(f"server heap drifted in {row['RunId']}")
               if run_manifest.get("campaignKind") != kind:
                   raise SystemExit(f"campaign kind drifted in {row['RunId']}")
               expected_forced_shutdown = (
@@ -1335,6 +1340,7 @@ jobs:
               f"restart-isolated independent runs: `{runs}`.",
               f"Runtime profile: `{runtime_profile}`; shared config requests "
               "`PacketOnlyStatic=true` and `EventDriven=true` for both artifacts.",
+              "Server heap: `4 GiB` for both artifacts; target tick rate remains vanilla `20 TPS`.",
               "Runtime assertion: A reports both flags as `unsupported-legacy`; "
               "B exposes both runtime fields as `true`.",
               ("Server shutdown evidence: "
@@ -1463,6 +1469,7 @@ jobs:
               "paperSha256": paper_sha,
               "stackSha256": stack_sha,
               "runtimeProfile": runtime_profile,
+              "serverHeapGiB": 4,
               "requestedFlags": {
                   "packetOnlyStatic": True,
                   "eventDrivenBlockUpdates": True,
