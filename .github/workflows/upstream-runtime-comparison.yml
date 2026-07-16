@@ -155,6 +155,7 @@ jobs:
           api_url="$JENKINS_BUILD_URL/api/json?tree=number,result,actions[lastBuiltRevision[SHA1]],artifacts[fileName,relativePath]"
           artifact_url="$JENKINS_BUILD_URL/artifact/common/target/InteractionVisualizer-2026.1.2.0.jar"
           curl --globoff --fail --location --show-error --silent \
+            --retry 10 --retry-all-errors --retry-max-time 300 --connect-timeout 30 \
             --output compare-dependencies/upstream-build-163.json "$api_url"
           python3 - compare-dependencies/upstream-build-163.json \
             "$UPSTREAM_BUILD_NUMBER" "$UPSTREAM_SOURCE_SHA" <<'PY'
@@ -188,6 +189,7 @@ jobs:
               raise SystemExit(f"Jenkins artifact is absent: {sorted(artifacts)!r}")
           PY
           curl --fail --location --show-error \
+            --retry 10 --retry-all-errors --retry-max-time 300 --connect-timeout 30 \
             --output compare-dependencies/upstream.jar "$artifact_url"
           [[ "$(stat -c '%s' compare-dependencies/upstream.jar)" == "$UPSTREAM_ARTIFACT_SIZE" ]]
           printf '%s  %s\n' "$UPSTREAM_ARTIFACT_SHA256" compare-dependencies/upstream.jar \
@@ -206,6 +208,7 @@ jobs:
           set -euo pipefail
           builds_url=https://fill.papermc.io/v3/projects/paper/versions/26.1.2/builds
           curl --fail --location --show-error --silent \
+            --retry 10 --retry-all-errors --retry-max-time 300 --connect-timeout 30 \
             -H "User-Agent: $PAPER_USER_AGENT" \
             --output compare-dependencies/paper-builds.json "$builds_url"
           jq --argjson build "$PAPER_BUILD" --arg sha "$PAPER_SHA256" '
@@ -225,6 +228,7 @@ jobs:
           [[ "$paper_url" == https://fill-data.papermc.io/* ]]
           [[ "$paper_size" =~ ^[0-9]+$ ]] && (( paper_size > 0 ))
           curl --fail --location --show-error \
+            --retry 10 --retry-all-errors --retry-max-time 300 --connect-timeout 30 \
             -H "User-Agent: $PAPER_USER_AGENT" \
             --output compare-dependencies/paper.jar "$paper_url"
           [[ "$(stat -c '%s' compare-dependencies/paper.jar)" == "$paper_size" ]]
