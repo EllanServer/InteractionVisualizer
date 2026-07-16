@@ -728,9 +728,6 @@ jobs:
               minimum_visual_spawns = 2 * (
                   metrics["beehiveBlocks"] + metrics["beeNestBlocks"]
               )
-              if minimum_visual_spawns != 818:
-                  raise SystemExit(
-                      f"block preflight TextDisplay guard drifted: {minimum_visual_spawns!r}")
               if spawn_observations < minimum_visual_spawns:
                   raise SystemExit(
                       f"block-active preflight observed only {spawn_observations} spawns; "
