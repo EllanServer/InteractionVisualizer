@@ -554,6 +554,7 @@ jobs:
             COMPARE_SCENARIO="$CAMPAIGN_SCENARIO" \
             COMPARE_VARIANT="$variant" \
             COMPARE_RUNTIME_PROFILE="$COMPARE_RUNTIME_PROFILE" \
+            COMPARE_CAMPAIGN_KIND=preflight \
             COMPARE_SCENE_SIZE="$CAMPAIGN_SCENE_SIZE" \
             COMPARE_WARMUP_SECONDS=10 \
             COMPARE_SETTLE_SECONDS=5 \
@@ -631,6 +632,17 @@ jobs:
               raise SystemExit("preflight canonical config SHA mismatch")
           if manifest.get("runtimeProfile") != "optimized-candidate":
               raise SystemExit("preflight runtime profile mismatch")
+          if manifest.get("campaignKind") != "preflight":
+              raise SystemExit("preflight campaign kind mismatch")
+          expected_shutdown = {
+              "mode": "clean",
+              "stopGraceSeconds": 120,
+              "termGraceSeconds": 10,
+              "forcedAllowed": False,
+          }
+          if manifest.get("serverShutdown") != expected_shutdown:
+              raise SystemExit(
+                  f"preflight server shutdown mismatch: {manifest.get('serverShutdown')!r}")
           if manifest.get("requestedFlags") != expected_requested_flags:
               raise SystemExit("preflight manifest requested flags mismatch")
           if manifest.get("effectiveFlags") != expected_effective_flags:
@@ -753,6 +765,7 @@ jobs:
             COMPARE_SCENARIO="$CAMPAIGN_SCENARIO" \
             COMPARE_VARIANT="$variant" \
             COMPARE_RUNTIME_PROFILE="$COMPARE_RUNTIME_PROFILE" \
+            COMPARE_CAMPAIGN_KIND="$CAMPAIGN_KIND" \
             COMPARE_SCENE_SIZE="$CAMPAIGN_SCENE_SIZE" \
             COMPARE_WARMUP_SECONDS="$CAMPAIGN_WARMUP_SECONDS" \
             COMPARE_SETTLE_SECONDS="$CAMPAIGN_SETTLE_SECONDS" \
@@ -766,7 +779,7 @@ jobs:
               "$CANONICAL_CONFIG_SHA256" "$DRIVER_SHA256" "$PAPER_SHA256" \
               "$CLIENT_MANIFEST_SHA256" "$RUNNER_SHA256" "$JVM_ARGUMENTS_SHA256" \
               "$AVAILABLE_CPU_COUNT" "$SERVER_CPU_SET" "$CLIENT_CPU_SET" \
-              "$COMPARE_RUNTIME_PROFILE" <<'PY'
+              "$COMPARE_RUNTIME_PROFILE" "$CAMPAIGN_KIND" <<'PY'
           import csv
           import json
           from pathlib import Path
@@ -775,7 +788,7 @@ jobs:
           (manifest_text, root_text, run_id, scenario, block, position, variant,
            scene_size_text, stack_sha, artifact_sha, config_sha, driver_sha,
            paper_sha, client_sha, runner_sha, jvm_sha, available_cpu_count,
-           server_cpu_set, client_cpu_set, runtime_profile) = sys.argv[1:]
+           server_cpu_set, client_cpu_set, runtime_profile, campaign_kind) = sys.argv[1:]
           root = Path(root_text)
           metrics_path = root / run_id / "iv-compare.json"
           run_manifest_path = root / run_id / "run-manifest.json"
@@ -841,6 +854,7 @@ jobs:
               "serverCpuSet": expected_server_cpu_set,
               "clientCpuSet": expected_client_cpu_set,
               "runtimeProfile": runtime_profile,
+              "campaignKind": campaign_kind,
               "requestedFlags": expected_requested_flags,
               "effectiveFlags": expected_effective_flags,
           }
@@ -848,6 +862,25 @@ jobs:
               if run_manifest.get(field) != expected:
                   raise SystemExit(
                       f"run manifest mismatch {run_id}/{field}: {run_manifest.get(field)!r} != {expected!r}")
+          expected_forced_shutdown = (
+              campaign_kind == "formal" and scenario == "block-active" and variant == "A")
+          expected_shutdown = {
+              "stopGraceSeconds": 120,
+              "termGraceSeconds": 10,
+              "forcedAllowed": expected_forced_shutdown,
+          }
+          shutdown = run_manifest.get("serverShutdown")
+          if not isinstance(shutdown, dict):
+              raise SystemExit(f"server shutdown evidence missing for {run_id}")
+          for field, expected in expected_shutdown.items():
+              if shutdown.get(field) != expected:
+                  raise SystemExit(
+                      f"server shutdown mismatch {run_id}/{field}: "
+                      f"{shutdown.get(field)!r} != {expected!r}")
+          if shutdown.get("mode") not in {"clean", "forced-after-stop-timeout"}:
+              raise SystemExit(f"invalid server shutdown mode for {run_id}: {shutdown.get('mode')!r}")
+          if shutdown.get("mode") != "clean" and not expected_forced_shutdown:
+              raise SystemExit(f"unexpected forced server shutdown for {run_id}")
           expected_affinity = {
               "availableCpuCount": int(available_cpu_count),
               "serverCpuSet": expected_server_cpu_set,
@@ -1033,7 +1066,7 @@ jobs:
             "$CAMPAIGN_STACK_SHA256" "$UPSTREAM_ARTIFACT_SHA256" \
             "$REWRITE_ARTIFACT_SHA256" "$CANONICAL_CONFIG_SHA256" \
             "$AVAILABLE_CPU_COUNT" "$SERVER_CPU_SET" "$CLIENT_CPU_SET" \
-            "$COMPARE_RUNTIME_PROFILE" <<'PY'
+            "$COMPARE_RUNTIME_PROFILE" "$CAMPAIGN_KIND" <<'PY'
           import csv
           import json
           from pathlib import Path
@@ -1041,7 +1074,7 @@ jobs:
 
           (manifest_text, root_text, runs_text, scenario, scene_size_text,
            stack_sha, upstream_sha, rewrite_sha, config_sha, available_cpu_count,
-           server_cpu_set, client_cpu_set, runtime_profile) = sys.argv[1:]
+           server_cpu_set, client_cpu_set, runtime_profile, kind) = sys.argv[1:]
           expected_runs = int(runs_text)
           scene_size = int(scene_size_text)
           root = Path(root_text).resolve()
@@ -1129,6 +1162,28 @@ jobs:
                   raise SystemExit(f"runtime profile drifted in {row['RunId']}")
               if run_manifest.get("networkTimeoutSeconds") != 300:
                   raise SystemExit(f"network timeout drifted in {row['RunId']}")
+              if run_manifest.get("campaignKind") != kind:
+                  raise SystemExit(f"campaign kind drifted in {row['RunId']}")
+              expected_forced_shutdown = (
+                  kind == "formal" and scenario == "block-active" and variant == "A")
+              expected_shutdown = {
+                  "stopGraceSeconds": 120,
+                  "termGraceSeconds": 10,
+                  "forcedAllowed": expected_forced_shutdown,
+              }
+              shutdown = run_manifest.get("serverShutdown")
+              if not isinstance(shutdown, dict):
+                  raise SystemExit(f"server shutdown evidence missing in {row['RunId']}")
+              for field, expected in expected_shutdown.items():
+                  if shutdown.get(field) != expected:
+                      raise SystemExit(
+                          f"server shutdown drift {row['RunId']}/{field}: "
+                          f"{shutdown.get(field)!r} != {expected!r}")
+              if shutdown.get("mode") not in {"clean", "forced-after-stop-timeout"}:
+                  raise SystemExit(
+                      f"invalid server shutdown mode in {row['RunId']}: {shutdown.get('mode')!r}")
+              if shutdown.get("mode") != "clean" and not expected_forced_shutdown:
+                  raise SystemExit(f"unexpected forced server shutdown in {row['RunId']}")
               if scenario == "block-active":
                   block_guards = {
                       "furnaceBlocks": 205,
@@ -1199,9 +1254,22 @@ jobs:
           root = Path(root_text)
           rows = list(csv.DictReader((root / "abba-manifest.csv").open(encoding="utf-8")))
           metrics_by_variant = {"A": [], "B": []}
+          shutdown_modes_by_variant = {"A": [], "B": []}
           for row in rows:
               metrics = json.loads((root / row["SourcePath"]).read_text(encoding="utf-8"))
               metrics_by_variant[row["Variant"]].append(metrics)
+              run_manifest = json.loads(
+                  (root / row["SourcePath"]).with_name("run-manifest.json").read_text(
+                      encoding="utf-8"))
+              shutdown_modes_by_variant[row["Variant"]].append(
+                  run_manifest["serverShutdown"]["mode"])
+          shutdown_mode_counts = {
+              variant: {
+                  mode: modes.count(mode)
+                  for mode in ("clean", "forced-after-stop-timeout")
+              }
+              for variant, modes in shutdown_modes_by_variant.items()
+          }
           metric_specs = [
               ("msptMean", "ms"),
               ("msptP95", "ms"),
@@ -1269,6 +1337,11 @@ jobs:
               "`PacketOnlyStatic=true` and `EventDriven=true` for both artifacts.",
               "Runtime assertion: A reports both flags as `unsupported-legacy`; "
               "B exposes both runtime fields as `true`.",
+              ("Server shutdown evidence: "
+               f"A clean `{shutdown_mode_counts['A']['clean']}`, forced "
+               f"`{shutdown_mode_counts['A']['forced-after-stop-timeout']}`; "
+               f"B clean `{shutdown_mode_counts['B']['clean']}`, forced "
+               f"`{shutdown_mode_counts['B']['forced-after-stop-timeout']}`."),
               "",
               f"A is official upstream Jenkins #163; B is production candidate "
               f"`{candidate_source[:7]}`. ",
@@ -1370,6 +1443,10 @@ jobs:
                   "minimumUpstreamTickSamples": (
                       100 if formal and scenario == "block-active" else None
                   ),
+              },
+              "serverShutdown": {
+                  "forcedTerminationAllowedOnlyForFormalBlockActiveUpstream": True,
+                  "modeCountsByVariant": shutdown_mode_counts,
               },
               "metrics": {
                   metric: {

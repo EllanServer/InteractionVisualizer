@@ -9,7 +9,7 @@ for variable in \
   COMPARE_PLUGIN_JAR COMPARE_DRIVER_JAR COMPARE_PAPER_JAR COMPARE_CONFIG_FILE \
   COMPARE_CLIENT_ROOT \
   COMPARE_OUTPUT_ROOT COMPARE_RUN_ID COMPARE_SCENARIO COMPARE_VARIANT \
-  COMPARE_RUNTIME_PROFILE \
+  COMPARE_RUNTIME_PROFILE COMPARE_CAMPAIGN_KIND \
   COMPARE_SCENE_SIZE COMPARE_WARMUP_SECONDS COMPARE_SETTLE_SECONDS \
   COMPARE_MEASURE_SECONDS; do
   [[ -n "${!variable:-}" ]] || { echo "$variable is required" >&2; exit 64; }
@@ -25,6 +25,7 @@ run_id="$COMPARE_RUN_ID"
 scenario="$COMPARE_SCENARIO"
 variant="$COMPARE_VARIANT"
 runtime_profile="$COMPARE_RUNTIME_PROFILE"
+campaign_kind="$COMPARE_CAMPAIGN_KIND"
 scene_size="$COMPARE_SCENE_SIZE"
 warmup_seconds="$COMPARE_WARMUP_SECONDS"
 settle_seconds="$COMPARE_SETTLE_SECONDS"
@@ -49,6 +50,8 @@ case "$runtime_profile" in
 esac
 [[ "$scenario" == dropped-items || "$scenario" == block-active ]] \
   || { echo "Unsupported comparison scenario: $scenario" >&2; exit 64; }
+[[ "$campaign_kind" == preflight || "$campaign_kind" == smoke || "$campaign_kind" == formal ]] \
+  || { echo "COMPARE_CAMPAIGN_KIND must be preflight, smoke, or formal" >&2; exit 64; }
 [[ "$protocol_trace_enabled" == 0 || "$protocol_trace_enabled" == 1 ]] \
   || { echo "COMPARE_PROTOCOL_TRACE_ENABLED must be 0 or 1" >&2; exit 64; }
 [[ "$protocol_trace_max_events" =~ ^[0-9]+$ ]] \
@@ -262,6 +265,27 @@ client_pid=""
 console_open=0
 cleanup_complete=0
 
+wait_for_pid_exit() {
+  local pid="$1"
+  local timeout_seconds="$2"
+  for _ in $(seq 1 "$timeout_seconds"); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 1
+  done
+  ! kill -0 "$pid" 2>/dev/null
+}
+
+terminate_pid_bounded() {
+  local pid="$1"
+  local term_grace_seconds="$2"
+  kill -0 "$pid" 2>/dev/null || return 0
+  kill -TERM "$pid" 2>/dev/null || true
+  if ! wait_for_pid_exit "$pid" "$term_grace_seconds"; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null || true
+}
+
 prune_runtime_payload() {
   rm -rf -- \
     "$run_directory/cache" \
@@ -286,19 +310,13 @@ cleanup() {
   cleanup_complete=1
   set +e
   if [[ -n "$client_pid" ]] && kill -0 "$client_pid" 2>/dev/null; then
-    kill -TERM "$client_pid"
-    wait "$client_pid"
+    terminate_pid_bounded "$client_pid" 5
   fi
   if [[ "$console_open" == 1 ]]; then
     printf 'stop\n' >&3
   fi
   if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
-    for _ in $(seq 1 60); do
-      kill -0 "$server_pid" 2>/dev/null || break
-      sleep 1
-    done
-    kill -TERM "$server_pid" 2>/dev/null || true
-    wait "$server_pid" 2>/dev/null || true
+    wait_for_pid_exit "$server_pid" 60 || terminate_pid_bounded "$server_pid" 10
   fi
   if [[ "$console_open" == 1 ]]; then
     exec 3>&-
@@ -648,7 +666,7 @@ python3 - "$run_directory/run-manifest.json" "$run_id" "$scenario" "$variant" \
   "$protocol_trace_aggregate_packet_allowlist" \
   "$trace_window_start_epoch_ms" "$trace_window_end_epoch_ms" \
   "$available_cpu_count" "$server_cpu_set" "$client_cpu_set" \
-  "$runtime_profile" "$network_timeout_seconds" "$metrics_path" <<'PY'
+  "$runtime_profile" "$campaign_kind" "$network_timeout_seconds" "$metrics_path" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -660,7 +678,7 @@ import sys
     trace_enabled, trace_packet_allowlist, trace_aggregate_packet_allowlist,
     trace_window_start_epoch_ms, trace_window_end_epoch_ms,
     available_cpu_count, server_cpu_set, client_cpu_set,
-    runtime_profile, network_timeout_seconds, metrics_path,
+    runtime_profile, campaign_kind, network_timeout_seconds, metrics_path,
 ) = sys.argv[1:]
 metrics = json.load(open(metrics_path, encoding="utf-8"))
 Path(output).write_text(json.dumps({
@@ -670,6 +688,7 @@ Path(output).write_text(json.dumps({
     "variant": variant,
     "variantMeaning": "official-upstream" if variant == "A" else "rewritten-candidate",
     "runtimeProfile": runtime_profile,
+    "campaignKind": campaign_kind,
     "networkTimeoutSeconds": int(network_timeout_seconds),
     "requestedFlags": metrics["requestedFlags"],
     "effectiveFlags": metrics["effectiveFlags"],
@@ -815,18 +834,44 @@ PY
 fi
 
 send_console "stop"
-for _ in $(seq 1 120); do
-  kill -0 "$server_pid" 2>/dev/null || break
-  sleep 1
-done
-if kill -0 "$server_pid" 2>/dev/null; then
-  echo "Paper did not stop cleanly" >&2
-  exit 1
+server_shutdown_mode=clean
+server_shutdown_forced_allowed=false
+if [[ "$campaign_kind" == formal && "$scenario" == block-active && "$variant" == A ]]; then
+  server_shutdown_forced_allowed=true
 fi
-wait "$server_pid"
+if kill -0 "$server_pid" 2>/dev/null; then
+  if ! wait_for_pid_exit "$server_pid" 120; then
+    server_shutdown_mode=forced-after-stop-timeout
+    echo "Paper did not stop within 120 seconds; forcing bounded termination" >&2
+    terminate_pid_bounded "$server_pid" 10
+  fi
+fi
+if [[ "$server_shutdown_mode" == clean ]]; then
+  wait "$server_pid"
+fi
 server_pid=""
 exec 3>&-
 console_open=0
 rm -f -- "$console_fifo"
+python3 - "$run_directory/run-manifest.json" "$server_shutdown_mode" \
+  "$server_shutdown_forced_allowed" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+path, mode, forced_allowed = sys.argv[1:]
+data = json.loads(Path(path).read_text(encoding="utf-8"))
+data["serverShutdown"] = {
+    "mode": mode,
+    "stopGraceSeconds": 120,
+    "termGraceSeconds": 10,
+    "forcedAllowed": forced_allowed == "true",
+}
+Path(path).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
 prune_runtime_payload
 cleanup_complete=1
+if [[ "$server_shutdown_mode" != clean && "$server_shutdown_forced_allowed" != true ]]; then
+  echo "Forced Paper termination is not allowed for this comparison sample" >&2
+  exit 1
+fi
