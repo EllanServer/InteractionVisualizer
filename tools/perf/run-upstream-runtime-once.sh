@@ -29,6 +29,9 @@ scene_size="$COMPARE_SCENE_SIZE"
 warmup_seconds="$COMPARE_WARMUP_SECONDS"
 settle_seconds="$COMPARE_SETTLE_SECONDS"
 measure_seconds="$COMPARE_MEASURE_SECONDS"
+# This only prevents the synthetic observer from being kicked while the
+# official upstream stalls; it does not alter the server's 20 TPS target.
+network_timeout_seconds=300
 server_port="${COMPARE_SERVER_PORT:-25565}"
 protocol_trace_enabled="${COMPARE_PROTOCOL_TRACE_ENABLED:-0}"
 protocol_trace_max_events="${COMPARE_PROTOCOL_TRACE_MAX_EVENTS:-500000}"
@@ -229,6 +232,11 @@ spawn-protection=0
 sync-chunk-writes=false
 view-distance=4
 white-list=false
+EOF
+
+cat > "$run_directory/spigot.yml" <<EOF
+settings:
+  timeout-time: $network_timeout_seconds
 EOF
 
 plugin_sha256="$(sha256sum "$plugin_jar" | awk '{print $1}')"
@@ -557,13 +565,16 @@ if data.get("effectiveFlags") != expected_effective_flags:
         f"comparison effective flags mismatch: "
         f"{data.get('effectiveFlags')!r} != {expected_effective_flags!r}"
     )
-if data.get("seconds", 0) < measure - 2 or data.get("seconds", 0) > measure + 3:
-    raise SystemExit(f"comparison measurement duration is invalid: {data.get('seconds')}")
-if data.get("tickSamples", 0) <= 0 or data.get("observedTps", 0) <= 0:
-    raise SystemExit("comparison produced no valid tick samples")
 allows_upstream_saturation = (
     measure >= 60 and scenario == "block-active" and variant == "A"
 )
+# The stop command is handled on the saturated main thread, so its wall-clock
+# acknowledgement can trail the requested window without invalidating it.
+maximum_seconds = measure + (30 if allows_upstream_saturation else 3)
+if data.get("seconds", 0) < measure - 2 or data.get("seconds", 0) > maximum_seconds:
+    raise SystemExit(f"comparison measurement duration is invalid: {data.get('seconds')}")
+if data.get("tickSamples", 0) <= 0 or data.get("observedTps", 0) <= 0:
+    raise SystemExit("comparison produced no valid tick samples")
 if allows_upstream_saturation:
     # Sustained block load is allowed to expose the official upstream's
     # throughput ceiling. The rewritten candidate remains subject to the
@@ -636,7 +647,7 @@ python3 - "$run_directory/run-manifest.json" "$run_id" "$scenario" "$variant" \
   "$protocol_trace_aggregate_packet_allowlist" \
   "$trace_window_start_epoch_ms" "$trace_window_end_epoch_ms" \
   "$available_cpu_count" "$server_cpu_set" "$client_cpu_set" \
-  "$runtime_profile" "$metrics_path" <<'PY'
+  "$runtime_profile" "$network_timeout_seconds" "$metrics_path" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -648,7 +659,7 @@ import sys
     trace_enabled, trace_packet_allowlist, trace_aggregate_packet_allowlist,
     trace_window_start_epoch_ms, trace_window_end_epoch_ms,
     available_cpu_count, server_cpu_set, client_cpu_set,
-    runtime_profile, metrics_path,
+    runtime_profile, network_timeout_seconds, metrics_path,
 ) = sys.argv[1:]
 metrics = json.load(open(metrics_path, encoding="utf-8"))
 Path(output).write_text(json.dumps({
@@ -658,6 +669,7 @@ Path(output).write_text(json.dumps({
     "variant": variant,
     "variantMeaning": "official-upstream" if variant == "A" else "rewritten-candidate",
     "runtimeProfile": runtime_profile,
+    "networkTimeoutSeconds": int(network_timeout_seconds),
     "requestedFlags": metrics["requestedFlags"],
     "effectiveFlags": metrics["effectiveFlags"],
     "sceneSize": int(scene_size),

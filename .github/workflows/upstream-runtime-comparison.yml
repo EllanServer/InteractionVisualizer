@@ -282,6 +282,7 @@ jobs:
                 "measure=$CAMPAIGN_MEASURE_SECONDS" \
                 'preflightWarmup=10' 'preflightSettle=5' 'preflightMeasure=10' \
                 'paper=26.1.2-74' 'client=26.1.2' \
+                'networkTimeoutSeconds=300' \
                 "availableCpuCount=$available_cpu_count" \
                 "serverCpuSet=$server_cpu_set" \
                 "clientCpuSet=$client_cpu_set"
@@ -341,6 +342,7 @@ jobs:
               "warmupSeconds": int(warmup),
               "settleSeconds": int(settle),
               "measureSeconds": int(measure),
+              "networkTimeoutSeconds": 300,
               "runtimeProfile": runtime_profile,
               "samplingMode": "independent-runners",
               "requestedFlags": {
@@ -848,6 +850,7 @@ jobs:
               "runs": int(runs),
               "runtimeProfile": "optimized-candidate",
               "samplingMode": "independent-runners",
+              "networkTimeoutSeconds": 300,
           }
           for field, value in expected.items():
               if data.get(field) != value:
@@ -976,6 +979,8 @@ jobs:
                           f"{document_name} effective flags drifted in {row['RunId']}")
               if run_manifest.get("runtimeProfile") != runtime_profile:
                   raise SystemExit(f"runtime profile drifted in {row['RunId']}")
+              if run_manifest.get("networkTimeoutSeconds") != 300:
+                  raise SystemExit(f"network timeout drifted in {row['RunId']}")
               if scenario == "block-active":
                   block_guards = {
                       "furnaceBlocks": 205,
