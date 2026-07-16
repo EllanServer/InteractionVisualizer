@@ -34,6 +34,7 @@ import com.loohp.interactionvisualizer.managers.MusicManager;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
 import com.loohp.interactionvisualizer.managers.PreferenceManager;
 import com.loohp.interactionvisualizer.managers.PerformanceMetrics;
+import com.loohp.interactionvisualizer.managers.PlayerLocationManager;
 import com.loohp.interactionvisualizer.managers.TaskManager;
 import com.loohp.interactionvisualizer.managers.TileEntityManager;
 import com.loohp.interactionvisualizer.metrics.Charts;
@@ -45,6 +46,7 @@ import com.loohp.interactionvisualizer.updater.Updater;
 import com.loohp.interactionvisualizer.updater.Updater.UpdaterResponse;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import com.loohp.interactionvisualizer.config.SparrowConfiguration;
+import com.loohp.interactionvisualizer.utils.LegacyTextComponentCache;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -255,7 +257,11 @@ public class InteractionVisualizer extends JavaPlugin {
         if (preferenceManager != null) {
             preferenceManager.close();
         }
+        TaskManager.shutdown();
         DisplayManager.shutdown();
+        TileEntityManager.shutdown();
+        PlayerLocationManager.clearCache();
+        LegacyTextComponentCache.invalidateAll();
         if (asyncExecutorManager != null) {
             asyncExecutorManager.close();
         }

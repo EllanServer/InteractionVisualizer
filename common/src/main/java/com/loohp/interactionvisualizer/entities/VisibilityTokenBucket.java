@@ -13,6 +13,7 @@ package com.loohp.interactionvisualizer.entities;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
@@ -41,14 +42,20 @@ final class VisibilityTokenBucket<T> {
     }
 
     List<T> drain(int capacity, int refill, Predicate<T> stillWanted) {
+        List<T> ready = new ArrayList<>();
+        drainInto(capacity, refill, stillWanted, ready);
+        return ready;
+    }
+
+    void drainInto(int capacity, int refill, Predicate<T> stillWanted,
+                   Collection<? super T> ready) {
         int safeCapacity = Math.max(1, capacity);
         long replenished = (long) tokens + Math.max(0, refill);
         tokens = (int) Math.min(safeCapacity, replenished);
         if (tokens == 0 || pending.isEmpty()) {
-            return List.of();
+            return;
         }
 
-        List<T> ready = new ArrayList<>(Math.min(tokens, pending.size()));
         while (tokens > 0 && !pending.isEmpty()) {
             T value = pending.removeFirst();
             if (!queued.remove(value) || !stillWanted.test(value)) {
@@ -57,26 +64,29 @@ final class VisibilityTokenBucket<T> {
             ready.add(value);
             tokens--;
         }
-        return ready;
     }
 
     List<T> drainAll(Predicate<T> stillWanted) {
-        if (pending.isEmpty()) {
-            return List.of();
-        }
+        List<T> ready = new ArrayList<>();
+        drainAllInto(stillWanted, ready);
+        return ready;
+    }
 
-        List<T> ready = new ArrayList<>(pending.size());
+    void drainAllInto(Predicate<T> stillWanted, Collection<? super T> ready) {
         while (!pending.isEmpty()) {
             T value = pending.removeFirst();
             if (queued.remove(value) && stillWanted.test(value)) {
                 ready.add(value);
             }
         }
-        return ready;
     }
 
     void clear() {
         pending.clear();
         queued.clear();
+    }
+
+    boolean hasPending() {
+        return !pending.isEmpty();
     }
 }

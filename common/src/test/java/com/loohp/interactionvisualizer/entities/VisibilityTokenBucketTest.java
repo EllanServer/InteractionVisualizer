@@ -13,9 +13,12 @@ package com.loohp.interactionvisualizer.entities;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class VisibilityTokenBucketTest {
 
@@ -62,5 +65,39 @@ class VisibilityTokenBucketTest {
         bucket.request(1);
 
         assertEquals(List.of(1), bucket.drain(Integer.MAX_VALUE, Integer.MAX_VALUE, ignored -> true));
+    }
+
+    @Test
+    void drainsIntoReusableCollectionWithoutRetainingPreviousResults() {
+        VisibilityTokenBucket<Integer> bucket = new VisibilityTokenBucket<>(2);
+        bucket.request(1);
+        bucket.request(2);
+        bucket.request(3);
+        List<Integer> ready = new ArrayList<>();
+
+        bucket.drainInto(2, 0, ignored -> true, ready);
+        assertEquals(List.of(1, 2), ready);
+
+        ready.clear();
+        bucket.drainInto(2, 1, ignored -> true, ready);
+        assertEquals(List.of(3), ready);
+
+        ready.clear();
+        bucket.request(4);
+        bucket.request(5);
+        bucket.drainAllInto(value -> value != 5, ready);
+        assertEquals(List.of(4), ready);
+        assertFalse(bucket.hasPending());
+    }
+
+    @Test
+    void canceledEntriesRemainPendingOnlyUntilTheNextDrain() {
+        VisibilityTokenBucket<Integer> bucket = new VisibilityTokenBucket<>(1);
+        bucket.request(1);
+        bucket.cancel(1);
+
+        assertTrue(bucket.hasPending());
+        bucket.drainAll(ignored -> true);
+        assertFalse(bucket.hasPending());
     }
 }

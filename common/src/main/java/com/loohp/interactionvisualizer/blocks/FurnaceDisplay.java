@@ -216,7 +216,7 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
                         if (!isFurnace(block.getType())) {
                             return;
                         }
-                        org.bukkit.block.Furnace furnace = (org.bukkit.block.Furnace) block.getState();
+                        org.bukkit.block.Furnace furnace = (org.bukkit.block.Furnace) block.getState(false);
 
                         {
                         Inventory inv = furnace.getInventory();
@@ -335,7 +335,7 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
             values.putAll(spawnDisplayEntitys(block));
             furnaceMap.put(block, values);
         }
-        org.bukkit.block.Furnace furnace = (org.bukkit.block.Furnace) block.getState();
+        org.bukkit.block.Furnace furnace = (org.bukkit.block.Furnace) block.getState(false);
         return FurnaceDisplayUpdater.update(furnace, values, KEY, progressBarCharacter, emptyColor,
                 filledColor, noFuelColor, progressBarLength, amountPending);
     }
@@ -624,7 +624,7 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
         Map<String, DisplayEntity> map = new HashMap<>();
         Location origin = block.getLocation();
 
-        BlockData blockData = block.getState().getBlockData();
+        BlockData blockData = block.getBlockData();
         BlockFace facing = ((Directional) blockData).getFacing();
         Location target = block.getRelative(facing).getLocation();
         Vector direction = target.toVector().subtract(origin.toVector()).multiply(0.7);
