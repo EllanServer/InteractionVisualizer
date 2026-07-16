@@ -4,9 +4,10 @@ Validates and analyzes a same-stack, restart-per-run Phase 2 ABBA campaign.
 
 .DESCRIPTION
 Consumes a CSV manifest with one row per independent run. Every formal campaign
-contains three four-run blocks in ABBA, BAAB, ABBA order. Adjacent runs are
-paired, B/A log-ratios are summarized by their median, and a deterministic
-paired bootstrap produces a 95% confidence interval.
+contains three four-run blocks in ABBA, BAAB, ABBA order. By default adjacent
+runs are paired. Pass -IndependentSamples when every run executes concurrently
+on its own runner; A and B are then resampled independently and the estimator is
+median(B) / median(A).
 
 Required manifest columns:
 Scenario,Block,Position,Variant,RunId,StackSha256,ArtifactSha256,CaptureMethod,SourcePath
@@ -48,6 +49,8 @@ param(
     [int]$Seed = 20260713,
 
     [switch]$AllowIncomplete,
+
+    [switch]$IndependentSamples,
 
     [string]$OutputJson,
 
@@ -295,6 +298,42 @@ function Get-BootstrapSummary {
     }
 }
 
+function Get-IndependentBootstrapSummary {
+    param(
+        [Parameter(Mandatory = $true)][double[]]$AValues,
+        [Parameter(Mandatory = $true)][double[]]$BValues,
+        [Parameter(Mandatory = $true)][int]$Iterations,
+        [Parameter(Mandatory = $true)][int]$RandomSeed
+    )
+
+    if ($AValues.Count -eq 0 -or $BValues.Count -eq 0) {
+        throw "Independent bootstrap requires non-empty A and B samples."
+    }
+    if (@($AValues + $BValues | Where-Object { $_ -le 0.0 }).Count -ne 0) {
+        throw "Independent ratio bootstrap requires strictly positive metric values."
+    }
+    $random = [Random]::new($RandomSeed)
+    $bootstrap = New-Object 'double[]' $Iterations
+    for ($iteration = 0; $iteration -lt $Iterations; $iteration++) {
+        $aSample = New-Object 'double[]' $AValues.Count
+        $bSample = New-Object 'double[]' $BValues.Count
+        for ($index = 0; $index -lt $AValues.Count; $index++) {
+            $aSample[$index] = $AValues[$random.Next($AValues.Count)]
+        }
+        for ($index = 0; $index -lt $BValues.Count; $index++) {
+            $bSample[$index] = $BValues[$random.Next($BValues.Count)]
+        }
+        $bootstrap[$iteration] = [math]::Log(
+            (Get-Median -Values $bSample) / (Get-Median -Values $aSample))
+    }
+    return [pscustomobject]@{
+        Median = [math]::Log(
+            (Get-Median -Values $BValues) / (Get-Median -Values $AValues))
+        Lower = Get-NearestRankPercentile -Values $bootstrap -Percentile 0.025
+        Upper = Get-NearestRankPercentile -Values $bootstrap -Percentile 0.975
+    }
+}
+
 function Round-Metric {
     param([Parameter(Mandatory = $true)][double]$Value)
     return [math]::Round($Value, 6, [MidpointRounding]::AwayFromZero)
@@ -462,6 +501,7 @@ function Get-ScenarioResult {
         [Parameter(Mandatory = $true)][string]$MetricPath,
         [Parameter(Mandatory = $true)][string]$MetricDirection,
         [Parameter(Mandatory = $true)][bool]$PermitIncomplete,
+        [bool]$UseIndependentSamples = $false,
         [Parameter(Mandatory = $true)][int]$Iterations,
         [Parameter(Mandatory = $true)][int]$RandomSeed,
         [switch]$Prepared
@@ -674,8 +714,18 @@ function Get-ScenarioResult {
         }
     }
 
-    [double[]]$logRatios = @($pairs | ForEach-Object { [double]$_.LogRatio })
-    $bootstrap = Get-BootstrapSummary -LogRatios $logRatios -Iterations $Iterations -RandomSeed $RandomSeed
+    if ($UseIndependentSamples) {
+        [double[]]$aValues = @($evidenceRuns.ToArray() | Where-Object variant -eq "A" |
+            ForEach-Object { [double]$_.value })
+        [double[]]$bValues = @($evidenceRuns.ToArray() | Where-Object variant -eq "B" |
+            ForEach-Object { [double]$_.value })
+        $bootstrap = Get-IndependentBootstrapSummary -AValues $aValues -BValues $bValues `
+            -Iterations $Iterations -RandomSeed $RandomSeed
+    } else {
+        [double[]]$logRatios = @($pairs | ForEach-Object { [double]$_.LogRatio })
+        $bootstrap = Get-BootstrapSummary -LogRatios $logRatios `
+            -Iterations $Iterations -RandomSeed $RandomSeed
+    }
     $medianRatio = [math]::Exp($bootstrap.Median)
     $lowerRatio = [math]::Exp($bootstrap.Lower)
     $upperRatio = [math]::Exp($bootstrap.Upper)
@@ -687,6 +737,12 @@ function Get-ScenarioResult {
         $improvement = ($medianRatio - 1.0) * 100.0
         $improvementLower = ($lowerRatio - 1.0) * 100.0
         $improvementUpper = ($upperRatio - 1.0) * 100.0
+    }
+    $reportedPairs = New-Object 'System.Collections.Generic.List[object]'
+    if (-not $UseIndependentSamples) {
+        foreach ($pair in $pairs) {
+            $reportedPairs.Add($pair)
+        }
     }
 
     return [ordered]@{
@@ -707,12 +763,13 @@ function Get-ScenarioResult {
         }
         captureMethod = $captureMethods[0]
         runCount = $Runs.Count
-        pairCount = $pairs.Count
+        samplingMode = if ($UseIndependentSamples) { "independent-runners" } else { "paired-adjacent" }
+        pairCount = if ($UseIndependentSamples) { 0 } else { $pairs.Count }
         medianBRatioToA = Round-Metric $medianRatio
         ratioBootstrap95Ci = @((Round-Metric $lowerRatio), (Round-Metric $upperRatio))
         improvementPercent = Round-Metric $improvement
         improvementBootstrap95CiPercent = @((Round-Metric $improvementLower), (Round-Metric $improvementUpper))
-        pairs = @($pairs.ToArray() | ForEach-Object {
+        pairs = @($reportedPairs.ToArray() | ForEach-Object {
             [ordered]@{
                 block = $_.Block
                 positions = $_.Positions
@@ -821,6 +878,15 @@ function Invoke-AnalyzerSelfTest {
     if ([math]::Abs($result.medianBRatioToA - 0.8) -gt 0.000001 -or
             [math]::Abs($result.improvementPercent - 20.0) -gt 0.000001) {
         throw "Self-test paired log-ratio failed."
+    }
+    $independentResult = Get-ScenarioResult -Runs $runs -ScenarioName "SELFTEST" `
+        -MetricPath "metric" -MetricDirection "LowerIsBetter" -PermitIncomplete $false `
+        -UseIndependentSamples $true -Iterations 1000 -RandomSeed 7 -Prepared
+    if ($independentResult.samplingMode -ne "independent-runners" -or
+            $independentResult.pairCount -ne 0 -or
+            $independentResult.pairs.Count -ne 0 -or
+            [math]::Abs($independentResult.medianBRatioToA - 0.8) -gt 0.000001) {
+        throw "Self-test independent A/B bootstrap failed."
     }
     if ($null -ne $result.abFactor -or $result.configSha256.Count -ne 0 -or
             $result.legacyTextComponentCache.provenancePresent) {
@@ -991,6 +1057,10 @@ function Invoke-AnalyzerSelfTest {
         medianBRatioToA = $result.medianBRatioToA
         ratioBootstrap95Ci = $result.ratioBootstrap95Ci
         improvementPercent = $result.improvementPercent
+        independentSamplingModePassed = (
+            $independentResult.samplingMode -eq "independent-runners" -and
+            $independentResult.pairCount -eq 0
+        )
         enforcesFormalOrder = $true
         enforcesSameStackAndArtifacts = $true
         rejectsJfrDataLoss = $rejectedJfrDataLoss
@@ -1035,6 +1105,7 @@ for ($index = 0; $index -lt $scenarioGroups.Count; $index++) {
     $group = $scenarioGroups[$index]
     $results.Add((Get-ScenarioResult -Runs @($group.Group) -ScenarioName $group.Name `
         -MetricPath $Metric -MetricDirection $Direction -PermitIncomplete $AllowIncomplete.IsPresent `
+        -UseIndependentSamples $IndependentSamples.IsPresent `
         -Iterations $BootstrapIterations -RandomSeed ($Seed + $index)))
 }
 
@@ -1103,8 +1174,16 @@ Write-JsonResult ([ordered]@{
     minimumSeconds = $MinimumSeconds
     bootstrapIterations = $BootstrapIterations
     seed = $Seed
-    pairing = "adjacent positions 1-2 and 3-4 within each restart-per-run block"
-    estimator = "exp(median(paired log(B/A)))"
-    confidenceInterval = "deterministic paired bootstrap percentile 95% CI"
+    pairing = if ($IndependentSamples) { $null } else {
+        "adjacent positions 1-2 and 3-4 within each restart-per-run block"
+    }
+    estimator = if ($IndependentSamples) { "median(B) / median(A)" } else {
+        "exp(median(paired log(B/A)))"
+    }
+    confidenceInterval = if ($IndependentSamples) {
+        "deterministic independent A/B bootstrap percentile 95% CI"
+    } else {
+        "deterministic paired bootstrap percentile 95% CI"
+    }
     results = @($results.ToArray())
 })

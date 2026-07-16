@@ -14,21 +14,19 @@ concurrency:
 
 jobs:
   compare-upstream-runtime:
-    name: Paper 26.1.2-74 ${{ matrix.scenario }} upstream vs rewrite
+    name: Paper 26.1.2-74 ${{ matrix.scenario }} run ${{ matrix.run_number }}
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.action != 'labeled' ||
       github.event.label.name == 'upstream-runtime-formal'
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 20
     strategy:
       fail-fast: false
+      max-parallel: 24
       matrix:
-        include:
-          - scenario: dropped-items
-            scene_size: 512
-          - scenario: block-active
-            scene_size: 1024
+        scenario: [dropped-items, block-active]
+        run_number: ${{ fromJSON((github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '[1,2,3,4,5,6,7,8,9,10,11,12]' || '[1,2,3,4]') }}
     env:
       UPSTREAM_BUILD_NUMBER: "163"
       UPSTREAM_SOURCE_SHA: c7f9dd0457451537653bf4b4c0eb0e4298c51187
@@ -44,7 +42,8 @@ jobs:
       CAMPAIGN_SETTLE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '20' || '5' }}
       CAMPAIGN_MEASURE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '120' || '10' }}
       CAMPAIGN_SCENARIO: ${{ matrix.scenario }}
-      CAMPAIGN_SCENE_SIZE: ${{ matrix.scene_size }}
+      CAMPAIGN_SCENE_SIZE: ${{ matrix.scenario == 'dropped-items' && '512' || '1024' }}
+      CAMPAIGN_RUN_NUMBER: ${{ matrix.run_number }}
       EXPECTED_HARNESS_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
     steps:
@@ -288,6 +287,7 @@ jobs:
                 "clientCpuSet=$client_cpu_set"
               printf '%s\n' \
                 "runtimeProfile=$COMPARE_RUNTIME_PROFILE" \
+                'samplingMode=independent-runners' \
                 'requestedPacketOnlyStatic=true' \
                 'requestedEventDrivenBlockUpdates=true'
               printf '%s\n' "harnessSourceSha=$harness_source_sha"
@@ -342,6 +342,7 @@ jobs:
               "settleSeconds": int(settle),
               "measureSeconds": int(measure),
               "runtimeProfile": runtime_profile,
+              "samplingMode": "independent-runners",
               "requestedFlags": {
                   "packetOnlyStatic": runtime_profile == "optimized-candidate",
                   "eventDrivenBlockUpdates": runtime_profile == "optimized-candidate",
@@ -381,6 +382,7 @@ jobs:
             > compare-dependencies/campaign-files.sha256
 
       - name: Run full-scene protocol preflight for both artifacts
+        if: matrix.run_number == 1
         run: |
           set -euo pipefail
           preflight_root="compare-results/$CAMPAIGN_SCENARIO/preflight"
@@ -570,7 +572,7 @@ jobs:
           PY
           done
 
-      - name: Run restart-isolated ABBA campaign
+      - name: Run one restart-isolated independent sample
         run: |
           set -euo pipefail
           result_root="compare-results/$CAMPAIGN_SCENARIO/$CAMPAIGN_KIND"
@@ -579,21 +581,21 @@ jobs:
           printf 'Scenario,Block,Position,Variant,RunId,StackSha256,ArtifactSha256,CaptureMethod,SourcePath\n' \
             > "$manifest"
 
-          for run_number in $(seq 1 "$CAMPAIGN_RUNS"); do
-            block=$(( (run_number - 1) / 4 + 1 ))
-            position=$(( (run_number - 1) % 4 + 1 ))
-            if (( block % 2 == 1 )); then pattern=ABBA; else pattern=BAAB; fi
-            variant=${pattern:$((position - 1)):1}
-            run_id=$(printf '%s_%s_%02d' "${CAMPAIGN_SCENARIO//-/_}" "$variant" "$run_number")
-            if [[ "$variant" == A ]]; then
-              target=compare-dependencies/upstream.jar
-              expected_artifact_sha="$UPSTREAM_ARTIFACT_SHA256"
-            else
-              target=compare-dependencies/rewrite.jar
-              expected_artifact_sha="$REWRITE_ARTIFACT_SHA256"
-            fi
+          run_number="$CAMPAIGN_RUN_NUMBER"
+          block=$(( (run_number - 1) / 4 + 1 ))
+          position=$(( (run_number - 1) % 4 + 1 ))
+          if (( block % 2 == 1 )); then pattern=ABBA; else pattern=BAAB; fi
+          variant=${pattern:$((position - 1)):1}
+          run_id=$(printf '%s_%s_%02d' "${CAMPAIGN_SCENARIO//-/_}" "$variant" "$run_number")
+          if [[ "$variant" == A ]]; then
+            target=compare-dependencies/upstream.jar
+            expected_artifact_sha="$UPSTREAM_ARTIFACT_SHA256"
+          else
+            target=compare-dependencies/rewrite.jar
+            expected_artifact_sha="$REWRITE_ARTIFACT_SHA256"
+          fi
 
-            COMPARE_PLUGIN_JAR="$target" \
+          COMPARE_PLUGIN_JAR="$target" \
             COMPARE_DRIVER_JAR=compare-dependencies/runtime-comparison-driver.jar \
             COMPARE_CONFIG_FILE=compare-dependencies/canonical-config.yml \
             COMPARE_PAPER_JAR=compare-dependencies/paper.jar \
@@ -608,9 +610,9 @@ jobs:
             COMPARE_SETTLE_SECONDS="$CAMPAIGN_SETTLE_SECONDS" \
             COMPARE_MEASURE_SECONDS="$CAMPAIGN_MEASURE_SECONDS" \
             COMPARE_PROTOCOL_TRACE_ENABLED=0 \
-            bash tools/perf/run-upstream-runtime-once.sh
+          bash tools/perf/run-upstream-runtime-once.sh
 
-            python3 - "$manifest" "$result_root" "$run_id" "$CAMPAIGN_SCENARIO" \
+          python3 - "$manifest" "$result_root" "$run_id" "$CAMPAIGN_SCENARIO" \
               "$block" "$position" "$variant" "$CAMPAIGN_SCENE_SIZE" \
               "$CAMPAIGN_STACK_SHA256" "$expected_artifact_sha" \
               "$CANONICAL_CONFIG_SHA256" "$DRIVER_SHA256" "$PAPER_SHA256" \
@@ -716,7 +718,159 @@ jobs:
                   "paper-server-tick-end-event", f"{run_id}/iv-compare.json",
               ])
           PY
+
+      - name: Upload independent run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-runtime-run-${{ matrix.scenario }}-${{ env.CAMPAIGN_KIND }}-${{ github.run_id }}-${{ matrix.run_number }}
+          path: |
+            compare-results/${{ matrix.scenario }}
+            compare-dependencies/campaign-provenance.json
+            compare-dependencies/campaign-files.sha256
+            compare-dependencies/upstream-build-163.json
+            compare-dependencies/upstream-plugin.yml
+            compare-dependencies/paper-build-74.json
+            compare-dependencies/canonical-config.yml
+            compare-dependencies/protocol-client/client-build-manifest.json
+            compare-dependencies/protocol-client/client-files.sha256
+            compare-dependencies/protocol-client/node-minecraft-protocol/package-lock.json
+            compare-dependencies/protocol-client/node-minecraft-protocol/production-lock-inventory.json
+          if-no-files-found: warn
+          retention-days: 3
+
+  aggregate-upstream-runtime:
+    name: Aggregate ${{ matrix.scenario }} independent samples
+    needs: [compare-upstream-runtime]
+    if: ${{ needs.compare-upstream-runtime.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [dropped-items, block-active]
+    env:
+      UPSTREAM_BUILD_NUMBER: "163"
+      UPSTREAM_SOURCE_SHA: c7f9dd0457451537653bf4b4c0eb0e4298c51187
+      UPSTREAM_ARTIFACT_SHA256: a7ffc2ba053c74681feabc698e9fdb959ebd4f8252206fedd8801979e3de30c0
+      PAPER_BUILD: "74"
+      PAPER_SHA256: 1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7
+      COMPARE_RUNTIME_PROFILE: optimized-candidate
+      CAMPAIGN_KIND: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && 'formal' || 'smoke' }}
+      CAMPAIGN_RUNS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '12' || '4' }}
+      CAMPAIGN_WARMUP_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '60' || '10' }}
+      CAMPAIGN_SETTLE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '20' || '5' }}
+      CAMPAIGN_MEASURE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '120' || '10' }}
+      CAMPAIGN_SCENARIO: ${{ matrix.scenario }}
+      CAMPAIGN_SCENE_SIZE: ${{ matrix.scenario == 'dropped-items' && '512' || '1024' }}
+
+    steps:
+      - name: Check out harness source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download all independent run artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: upstream-runtime-run-${{ matrix.scenario }}-${{ env.CAMPAIGN_KIND }}-${{ github.run_id }}-*
+          path: parallel-runs
+
+      - name: Assemble and verify independent campaign
+        run: |
+          set -euo pipefail
+          result_root="compare-results/$CAMPAIGN_SCENARIO/$CAMPAIGN_KIND"
+          mkdir -p "$result_root" compare-dependencies
+          manifest="$result_root/abba-manifest.csv"
+          printf 'Scenario,Block,Position,Variant,RunId,StackSha256,ArtifactSha256,CaptureMethod,SourcePath\n' \
+            > "$manifest"
+
+          mapfile -t manifests < <(find parallel-runs -type f \
+            -path "*/compare-results/$CAMPAIGN_SCENARIO/$CAMPAIGN_KIND/abba-manifest.csv" | sort)
+          [[ "${#manifests[@]}" == "$CAMPAIGN_RUNS" ]]
+          for source_manifest in "${manifests[@]}"; do
+            run_id=$(python3 - "$source_manifest" <<'PY'
+          import csv
+          import sys
+
+          rows = list(csv.DictReader(open(sys.argv[1], encoding="utf-8", newline="")))
+          if len(rows) != 1:
+              raise SystemExit(f"per-run manifest must have one row: {sys.argv[1]}")
+          print(rows[0]["RunId"])
+          PY
+            )
+            source_root=$(dirname "$source_manifest")
+            [[ -d "$source_root/$run_id" ]]
+            [[ ! -e "$result_root/$run_id" ]]
+            cp -a "$source_root/$run_id" "$result_root/$run_id"
+            tail -n +2 "$source_manifest" >> "$manifest"
           done
+
+          mapfile -t preflight_roots < <(find parallel-runs -type d \
+            -path "*/compare-results/$CAMPAIGN_SCENARIO/preflight" | sort)
+          [[ "${#preflight_roots[@]}" == 1 ]]
+          cp -a "${preflight_roots[0]}" "compare-results/$CAMPAIGN_SCENARIO/preflight"
+
+          while IFS= read -r relative; do
+            mapfile -t sources < <(find parallel-runs -type f \
+              -path "*/compare-dependencies/$relative" | sort)
+            [[ "${#sources[@]}" == "$CAMPAIGN_RUNS" ]]
+            hash_count=$(sha256sum "${sources[@]}" | awk '{print $1}' | sort -u | wc -l)
+            [[ "$hash_count" == 1 ]]
+            destination="compare-dependencies/$relative"
+            mkdir -p "$(dirname "$destination")"
+            cp "${sources[0]}" "$destination"
+          done <<'EOF'
+          campaign-provenance.json
+          campaign-files.sha256
+          upstream-build-163.json
+          upstream-plugin.yml
+          paper-build-74.json
+          canonical-config.yml
+          protocol-client/client-build-manifest.json
+          protocol-client/client-files.sha256
+          protocol-client/node-minecraft-protocol/package-lock.json
+          protocol-client/node-minecraft-protocol/production-lock-inventory.json
+          EOF
+
+          python3 - compare-dependencies/campaign-provenance.json "$GITHUB_ENV" \
+            "$CAMPAIGN_SCENARIO" "$CAMPAIGN_KIND" "$CAMPAIGN_RUNS" <<'PY'
+          import json
+          import sys
+
+          source, output, scenario, kind, runs = sys.argv[1:]
+          data = json.load(open(source, encoding="utf-8"))
+          expected = {
+              "scenario": scenario,
+              "campaignKind": kind,
+              "runs": int(runs),
+              "runtimeProfile": "optimized-candidate",
+              "samplingMode": "independent-runners",
+          }
+          for field, value in expected.items():
+              if data.get(field) != value:
+                  raise SystemExit(
+                      f"campaign provenance mismatch {field}: {data.get(field)!r} != {value!r}")
+          cpu = data["cpuIsolation"]
+          values = {
+              "CANDIDATE_SOURCE_SHA": data["variantB"]["sourceSha"],
+              "REWRITE_ARTIFACT_SHA256": data["variantB"]["artifactSha256"],
+              "DRIVER_SHA256": data["driverSha256"],
+              "CANONICAL_CONFIG_SHA256": data["canonicalConfigSha256"],
+              "CLIENT_MANIFEST_SHA256": data["protocolClientManifestSha256"],
+              "RUNNER_SHA256": data["runnerSha256"],
+              "JVM_ARGUMENTS_SHA256": data["jvmArgumentsSha256"],
+              "CAMPAIGN_STACK_SHA256": data["stackSha256"],
+              "AVAILABLE_CPU_COUNT": cpu["availableCpuCount"],
+              "SERVER_CPU_SET": ",".join(map(str, cpu["serverCpuSet"])),
+              "CLIENT_CPU_SET": cpu["clientCpuSet"][0],
+          }
+          with open(output, "a", encoding="utf-8") as stream:
+              for key, value in values.items():
+                  stream.write(f"{key}={value}\n")
+          PY
 
       - name: Validate campaign and analyze MSPT and TPS
         run: |
@@ -860,12 +1014,14 @@ jobs:
             pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$manifest" \
               -Scenario "$CAMPAIGN_SCENARIO" -Metric "$metric" \
               -Direction LowerIsBetter -MinimumSeconds "$minimum_seconds" \
-              "${incomplete[@]}" -OutputJson "$result_root/$metric.analysis.json" -Overwrite
+              -IndependentSamples "${incomplete[@]}" \
+              -OutputJson "$result_root/$metric.analysis.json" -Overwrite
           done
           pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$manifest" \
             -Scenario "$CAMPAIGN_SCENARIO" -Metric observedTps \
             -Direction HigherIsBetter -MinimumSeconds "$minimum_seconds" \
-            "${incomplete[@]}" -OutputJson "$result_root/observedTps.analysis.json" -Overwrite
+            -IndependentSamples "${incomplete[@]}" \
+            -OutputJson "$result_root/observedTps.analysis.json" -Overwrite
 
       - name: Publish comparison summary
         if: success()
@@ -910,6 +1066,9 @@ jobs:
               result = results[0]
               if result.get("scenario") != scenario or result.get("metric") != metric:
                   raise SystemExit(f"{metric} analysis scenario/metric mismatch")
+              if (result.get("samplingMode") != "independent-runners"
+                      or result.get("pairCount") != 0):
+                  raise SystemExit(f"{metric} analysis did not use independent runners")
               analyses[metric] = result
 
           formal = kind == "formal"
@@ -951,7 +1110,8 @@ jobs:
           lines = [
               f"### Upstream runtime comparison: `{scenario}`",
               "",
-              f"Mode: `{kind}`; scene size: `{scene_size}`; restart-isolated runs: `{runs}`.",
+              f"Mode: `{kind}`; scene size: `{scene_size}`; fully parallel, "
+              f"restart-isolated independent runs: `{runs}`.",
               f"Runtime profile: `{runtime_profile}`; shared config requests "
               "`PacketOnlyStatic=true` and `EventDriven=true` for both artifacts.",
               "Runtime assertion: A reports both flags as `unsupported-legacy`; "
@@ -1026,6 +1186,7 @@ jobs:
               "passed": scenario_passed if formal else None,
               "conclusion": conclusion,
               "formalComplete": formal,
+              "samplingMode": "independent-runners",
               "registeredGates": {
                   "primaryMeanImprovement": {
                       "medianBRatioToAMaximum": 0.90,
@@ -1102,8 +1263,8 @@ jobs:
 
   summarize-upstream-runtime:
     name: Global upstream runtime verdict
-    needs: [compare-upstream-runtime]
-    if: ${{ needs.compare-upstream-runtime.result == 'success' }}
+    needs: [aggregate-upstream-runtime]
+    if: ${{ needs.aggregate-upstream-runtime.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -1157,6 +1318,8 @@ jobs:
                   raise SystemExit(f"{scenario} smoke verdict must not declare a pass state")
               if document.get("runtimeProfile") != "optimized-candidate":
                   raise SystemExit(f"{scenario} runtime profile mismatch")
+              if document.get("samplingMode") != "independent-runners":
+                  raise SystemExit(f"{scenario} sampling mode mismatch")
               if document.get("requestedFlags") != {
                   "packetOnlyStatic": True,
                   "eventDrivenBlockUpdates": True,
