@@ -314,7 +314,10 @@ jobs:
       CAMPAIGN_SETTLE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '20' || '5' }}
       CAMPAIGN_MEASURE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '120' || '10' }}
       CAMPAIGN_SCENARIO: ${{ matrix.scenario }}
-      CAMPAIGN_SCENE_SIZE: ${{ matrix.scenario == 'dropped-items' && '512' || '1024' }}
+      # The 1024-block stress campaign is retained separately as stability
+      # evidence: official upstream lost its observer in 6/6 formal A runs.
+      # Use a still-heavy stable regime here so both sides produce valid CPU data.
+      CAMPAIGN_SCENE_SIZE: ${{ matrix.scenario == 'dropped-items' && '512' || '256' }}
       CAMPAIGN_RUN_NUMBER: ${{ matrix.run_number }}
       EXPECTED_HARNESS_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
@@ -709,14 +712,15 @@ jobs:
               raise SystemExit(
                   "rewritten dropped-item preflight produced no visual spawns beyond source items")
           if scenario == "block-active":
-              block_guards = {
-                  "furnaceBlocks": 205,
-                  "blastFurnaceBlocks": 205,
-                  "smokerBlocks": 205,
-                  "beehiveBlocks": 205,
-                  "beeNestBlocks": 204,
-                  "activeFurnaces": 615,
-              }
+              block_fields = (
+                  "furnaceBlocks", "blastFurnaceBlocks", "smokerBlocks",
+                  "beehiveBlocks", "beeNestBlocks",
+              )
+              block_guards = {field: 0 for field in block_fields}
+              for index in range(scene_size):
+                  block_guards[block_fields[index % len(block_fields)]] += 1
+              block_guards["activeFurnaces"] = sum(
+                  block_guards[field] for field in block_fields[:3])
               for field, expected in block_guards.items():
                   if metrics.get(field) != expected:
                       raise SystemExit(
@@ -866,7 +870,8 @@ jobs:
                   raise SystemExit(
                       f"run manifest mismatch {run_id}/{field}: {run_manifest.get(field)!r} != {expected!r}")
           expected_forced_shutdown = (
-              campaign_kind == "formal" and scenario == "block-active" and variant == "A")
+              campaign_kind == "formal" and scenario == "block-active"
+              and variant == "A" and scene_size >= 1024)
           expected_shutdown = {
               "stopGraceSeconds": 120,
               "termGraceSeconds": 10,
@@ -946,7 +951,7 @@ jobs:
       CAMPAIGN_SETTLE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '20' || '5' }}
       CAMPAIGN_MEASURE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '120' || '10' }}
       CAMPAIGN_SCENARIO: ${{ matrix.scenario }}
-      CAMPAIGN_SCENE_SIZE: ${{ matrix.scenario == 'dropped-items' && '512' || '1024' }}
+      CAMPAIGN_SCENE_SIZE: ${{ matrix.scenario == 'dropped-items' && '512' || '256' }}
 
     steps:
       - name: Check out harness source
@@ -1170,7 +1175,8 @@ jobs:
               if run_manifest.get("campaignKind") != kind:
                   raise SystemExit(f"campaign kind drifted in {row['RunId']}")
               expected_forced_shutdown = (
-                  kind == "formal" and scenario == "block-active" and variant == "A")
+                  kind == "formal" and scenario == "block-active" and variant == "A"
+                  and scene_size >= 1024)
               expected_shutdown = {
                   "stopGraceSeconds": 120,
                   "termGraceSeconds": 10,
@@ -1190,14 +1196,15 @@ jobs:
               if shutdown.get("mode") != "clean" and not expected_forced_shutdown:
                   raise SystemExit(f"unexpected forced server shutdown in {row['RunId']}")
               if scenario == "block-active":
-                  block_guards = {
-                      "furnaceBlocks": 205,
-                      "blastFurnaceBlocks": 205,
-                      "smokerBlocks": 205,
-                      "beehiveBlocks": 205,
-                      "beeNestBlocks": 204,
-                      "activeFurnaces": 615,
-                  }
+                  block_fields = (
+                      "furnaceBlocks", "blastFurnaceBlocks", "smokerBlocks",
+                      "beehiveBlocks", "beeNestBlocks",
+                  )
+                  block_guards = {field: 0 for field in block_fields}
+                  for index in range(scene_size):
+                      block_guards[block_fields[index % len(block_fields)]] += 1
+                  block_guards["activeFurnaces"] = sum(
+                      block_guards[field] for field in block_fields[:3])
                   for field, expected in block_guards.items():
                       if metrics.get(field) != expected:
                           raise SystemExit(
@@ -1358,7 +1365,7 @@ jobs:
               "| Metric | Upstream median | Rewrite median | Median B/A | Ratio 95% CI | Registered use |",
               "|---|---:|---:|---:|---:|---|",
           ]
-          if formal and scenario == "block-active":
+          if formal and scenario == "block-active" and int(scene_size) >= 1024:
               lines[5:5] = [
                   "Load-regime rule: sustained block load may saturate official upstream A "
                   "when the 120-second window still contains at least 100 tick samples; "
@@ -1395,7 +1402,7 @@ jobs:
               ("Candidate `observedTps` must stay near 20; saturated upstream throughput is "
                "reported directly for the sustained block load. MSPT remains the primary "
                "effect-size evidence."
-               if formal and scenario == "block-active" else
+               if (formal and scenario == "block-active" and int(scene_size) >= 1024) else
                "`observedTps` is capped near 20 on a healthy server; MSPT is the primary "
                "effect-size evidence."),
               "",
@@ -1445,13 +1452,16 @@ jobs:
                   },
               },
               "loadRegimePolicy": {
-                  "upstreamSaturationAllowed": formal and scenario == "block-active",
+                  "upstreamSaturationAllowed": (
+                      formal and scenario == "block-active" and int(scene_size) >= 1024
+                  ),
                   "minimumUpstreamTickSamples": (
-                      100 if formal and scenario == "block-active" else None
+                      100 if (formal and scenario == "block-active"
+                              and int(scene_size) >= 1024) else None
                   ),
               },
               "serverShutdown": {
-                  "forcedTerminationAllowedOnlyForFormalBlockActiveUpstream": True,
+                  "forcedTerminationAllowedOnlyForFormalBlockActiveStressUpstream": True,
                   "modeCountsByVariant": shutdown_mode_counts,
               },
               "metrics": {

@@ -589,6 +589,7 @@ if data.get("effectiveFlags") != expected_effective_flags:
     )
 allows_upstream_saturation = (
     measure >= 60 and scenario == "block-active" and variant == "A"
+    and scene_size >= 1024
 )
 # The stop command is handled on the saturated main thread, so its wall-clock
 # acknowledgement can trail the requested window without invalidating it.
@@ -842,7 +843,8 @@ fi
 send_console "stop"
 server_shutdown_mode=clean
 server_shutdown_forced_allowed=false
-if [[ "$campaign_kind" == formal && "$scenario" == block-active && "$variant" == A ]]; then
+if [[ "$campaign_kind" == formal && "$scenario" == block-active \
+    && "$variant" == A && "$scene_size" -ge 1024 ]]; then
   server_shutdown_forced_allowed=true
 fi
 if kill -0 "$server_pid" 2>/dev/null; then
