@@ -66,13 +66,15 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BooleanSupplier;
 
 public class TileEntityManager implements Listener {
 
     enum LifecycleChange {
         REMOVED,
         ADDED,
-        ACTIVATED
+        ACTIVATED,
+        DEACTIVATED
     }
 
     @FunctionalInterface
@@ -88,8 +90,12 @@ public class TileEntityManager implements Listener {
     private static final Map<Block, TileEntityType> lastActiveTypes = new HashMap<>();
     private static final Map<UUID, Set<ChunkPosition>> watchedChunksByPlayer = new HashMap<>();
     private static final Map<ChunkPosition, Integer> watcherCounts = new HashMap<>();
+    private static final Set<ChunkPosition> dirtyWatcherChunks = new LinkedHashSet<>();
+    private static final Set<ChunkPosition> unloadingChunks = new LinkedHashSet<>();
+    private static boolean drainingWatcherChanges;
 
-    public static void _init_() {
+    public synchronized static void _init_() {
+        clearRuntimeState();
         for (TileEntityType type : tileEntityTypes) {
             active.put(type, ConcurrentHashMap.newKeySet());
         }
@@ -181,36 +187,112 @@ public class TileEntityManager implements Listener {
     }
 
     private synchronized static void addTileEntities(ChunkPosition chunk) {
-        if (!chunk.isLoaded()) {
+        if (unloadingChunks.contains(chunk) || !chunk.isLoaded()) {
             return;
         }
 
         Collection<BlockState> list = chunk.getChunk().getTileEntities(block -> TileEntity.isTileEntityType(block.getType()), false);
-        Set<Block> blocks = byChunk.get(chunk);
-        if (blocks == null) {
-            blocks = new LinkedHashSet<>();
-            byChunk.put(chunk, blocks);
-        }
-        boolean activate = !InteractionVisualizer.eventDrivenBlockUpdates || watcherCounts.getOrDefault(chunk, 0) > 0;
         Map<Block, TileEntityType> newBlocks = new LinkedHashMap<>();
         for (BlockState state : list) {
             Block block = state.getBlock();
             TileEntityType type = TileEntity.getTileEntityType(state.getType());
             if (type != null) {
                 newBlocks.put(block, type);
-                blocks.add(block);
             }
         }
-        Iterator<Block> itr = blocks.iterator();
-        while (itr.hasNext()) {
-            Block block = itr.next();
+        Set<Block> previousGeneration = byChunk.get(chunk);
+        if (previousGeneration == null && newBlocks.isEmpty()) {
+            return;
+        }
+        Set<Block> currentGeneration = installPendingIndexGeneration(
+                byChunk, unloadingChunks, chunk, newBlocks.keySet());
+        if (currentGeneration == null) {
+            return;
+        }
+        Set<Block> reconciliationCandidates = new LinkedHashSet<>(currentGeneration);
+        boolean activate = !InteractionVisualizer.eventDrivenBlockUpdates || watcherCounts.getOrDefault(chunk, 0) > 0;
+        if (!activate && !deactivateTileEntitiesIfCurrent(chunk, currentGeneration)) {
+            return;
+        }
+        for (Block block : reconciliationCandidates) {
             TileEntityType type = newBlocks.get(block);
-            if (type == null) {
-                itr.remove();
+            if (!reconcileActiveTypeIfCurrent(byChunk, chunk, currentGeneration,
+                    block, type, activate, InteractionVisualizer.eventDrivenBlockUpdates,
+                    active, lastActiveTypes, TileEntityManager::dispatchLifecycleChange)) {
+                return;
             }
-            reconcileActiveType(block, type, activate, InteractionVisualizer.eventDrivenBlockUpdates,
-                    active, lastActiveTypes, TileEntityManager::dispatchLifecycleChange);
         }
+        finishIndexGeneration(byChunk, chunk, currentGeneration, newBlocks.keySet());
+    }
+
+    static <K, V> Set<V> installPendingIndexGeneration(
+            Map<K, Set<V>> index, K key, Collection<V> currentValues) {
+        return installPendingIndexGeneration(index, Set.of(), key, currentValues);
+    }
+
+    static <K, V> Set<V> installPendingIndexGeneration(
+            Map<K, Set<V>> index, Set<K> blockedKeys, K key, Collection<V> currentValues) {
+        if (blockedKeys.contains(key)) {
+            return null;
+        }
+        Set<V> previousGeneration = index.get(key);
+        Set<V> generation = new LinkedHashSet<>();
+        if (previousGeneration != null) {
+            generation.addAll(previousGeneration);
+        }
+        generation.addAll(currentValues);
+        index.put(key, generation);
+        return generation;
+    }
+
+    static <K, V> boolean finishIndexGeneration(
+            Map<K, Set<V>> index, K key, Set<V> generation, Collection<V> currentValues) {
+        if (index.get(key) != generation) {
+            return false;
+        }
+        generation.retainAll(currentValues);
+        updateNonEmptyIndex(index, key, generation);
+        return true;
+    }
+
+    static <K, V> void updateNonEmptyIndex(Map<K, Set<V>> index, K key, Set<V> values) {
+        if (values.isEmpty() && index.get(key) == values) {
+            index.remove(key);
+        }
+    }
+
+    /** Releases block, chunk and viewer indexes retained by this plugin lifecycle. */
+    public synchronized static void shutdown() {
+        clearRuntimeState();
+    }
+
+    private static void clearRuntimeState() {
+        for (Set<Block> blocks : active.values()) {
+            blocks.clear();
+        }
+        active.clear();
+        byChunk.clear();
+        lastActiveTypes.clear();
+        watchedChunksByPlayer.clear();
+        watcherCounts.clear();
+        dirtyWatcherChunks.clear();
+        unloadingChunks.clear();
+        drainingWatcherChanges = false;
+    }
+
+    static <K, T> boolean reconcileActiveTypeIfCurrent(
+            Map<K, Set<T>> index, K key, Set<T> indexedValues,
+            T value, TileEntityType currentType, boolean activate,
+            boolean trackLifecycleEvents,
+            Map<TileEntityType, Set<T>> activeByType,
+            Map<T, TileEntityType> lastActiveByValue,
+            LifecycleDispatcher<T> dispatcher) {
+        if (index.get(key) != indexedValues) {
+            return false;
+        }
+        return reconcileActiveType(value, currentType, activate, trackLifecycleEvents,
+                activeByType, lastActiveByValue, dispatcher,
+                () -> index.get(key) == indexedValues);
     }
 
     static <T> void reconcileActiveType(T value, TileEntityType currentType, boolean activate,
@@ -218,6 +300,19 @@ public class TileEntityManager implements Listener {
                                         Map<TileEntityType, Set<T>> activeByType,
                                         Map<T, TileEntityType> lastActiveByValue,
                                         LifecycleDispatcher<T> dispatcher) {
+        reconcileActiveType(value, currentType, activate, trackLifecycleEvents,
+                activeByType, lastActiveByValue, dispatcher, () -> true);
+    }
+
+    private static <T> boolean reconcileActiveType(T value, TileEntityType currentType, boolean activate,
+                                                   boolean trackLifecycleEvents,
+                                                   Map<TileEntityType, Set<T>> activeByType,
+                                                   Map<T, TileEntityType> lastActiveByValue,
+                                                   LifecycleDispatcher<T> dispatcher,
+                                                   BooleanSupplier stillCurrent) {
+        if (!stillCurrent.getAsBoolean()) {
+            return false;
+        }
         if (currentType == null && trackLifecycleEvents) {
             // Preserve the legacy removal contract for re-entrant listeners:
             // a removed tile is no longer considered last-active when notified.
@@ -230,20 +325,27 @@ public class TileEntityManager implements Listener {
             Set<T> values = activeByType.get(type);
             if (values != null && values.remove(value)) {
                 dispatcher.dispatch(value, LifecycleChange.REMOVED, type);
+                if (!stillCurrent.getAsBoolean()) {
+                    return false;
+                }
             }
         }
 
         if (currentType == null) {
-            return;
+            return true;
         }
 
+        if (!stillCurrent.getAsBoolean()) {
+            return false;
+        }
         Set<T> currentValues = activeByType.get(currentType);
         if (!activate || currentValues == null || !currentValues.add(value) || !trackLifecycleEvents) {
-            return;
+            return true;
         }
         TileEntityType lastActiveType = lastActiveByValue.put(value, currentType);
         dispatcher.dispatch(value, currentType.equals(lastActiveType)
                 ? LifecycleChange.ACTIVATED : LifecycleChange.ADDED, currentType);
+        return stillCurrent.getAsBoolean();
     }
 
     private static void dispatchLifecycleChange(Block block, LifecycleChange change, TileEntityType type) {
@@ -251,77 +353,146 @@ public class TileEntityManager implements Listener {
             case REMOVED -> Bukkit.getPluginManager().callEvent(new TileEntityRemovedEvent(block, type));
             case ADDED -> callAddedEvent(block, type);
             case ACTIVATED -> callActivatedEvent(block, type);
+            case DEACTIVATED -> callDeactivatedEvent(block, type);
         }
     }
 
     private synchronized static void deactivateTileEntities(ChunkPosition chunk) {
-        Set<Block> blocks = byChunk.get(chunk);
-        if (blocks == null || blocks.isEmpty()) {
+        if (unloadingChunks.contains(chunk)) {
             return;
         }
-        for (Block block : blocks) {
+        Set<Block> indexedBlocks = byChunk.get(chunk);
+        if (indexedBlocks == null || indexedBlocks.isEmpty()) {
+            return;
+        }
+        Set<Block> currentGeneration = installPendingIndexGeneration(byChunk, chunk, indexedBlocks);
+        deactivateTileEntitiesIfCurrent(chunk, currentGeneration);
+    }
+
+    private static boolean deactivateTileEntitiesIfCurrent(ChunkPosition chunk, Set<Block> currentGeneration) {
+        return deactivateIfCurrent(
+                byChunk, chunk, currentGeneration, active, TileEntityManager::dispatchLifecycleChange);
+    }
+
+    static <K, T> boolean deactivateIfCurrent(
+            Map<K, Set<T>> index, K key, Set<T> currentGeneration,
+            Map<TileEntityType, Set<T>> activeByType,
+            LifecycleDispatcher<T> dispatcher) {
+        for (T block : currentGeneration) {
+            if (index.get(key) != currentGeneration) {
+                return false;
+            }
             for (TileEntityType type : tileEntityTypes) {
-                if (active.get(type).remove(block)) {
-                    callDeactivatedEvent(block, type);
+                Set<T> values = activeByType.get(type);
+                if (values != null && values.remove(block)) {
+                    dispatcher.dispatch(block, LifecycleChange.DEACTIVATED, type);
+                    if (index.get(key) != currentGeneration) {
+                        return false;
+                    }
                 }
             }
         }
+        return index.get(key) == currentGeneration;
     }
 
     private synchronized static void unloadTileEntities(ChunkPosition chunk) {
-        deactivateTileEntities(chunk);
-        Set<Block> blocks = byChunk.remove(chunk);
-        if (blocks != null) {
-            for (Block block : blocks) {
-                lastActiveTypes.remove(block);
-            }
+        if (!unloadingChunks.add(chunk)) {
+            return;
+        }
+        Set<Block> indexedBlocks = byChunk.get(chunk);
+        if (indexedBlocks == null) {
+            return;
+        }
+        Set<Block> currentGeneration = installPendingIndexGeneration(byChunk, chunk, indexedBlocks);
+        if (!deactivateTileEntitiesIfCurrent(chunk, currentGeneration)
+                || !byChunk.remove(chunk, currentGeneration)) {
+            return;
+        }
+        for (Block block : currentGeneration) {
+            lastActiveTypes.remove(block);
+        }
+    }
+
+    private synchronized static void finishChunkUnload(ChunkPosition chunk) {
+        if (!unloadingChunks.remove(chunk)) {
+            return;
+        }
+        if (chunk.isLoaded() && (!InteractionVisualizer.eventDrivenBlockUpdates
+                || watcherCounts.getOrDefault(chunk, 0) > 0)) {
+            addTileEntities(chunk);
         }
     }
 
     private synchronized static void updateWatchedChunks(UUID playerId, Set<ChunkPosition> nextChunks) {
-        Set<ChunkPosition> previousChunks = watchedChunksByPlayer.put(playerId, nextChunks);
+        commitWatcherUpdate(
+                watchedChunksByPlayer, watcherCounts, dirtyWatcherChunks,
+                playerId, nextChunks);
+        drainWatcherChanges();
+    }
+
+    private synchronized static void clearWatchedChunks(UUID playerId) {
+        if (!watchedChunksByPlayer.containsKey(playerId)) {
+            return;
+        }
+        updateWatchedChunks(playerId, Set.of());
+    }
+
+    static <P, K> void commitWatcherUpdate(
+            Map<P, Set<K>> watchedByPlayer, Map<K, Integer> counts, Set<K> dirty,
+            P playerId, Collection<K> requestedChunks) {
+        Set<K> nextChunks = new LinkedHashSet<>(requestedChunks);
+        Set<K> previousChunks = nextChunks.isEmpty()
+                ? watchedByPlayer.remove(playerId)
+                : watchedByPlayer.put(playerId, nextChunks);
         if (previousChunks == null) {
             previousChunks = Set.of();
         }
 
-        for (ChunkPosition chunk : previousChunks) {
+        for (K chunk : previousChunks) {
             if (nextChunks.contains(chunk)) {
                 continue;
             }
-            Integer count = watcherCounts.get(chunk);
-            if (count == null || count <= 1) {
-                watcherCounts.remove(chunk);
-                deactivateTileEntities(chunk);
+            int count = counts.getOrDefault(chunk, 0);
+            if (count <= 1) {
+                counts.remove(chunk);
+                dirty.add(chunk);
             } else {
-                watcherCounts.put(chunk, count - 1);
+                counts.put(chunk, count - 1);
             }
         }
-
-        for (ChunkPosition chunk : nextChunks) {
+        for (K chunk : nextChunks) {
             if (previousChunks.contains(chunk)) {
                 continue;
             }
-            int count = watcherCounts.getOrDefault(chunk, 0);
-            watcherCounts.put(chunk, count + 1);
+            int count = counts.getOrDefault(chunk, 0);
+            counts.put(chunk, count + 1);
             if (count == 0) {
-                addTileEntities(chunk);
+                dirty.add(chunk);
             }
         }
     }
 
-    private synchronized static void clearWatchedChunks(UUID playerId) {
-        Set<ChunkPosition> chunks = watchedChunksByPlayer.remove(playerId);
-        if (chunks == null) {
+    private static void drainWatcherChanges() {
+        if (drainingWatcherChanges) {
             return;
         }
-        for (ChunkPosition chunk : chunks) {
-            Integer count = watcherCounts.get(chunk);
-            if (count == null || count <= 1) {
-                watcherCounts.remove(chunk);
-                deactivateTileEntities(chunk);
-            } else {
-                watcherCounts.put(chunk, count - 1);
+        drainingWatcherChanges = true;
+        try {
+            while (!dirtyWatcherChunks.isEmpty()) {
+                Iterator<ChunkPosition> iterator = dirtyWatcherChunks.iterator();
+                ChunkPosition chunk = iterator.next();
+                iterator.remove();
+                if (unloadingChunks.contains(chunk)) {
+                    continue;
+                }
+                if (watcherCounts.getOrDefault(chunk, 0) > 0) {
+                    addTileEntities(chunk);
+                } else {
+                    deactivateTileEntities(chunk);
+                }
             }
+        } finally {
+            drainingWatcherChanges = false;
         }
     }
 
@@ -452,16 +623,18 @@ public class TileEntityManager implements Listener {
             return;
         }
         ChunkPosition chunk = new ChunkPosition(event.getWorld(), event.getChunk().getX(), event.getChunk().getZ());
+        unloadingChunks.remove(chunk);
         if (watcherCounts.getOrDefault(chunk, 0) > 0) {
             addTileEntities(chunk);
         }
     }
 
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onChunkUnload(ChunkUnloadEvent event) {
-        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
-            return;
-        }
-        unloadTileEntities(new ChunkPosition(event.getWorld(), event.getChunk().getX(), event.getChunk().getZ()));
+        ChunkPosition chunk = new ChunkPosition(
+                event.getWorld(), event.getChunk().getX(), event.getChunk().getZ());
+        unloadTileEntities(chunk);
+        Scheduler.runTask(plugin, () -> finishChunkUnload(chunk));
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -538,10 +711,6 @@ public class TileEntityManager implements Listener {
             manager.onChunkLoad(event);
         }
 
-        @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-        public void onChunkUnload(ChunkUnloadEvent event) {
-            manager.onChunkUnload(event);
-        }
     }
 
     private boolean isMovingTooFast(Player player, Location from, Location to) {

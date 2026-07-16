@@ -35,6 +35,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
@@ -45,10 +46,18 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
+import java.util.Queue;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+import java.util.logging.Level;
 
 public class PreferenceManager implements Listener, AutoCloseable {
 
@@ -60,28 +69,56 @@ public class PreferenceManager implements Listener, AutoCloseable {
     private final SynchronizedFilteredCollection<Player> backingPlayerList;
 
     private final AtomicBoolean valid;
+    private final PlayerSessionGate playerSessions;
+    private final ExecutorService playerIoExecutor;
+    private final PlayerIoQueue playerIo;
 
     public PreferenceManager(InteractionVisualizer plugin) {
         this.plugin = plugin;
         this.valid = new AtomicBoolean(true);
+        this.playerSessions = new PlayerSessionGate();
+        this.playerIoExecutor = Executors.newThreadPerTaskExecutor(
+                Thread.ofVirtual().name("InteractionVisualizer-PlayerIO-", 0).factory());
+        this.playerIo = new PlayerIoQueue(playerIoExecutor);
         this.entries = Collections.synchronizedList(ArrayUtils.putToArrayList(Database.getBitIndex(), new ArrayList<>()));
         this.preferences = new ConcurrentHashMap<>();
         this.backingPlayerList = SynchronizedFilteredCollection.from(new LinkedHashSet<>());
         for (Player player : Bukkit.getOnlinePlayers()) {
+            UUID uuid = player.getUniqueId();
+            Object session = playerSessions.open(uuid, valid);
             backingPlayerList.add(player);
-            loadPlayer(player.getUniqueId(), player.getName(), true);
+            playerIo.runAndWait(uuid, () -> loadPlayerForSession(uuid, player.getName(), session));
         }
         Bukkit.getPluginManager().registerEvents(this, plugin);
     }
 
     @Override
     public synchronized void close() {
+        if (!playerSessions.close(valid)) {
+            return;
+        }
         backingPlayerList.clear();
-        for (UUID uuid : preferences.keySet()) {
-            savePlayer(uuid, true);
+        Map<UUID, Map<Modules, BitSet>> snapshots = new HashMap<>();
+        for (Entry<UUID, Map<Modules, BitSet>> entry : preferences.entrySet()) {
+            snapshots.put(entry.getKey(), copyPreferences(entry.getValue()));
+        }
+        preferences.clear();
+        for (Entry<UUID, Map<Modules, BitSet>> entry : snapshots.entrySet()) {
+            playerIo.submit(entry.getKey(), () -> savePlayerInfo(entry.getKey(), entry.getValue()));
+        }
+        RuntimeException playerIoFailure = null;
+        try {
+            playerIo.closeAndWait();
+        } catch (RuntimeException exception) {
+            playerIoFailure = exception;
+        } finally {
+            playerIoExecutor.shutdown();
         }
         saveBitmaskIndex();
-        valid.set(false);
+        if (playerIoFailure != null) {
+            plugin.getLogger().log(Level.SEVERE,
+                    "One or more queued player preference operations failed before shutdown", playerIoFailure);
+        }
     }
 
     public boolean isValid() {
@@ -132,23 +169,53 @@ public class PreferenceManager implements Listener, AutoCloseable {
     @EventHandler
     public void onJoinEvent(PlayerJoinEvent event) {
         Player player = event.getPlayer();
+        UUID uuid = player.getUniqueId();
+        String name = player.getName();
+        Object session = playerSessions.open(uuid, valid);
+        if (session == null) {
+            return;
+        }
         backingPlayerList.add(player);
-        InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
-            loadPlayer(player.getUniqueId(), player.getName(), true);
-            updatePlayer(player, false);
+        playerIo.submit(uuid, () -> {
+            if (loadPlayerForSession(uuid, name, session)) {
+                InteractionVisualizer.asyncExecutorManager.runTaskSynchronously(() -> {
+                    if (valid.get() && playerSessions.isCurrent(uuid, session) && player.isOnline()) {
+                        updatePlayer(player, false);
+                    }
+                });
+            }
         });
     }
 
     @EventHandler
     public void onQuitEvent(PlayerQuitEvent event) {
         Player player = event.getPlayer();
+        UUID uuid = player.getUniqueId();
         backingPlayerList.remove(player);
-        InteractionVisualizer.asyncExecutorManager.runTaskAsynchronously(() -> {
-            savePlayer(event.getPlayer().getUniqueId(), true);
-        });
+        playerSessions.end(uuid);
+        Map<Modules, BitSet> snapshot = copyPreferences(preferences.remove(uuid));
+        playerIo.submit(uuid, () -> savePlayerInfo(uuid, snapshot));
     }
 
     public void loadPlayer(UUID uuid, String name, boolean createIfNotFound) {
+        if (!valid.get()) {
+            return;
+        }
+        playerIo.runAndWait(uuid, () -> {
+            Map<Modules, BitSet> info = readPlayerInfo(uuid, name, createIfNotFound);
+            if (info != null) {
+                playerSessions.publishIfValid(valid, () -> preferences.put(uuid, info));
+            }
+        });
+    }
+
+    private boolean loadPlayerForSession(UUID uuid, String name, Object session) {
+        Map<Modules, BitSet> info = readPlayerInfo(uuid, name, true);
+        return info != null && playerSessions.publishIfCurrent(
+                uuid, session, valid, () -> preferences.put(uuid, info));
+    }
+
+    private Map<Modules, BitSet> readPlayerInfo(UUID uuid, String name, boolean createIfNotFound) {
         if (createIfNotFound) {
             boolean newPlayer = false;
             if (!Database.playerExists(uuid)) {
@@ -156,21 +223,25 @@ public class PreferenceManager implements Listener, AutoCloseable {
                 newPlayer = true;
             }
             Map<Modules, BitSet> info = Database.getPlayerInfo(uuid);
-            preferences.put(uuid, info);
             if (newPlayer && InteractionVisualizer.defaultDisabledAll) {
-                setPlayerAllPreference(uuid, false, false);
-                savePlayer(uuid, false);
+                disableAll(info);
+                savePlayerInfo(uuid, info);
             }
+            return info;
         } else {
             if (Database.playerExists(uuid)) {
-                Map<Modules, BitSet> info = Database.getPlayerInfo(uuid);
-                preferences.put(uuid, info);
+                return Database.getPlayerInfo(uuid);
             }
+            return null;
         }
     }
 
     public void savePlayer(UUID uuid, boolean unload) {
-        Map<Modules, BitSet> info = unload ? preferences.remove(uuid) : preferences.get(uuid);
+        Map<Modules, BitSet> info = copyPreferences(unload ? preferences.remove(uuid) : preferences.get(uuid));
+        playerIo.runAndWait(uuid, () -> savePlayerInfo(uuid, info));
+    }
+
+    private void savePlayerInfo(UUID uuid, Map<Modules, BitSet> info) {
         if (info != null) {
             for (Entry<Modules, BitSet> entry : info.entrySet()) {
                 switch (entry.getKey()) {
@@ -186,6 +257,26 @@ public class PreferenceManager implements Listener, AutoCloseable {
                 }
             }
         }
+    }
+
+    private void disableAll(Map<Modules, BitSet> info) {
+        synchronized (entries) {
+            int entryCount = entries.size();
+            for (Modules module : Modules.values()) {
+                info.computeIfAbsent(module, ignored -> new BitSet()).set(0, entryCount, true);
+            }
+        }
+    }
+
+    private static Map<Modules, BitSet> copyPreferences(Map<Modules, BitSet> source) {
+        if (source == null) {
+            return null;
+        }
+        Map<Modules, BitSet> copy = new HashMap<>();
+        for (Entry<Modules, BitSet> entry : source.entrySet()) {
+            copy.put(entry.getKey(), (BitSet) entry.getValue().clone());
+        }
+        return copy;
     }
 
     public void unloadPlayerWithoutSaving(UUID uuid) {
@@ -451,6 +542,226 @@ public class PreferenceManager implements Listener, AutoCloseable {
 
     public Collection<Player> getPlayerList() {
         return Collections.unmodifiableCollection(backingPlayerList);
+    }
+
+    static final class PlayerSessionGate {
+
+        private final Map<UUID, Object> sessions = new HashMap<>();
+
+        synchronized Object open(UUID uuid, AtomicBoolean valid) {
+            if (!valid.get()) {
+                return null;
+            }
+            Object session = new Object();
+            sessions.put(uuid, session);
+            return session;
+        }
+
+        synchronized void end(UUID uuid) {
+            sessions.remove(uuid);
+        }
+
+        synchronized boolean isCurrent(UUID uuid, Object session) {
+            return sessions.get(uuid) == session;
+        }
+
+        synchronized boolean publishIfCurrent(UUID uuid, Object session, AtomicBoolean valid, Runnable publish) {
+            if (!valid.get() || sessions.get(uuid) != session) {
+                return false;
+            }
+            publish.run();
+            return true;
+        }
+
+        synchronized boolean publishIfValid(AtomicBoolean valid, Runnable publish) {
+            if (!valid.get()) {
+                return false;
+            }
+            publish.run();
+            return true;
+        }
+
+        synchronized boolean close(AtomicBoolean valid) {
+            if (!valid.compareAndSet(true, false)) {
+                return false;
+            }
+            sessions.clear();
+            return true;
+        }
+    }
+
+    /**
+     * Serializes database work for one player without coupling unrelated players to the same queue.
+     */
+    static final class PlayerIoQueue {
+
+        private final Executor executor;
+        private final Map<UUID, QueueState> queues = new HashMap<>();
+        private final ThreadLocal<UUID> activePlayer = new ThreadLocal<>();
+        private boolean accepting = true;
+        private CompletableFuture<Void> closed;
+        private Throwable failure;
+
+        PlayerIoQueue(Executor executor) {
+            this.executor = Objects.requireNonNull(executor, "executor");
+        }
+
+        CompletableFuture<Void> submit(UUID uuid, Runnable operation) {
+            Objects.requireNonNull(uuid, "uuid");
+            Objects.requireNonNull(operation, "operation");
+
+            QueuedOperation queued = new QueuedOperation(operation);
+            QueueState state;
+            boolean startDrain;
+            synchronized (this) {
+                if (!accepting) {
+                    return null;
+                }
+                state = queues.computeIfAbsent(uuid, ignored -> new QueueState());
+                state.operations.add(queued);
+                startDrain = !state.running;
+                if (startDrain) {
+                    state.running = true;
+                }
+            }
+
+            if (startDrain) {
+                try {
+                    executor.execute(() -> drain(uuid, state));
+                } catch (RuntimeException | Error throwable) {
+                    reject(uuid, state, throwable);
+                }
+            }
+            return queued.completion;
+        }
+
+        boolean runAndWait(UUID uuid, Runnable operation) {
+            if (uuid.equals(activePlayer.get())) {
+                throw new IllegalStateException("Cannot synchronously enqueue player I/O from its own queue");
+            }
+            CompletableFuture<Void> completion = submit(uuid, operation);
+            if (completion == null) {
+                return false;
+            }
+            await(completion);
+            return true;
+        }
+
+        void closeAndWait() {
+            if (activePlayer.get() != null) {
+                throw new IllegalStateException("Cannot close the player I/O queue from one of its drains");
+            }
+            await(seal());
+        }
+
+        synchronized CompletableFuture<Void> seal() {
+            if (closed != null) {
+                return closed;
+            }
+            accepting = false;
+            closed = new CompletableFuture<>();
+            completeCloseIfIdle();
+            return closed;
+        }
+
+        private void drain(UUID uuid, QueueState state) {
+            while (true) {
+                QueuedOperation queued;
+                synchronized (this) {
+                    queued = state.operations.poll();
+                    if (queued == null) {
+                        state.running = false;
+                        if (queues.get(uuid) == state) {
+                            queues.remove(uuid);
+                        }
+                        completeCloseIfIdle();
+                        return;
+                    }
+                }
+
+                activePlayer.set(uuid);
+                try {
+                    queued.operation.run();
+                    queued.completion.complete(null);
+                } catch (Throwable throwable) {
+                    recordFailure(throwable);
+                    queued.completion.completeExceptionally(throwable);
+                } finally {
+                    activePlayer.remove();
+                }
+            }
+        }
+
+        private void reject(UUID uuid, QueueState state, Throwable throwable) {
+            List<QueuedOperation> rejected = new ArrayList<>();
+            synchronized (this) {
+                if (queues.get(uuid) != state) {
+                    return;
+                }
+                recordFailureLocked(throwable);
+                state.running = false;
+                QueuedOperation queued;
+                while ((queued = state.operations.poll()) != null) {
+                    rejected.add(queued);
+                }
+                queues.remove(uuid);
+                completeCloseIfIdle();
+            }
+            for (QueuedOperation queued : rejected) {
+                queued.completion.completeExceptionally(throwable);
+            }
+        }
+
+        private void completeCloseIfIdle() {
+            if (closed != null && queues.isEmpty()) {
+                if (failure == null) {
+                    closed.complete(null);
+                } else {
+                    closed.completeExceptionally(failure);
+                }
+            }
+        }
+
+        private synchronized void recordFailure(Throwable throwable) {
+            recordFailureLocked(throwable);
+        }
+
+        private void recordFailureLocked(Throwable throwable) {
+            if (failure == null) {
+                failure = throwable;
+            }
+        }
+
+        private static void await(CompletableFuture<Void> completion) {
+            try {
+                completion.join();
+            } catch (CompletionException exception) {
+                Throwable cause = exception.getCause();
+                if (cause instanceof RuntimeException) {
+                    throw (RuntimeException) cause;
+                }
+                if (cause instanceof Error) {
+                    throw (Error) cause;
+                }
+                throw exception;
+            }
+        }
+
+        private static final class QueueState {
+
+            private final Queue<QueuedOperation> operations = new ArrayDeque<>();
+            private boolean running;
+        }
+
+        private static final class QueuedOperation {
+
+            private final Runnable operation;
+            private final CompletableFuture<Void> completion = new CompletableFuture<>();
+
+            private QueuedOperation(Runnable operation) {
+                this.operation = operation;
+            }
+        }
     }
 
 }

@@ -218,7 +218,7 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
                         if (!block.getType().equals(Material.SMOKER)) {
                             return;
                         }
-                        org.bukkit.block.Smoker smoker = (org.bukkit.block.Smoker) block.getState();
+                        org.bukkit.block.Smoker smoker = (org.bukkit.block.Smoker) block.getState(false);
 
                         {
                         Inventory inv = smoker.getInventory();
@@ -337,7 +337,7 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
             values.putAll(spawnDisplayEntitys(block));
             smokerMap.put(block, values);
         }
-        org.bukkit.block.Furnace furnace = (org.bukkit.block.Furnace) block.getState();
+        org.bukkit.block.Furnace furnace = (org.bukkit.block.Furnace) block.getState(false);
         return FurnaceDisplayUpdater.update(furnace, values, KEY, progressBarCharacter, emptyColor,
                 filledColor, noFuelColor, progressBarLength, amountPending);
     }
@@ -636,7 +636,7 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
         Map<String, DisplayEntity> map = new HashMap<>();
         Location origin = block.getLocation();
 
-        BlockData blockData = block.getState().getBlockData();
+        BlockData blockData = block.getBlockData();
         BlockFace facing = ((Directional) blockData).getFacing();
         Location target = block.getRelative(facing).getLocation();
         Vector direction = target.toVector().subtract(origin.toVector()).multiply(0.7);

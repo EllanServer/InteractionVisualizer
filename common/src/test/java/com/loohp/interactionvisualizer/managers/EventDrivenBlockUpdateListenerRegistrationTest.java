@@ -34,6 +34,7 @@ import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
+import org.bukkit.event.world.ChunkUnloadEvent;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
@@ -61,6 +62,7 @@ class EventDrivenBlockUpdateListenerRegistrationTest {
         assertRegistered(BeeHiveDisplay.class, "onBeeEnterBeehive", EntityEnterBlockEvent.class);
         assertRegistered(BeeNestDisplay.class, "onBeeEnterBeenest", EntityEnterBlockEvent.class);
         assertRegistered(TileEntityManager.class, "onPlayerMove", PlayerMoveEvent.class);
+        assertRegistered(TileEntityManager.class, "onChunkUnload", ChunkUnloadEvent.class);
     }
 
     @Test
@@ -83,6 +85,7 @@ class EventDrivenBlockUpdateListenerRegistrationTest {
         assertRegistered(EventDrivenBlockUpdateListener.class, "onTileEntityRemoved", TileEntityRemovedEvent.class);
         Class<?> lifecycleListener = findDeclaredClass(TileEntityManager.class, "EventDrivenLifecycleListener");
         assertRegistered(lifecycleListener, "onChunkLoad", ChunkLoadEvent.class);
+        assertNoRegisteredHandler(lifecycleListener, ChunkUnloadEvent.class);
     }
 
     @Test
