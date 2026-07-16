@@ -34,9 +34,10 @@ jobs:
       UPSTREAM_SOURCE_SHA: c7f9dd0457451537653bf4b4c0eb0e4298c51187
       UPSTREAM_ARTIFACT_SIZE: "5799385"
       UPSTREAM_ARTIFACT_SHA256: a7ffc2ba053c74681feabc698e9fdb959ebd4f8252206fedd8801979e3de30c0
-      PRODUCTION_CANDIDATE_SHA: b3c245386304c809e0d40e0530300872aec343f5
+      PRODUCTION_CANDIDATE_SHA: c28db0146ec2f35eaf066b4202b33f08d06bbc4b
       PAPER_BUILD: "74"
       PAPER_SHA256: 1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7
+      COMPARE_RUNTIME_PROFILE: optimized-candidate
       CAMPAIGN_KIND: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && 'formal' || 'smoke' }}
       CAMPAIGN_RUNS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '12' || '4' }}
       CAMPAIGN_WARMUP_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '60' || '10' }}
@@ -98,6 +99,7 @@ jobs:
       - name: Select candidate artifacts and create canonical configuration
         run: |
           set -euo pipefail
+          [[ "$COMPARE_RUNTIME_PROFILE" == optimized-candidate ]]
           mkdir -p compare-dependencies
           mapfile -t candidate_jars < <(find "$PRODUCTION_WORKTREE/build/libs" -maxdepth 1 -type f \
             -name 'InteractionVisualizer-*.jar' \
@@ -122,6 +124,7 @@ jobs:
             > compare-dependencies/canonical-config.yml
           python3 - compare-dependencies/canonical-config.yml <<'PY'
           from pathlib import Path
+          import os
           import re
           import sys
 
@@ -132,6 +135,15 @@ jobs:
               text, count = re.subn(pattern, rf"\1false", text)
               if count != 1:
                   raise SystemExit(f"Expected exactly one true {key} setting, found {count}")
+          runtime_profile = os.environ["COMPARE_RUNTIME_PROFILE"]
+          if runtime_profile not in {"legacy-parity", "optimized-candidate"}:
+              raise SystemExit(f"Unsupported runtime profile: {runtime_profile!r}")
+          requested_value = "true" if runtime_profile == "optimized-candidate" else "false"
+          for key in ("PacketOnlyStatic", "EventDriven"):
+              pattern = rf"(?m)^(\s*{key}:\s*)(?:true|false)\s*$"
+              text, count = re.subn(pattern, rf"\g<1>{requested_value}", text)
+              if count != 1:
+                  raise SystemExit(f"Expected exactly one {key} setting, found {count}")
           path.write_text(text, encoding="utf-8", newline="\n")
           PY
           test -s compare-dependencies/canonical-config.yml
@@ -274,6 +286,10 @@ jobs:
                 "availableCpuCount=$available_cpu_count" \
                 "serverCpuSet=$server_cpu_set" \
                 "clientCpuSet=$client_cpu_set"
+              printf '%s\n' \
+                "runtimeProfile=$COMPARE_RUNTIME_PROFILE" \
+                'requestedPacketOnlyStatic=true' \
+                'requestedEventDrivenBlockUpdates=true'
               printf '%s\n' "harnessSourceSha=$harness_source_sha"
             } | sha256sum | awk '{print $1}'
           )
@@ -303,7 +319,7 @@ jobs:
             "$UPSTREAM_BUILD_NUMBER" "$UPSTREAM_SOURCE_SHA" \
             "$UPSTREAM_ARTIFACT_SHA256" "$PAPER_BUILD" "$PAPER_SHA256" \
             "$available_cpu_count" "$server_cpu_set" "$client_cpu_set" \
-            "$harness_source_sha" <<'PY'
+            "$harness_source_sha" "$COMPARE_RUNTIME_PROFILE" <<'PY'
           from pathlib import Path
           import json
           import sys
@@ -314,7 +330,7 @@ jobs:
               jvm_sha, stack_sha, scenario, scene_size, kind, runs, warmup,
               settle, measure, upstream_build, upstream_source, upstream_sha,
               paper_build, paper_sha, available_cpu_count, server_cpu_set,
-              client_cpu_set, harness_source_sha,
+              client_cpu_set, harness_source_sha, runtime_profile,
           ) = sys.argv[1:]
           Path(output).write_text(json.dumps({
               "schemaVersion": 1,
@@ -325,6 +341,11 @@ jobs:
               "warmupSeconds": int(warmup),
               "settleSeconds": int(settle),
               "measureSeconds": int(measure),
+              "runtimeProfile": runtime_profile,
+              "requestedFlags": {
+                  "packetOnlyStatic": runtime_profile == "optimized-candidate",
+                  "eventDrivenBlockUpdates": runtime_profile == "optimized-candidate",
+              },
               "preflight": {"runs": 2, "warmupSeconds": 10, "settleSeconds": 5,
                             "measureSeconds": 10, "protocolTraceEnabled": True},
               "variantA": {"meaning": "official-upstream", "jenkinsBuild": int(upstream_build),
@@ -382,6 +403,7 @@ jobs:
             COMPARE_RUN_ID="$run_id" \
             COMPARE_SCENARIO="$CAMPAIGN_SCENARIO" \
             COMPARE_VARIANT="$variant" \
+            COMPARE_RUNTIME_PROFILE="$COMPARE_RUNTIME_PROFILE" \
             COMPARE_SCENE_SIZE="$CAMPAIGN_SCENE_SIZE" \
             COMPARE_WARMUP_SECONDS=10 \
             COMPARE_SETTLE_SECONDS=5 \
@@ -433,10 +455,36 @@ jobs:
           for field, expected in expected_metrics.items():
               if metrics.get(field) != expected:
                   raise SystemExit(f"preflight metrics mismatch {field}: {metrics.get(field)!r} != {expected!r}")
+          expected_requested_flags = {
+              "packetOnlyStatic": True,
+              "eventDrivenBlockUpdates": True,
+          }
+          expected_effective_flags = {
+              "packetOnlyStatic": {
+                  "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+                  "value": None if variant == "A" else True,
+                  "field": "packetOnlyStaticVirtualItems",
+              },
+              "eventDrivenBlockUpdates": {
+                  "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+                  "value": None if variant == "A" else True,
+                  "field": "eventDrivenBlockUpdates",
+              },
+          }
+          if metrics.get("requestedFlags") != expected_requested_flags:
+              raise SystemExit("preflight requested optimization flags mismatch")
+          if metrics.get("effectiveFlags") != expected_effective_flags:
+              raise SystemExit("preflight effective optimization flags mismatch")
           if manifest.get("artifactSha256") != artifact_sha:
               raise SystemExit("preflight artifact SHA mismatch")
           if manifest.get("canonicalConfigSha256") != config_sha:
               raise SystemExit("preflight canonical config SHA mismatch")
+          if manifest.get("runtimeProfile") != "optimized-candidate":
+              raise SystemExit("preflight runtime profile mismatch")
+          if manifest.get("requestedFlags") != expected_requested_flags:
+              raise SystemExit("preflight manifest requested flags mismatch")
+          if manifest.get("effectiveFlags") != expected_effective_flags:
+              raise SystemExit("preflight manifest effective flags mismatch")
           expected_packet_allowlist = [
               "bundle_delimiter", "entity_destroy", "spawn_entity"
           ]
@@ -496,10 +544,6 @@ jobs:
           if scenario == "dropped-items" and variant == "B" and spawn_observations <= scene_size:
               raise SystemExit(
                   "rewritten dropped-item preflight produced no visual spawns beyond source items")
-          if scenario == "block-active" and spawn_observations < scene_size:
-              raise SystemExit(
-                  f"block-active preflight observed only {spawn_observations} spawns "
-                  f"for scene size {scene_size}")
           if scenario == "block-active":
               block_guards = {
                   "furnaceBlocks": 205,
@@ -513,6 +557,16 @@ jobs:
                   if metrics.get(field) != expected:
                       raise SystemExit(
                           f"block preflight mismatch {field}: {metrics.get(field)!r} != {expected!r}")
+              minimum_visual_spawns = 2 * (
+                  metrics["beehiveBlocks"] + metrics["beeNestBlocks"]
+              )
+              if minimum_visual_spawns != 818:
+                  raise SystemExit(
+                      f"block preflight TextDisplay guard drifted: {minimum_visual_spawns!r}")
+              if spawn_observations < minimum_visual_spawns:
+                  raise SystemExit(
+                      f"block-active preflight observed only {spawn_observations} spawns; "
+                      f"expected at least {minimum_visual_spawns} for two TextDisplays per bee block")
           PY
           done
 
@@ -548,6 +602,7 @@ jobs:
             COMPARE_RUN_ID="$run_id" \
             COMPARE_SCENARIO="$CAMPAIGN_SCENARIO" \
             COMPARE_VARIANT="$variant" \
+            COMPARE_RUNTIME_PROFILE="$COMPARE_RUNTIME_PROFILE" \
             COMPARE_SCENE_SIZE="$CAMPAIGN_SCENE_SIZE" \
             COMPARE_WARMUP_SECONDS="$CAMPAIGN_WARMUP_SECONDS" \
             COMPARE_SETTLE_SECONDS="$CAMPAIGN_SETTLE_SECONDS" \
@@ -560,7 +615,8 @@ jobs:
               "$CAMPAIGN_STACK_SHA256" "$expected_artifact_sha" \
               "$CANONICAL_CONFIG_SHA256" "$DRIVER_SHA256" "$PAPER_SHA256" \
               "$CLIENT_MANIFEST_SHA256" "$RUNNER_SHA256" "$JVM_ARGUMENTS_SHA256" \
-              "$AVAILABLE_CPU_COUNT" "$SERVER_CPU_SET" "$CLIENT_CPU_SET" <<'PY'
+              "$AVAILABLE_CPU_COUNT" "$SERVER_CPU_SET" "$CLIENT_CPU_SET" \
+              "$COMPARE_RUNTIME_PROFILE" <<'PY'
           import csv
           import json
           from pathlib import Path
@@ -569,7 +625,7 @@ jobs:
           (manifest_text, root_text, run_id, scenario, block, position, variant,
            scene_size_text, stack_sha, artifact_sha, config_sha, driver_sha,
            paper_sha, client_sha, runner_sha, jvm_sha, available_cpu_count,
-           server_cpu_set, client_cpu_set) = sys.argv[1:]
+           server_cpu_set, client_cpu_set, runtime_profile) = sys.argv[1:]
           root = Path(root_text)
           metrics_path = root / run_id / "iv-compare.json"
           run_manifest_path = root / run_id / "run-manifest.json"
@@ -597,6 +653,28 @@ jobs:
           for field, expected in expected_metrics.items():
               if metrics.get(field) != expected:
                   raise SystemExit(f"metrics mismatch {run_id}/{field}: {metrics.get(field)!r} != {expected!r}")
+          expected_requested_flags = {
+              "packetOnlyStatic": True,
+              "eventDrivenBlockUpdates": True,
+          }
+          expected_effective_flags = {
+              "packetOnlyStatic": {
+                  "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+                  "value": None if variant == "A" else True,
+                  "field": "packetOnlyStaticVirtualItems",
+              },
+              "eventDrivenBlockUpdates": {
+                  "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+                  "value": None if variant == "A" else True,
+                  "field": "eventDrivenBlockUpdates",
+              },
+          }
+          if runtime_profile != "optimized-candidate":
+              raise SystemExit(f"unexpected runtime profile: {runtime_profile!r}")
+          if metrics.get("requestedFlags") != expected_requested_flags:
+              raise SystemExit(f"metrics requested flags mismatch for {run_id}")
+          if metrics.get("effectiveFlags") != expected_effective_flags:
+              raise SystemExit(f"metrics effective flags mismatch for {run_id}")
           expected_manifest = {
               "runId": run_id,
               "scenario": scenario,
@@ -612,6 +690,9 @@ jobs:
               "availableCpuCount": int(available_cpu_count),
               "serverCpuSet": expected_server_cpu_set,
               "clientCpuSet": expected_client_cpu_set,
+              "runtimeProfile": runtime_profile,
+              "requestedFlags": expected_requested_flags,
+              "effectiveFlags": expected_effective_flags,
           }
           for field, expected in expected_manifest.items():
               if run_manifest.get(field) != expected:
@@ -646,7 +727,8 @@ jobs:
             "$CAMPAIGN_SCENARIO" "$CAMPAIGN_SCENE_SIZE" \
             "$CAMPAIGN_STACK_SHA256" "$UPSTREAM_ARTIFACT_SHA256" \
             "$REWRITE_ARTIFACT_SHA256" "$CANONICAL_CONFIG_SHA256" \
-            "$AVAILABLE_CPU_COUNT" "$SERVER_CPU_SET" "$CLIENT_CPU_SET" <<'PY'
+            "$AVAILABLE_CPU_COUNT" "$SERVER_CPU_SET" "$CLIENT_CPU_SET" \
+            "$COMPARE_RUNTIME_PROFILE" <<'PY'
           import csv
           import json
           from pathlib import Path
@@ -654,7 +736,7 @@ jobs:
 
           (manifest_text, root_text, runs_text, scenario, scene_size_text,
            stack_sha, upstream_sha, rewrite_sha, config_sha, available_cpu_count,
-           server_cpu_set, client_cpu_set) = sys.argv[1:]
+           server_cpu_set, client_cpu_set, runtime_profile) = sys.argv[1:]
           expected_runs = int(runs_text)
           scene_size = int(scene_size_text)
           root = Path(root_text).resolve()
@@ -713,6 +795,33 @@ jobs:
                   if metrics.get(field) != expected:
                       raise SystemExit(
                           f"final gate mismatch {row['RunId']}/{field}: {metrics.get(field)!r} != {expected!r}")
+              expected_requested_flags = {
+                  "packetOnlyStatic": True,
+                  "eventDrivenBlockUpdates": True,
+              }
+              expected_effective_flags = {
+                  "packetOnlyStatic": {
+                      "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+                      "value": None if variant == "A" else True,
+                      "field": "packetOnlyStaticVirtualItems",
+                  },
+                  "eventDrivenBlockUpdates": {
+                      "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+                      "value": None if variant == "A" else True,
+                      "field": "eventDrivenBlockUpdates",
+                  },
+              }
+              if runtime_profile != "optimized-candidate":
+                  raise SystemExit(f"unexpected runtime profile: {runtime_profile!r}")
+              for document_name, document in (("metrics", metrics), ("manifest", run_manifest)):
+                  if document.get("requestedFlags") != expected_requested_flags:
+                      raise SystemExit(
+                          f"{document_name} requested flags drifted in {row['RunId']}")
+                  if document.get("effectiveFlags") != expected_effective_flags:
+                      raise SystemExit(
+                          f"{document_name} effective flags drifted in {row['RunId']}")
+              if run_manifest.get("runtimeProfile") != runtime_profile:
+                  raise SystemExit(f"runtime profile drifted in {row['RunId']}")
               if scenario == "block-active":
                   block_guards = {
                       "furnaceBlocks": 205,
@@ -767,7 +876,8 @@ jobs:
             "$CAMPAIGN_SCENE_SIZE" "$CAMPAIGN_KIND" "$CAMPAIGN_RUNS" \
             "$UPSTREAM_SOURCE_SHA" "$UPSTREAM_ARTIFACT_SHA256" \
             "$CANDIDATE_SOURCE_SHA" "$REWRITE_ARTIFACT_SHA256" \
-            "$PAPER_SHA256" "$CAMPAIGN_STACK_SHA256" <<'PY'
+            "$PAPER_SHA256" "$CAMPAIGN_STACK_SHA256" \
+            "$COMPARE_RUNTIME_PROFILE" <<'PY'
           import csv
           import json
           from pathlib import Path
@@ -776,7 +886,7 @@ jobs:
 
           (root_text, summary_text, scenario, scene_size, kind, runs,
            upstream_source, upstream_artifact, candidate_source, candidate_artifact,
-           paper_sha, stack_sha) = sys.argv[1:]
+           paper_sha, stack_sha, runtime_profile) = sys.argv[1:]
           root = Path(root_text)
           rows = list(csv.DictReader((root / "abba-manifest.csv").open(encoding="utf-8")))
           metrics_by_variant = {"A": [], "B": []}
@@ -837,8 +947,13 @@ jobs:
               f"### Upstream runtime comparison: `{scenario}`",
               "",
               f"Mode: `{kind}`; scene size: `{scene_size}`; restart-isolated runs: `{runs}`.",
+              f"Runtime profile: `{runtime_profile}`; shared config requests "
+              "`PacketOnlyStatic=true` and `EventDriven=true` for both artifacts.",
+              "Runtime assertion: A reports both flags as `unsupported-legacy`; "
+              "B exposes both runtime fields as `true`.",
               "",
-              "A is official upstream Jenkins #163; B is production candidate `b3c2453`. ",
+              f"A is official upstream Jenkins #163; B is production candidate "
+              f"`{candidate_source[:7]}`. ",
               "Smoke evidence is exploratory and never declares a winner.",
               "",
               "| Metric | Upstream median | Rewrite median | Median B/A | Ratio 95% CI | Registered use |",
@@ -925,6 +1040,11 @@ jobs:
               "candidateArtifactSha256": candidate_artifact,
               "paperSha256": paper_sha,
               "stackSha256": stack_sha,
+              "runtimeProfile": runtime_profile,
+              "requestedFlags": {
+                  "packetOnlyStatic": True,
+                  "eventDrivenBlockUpdates": True,
+              },
           }
           (root / "scenario-verdict.json").write_text(
               json.dumps(verdict, indent=2) + "\n", encoding="utf-8")
@@ -1005,6 +1125,13 @@ jobs:
                   raise SystemExit(f"{scenario} formal verdict lacks a boolean pass state")
               if kind == "smoke" and document.get("passed") is not None:
                   raise SystemExit(f"{scenario} smoke verdict must not declare a pass state")
+              if document.get("runtimeProfile") != "optimized-candidate":
+                  raise SystemExit(f"{scenario} runtime profile mismatch")
+              if document.get("requestedFlags") != {
+                  "packetOnlyStatic": True,
+                  "eventDrivenBlockUpdates": True,
+              }:
+                  raise SystemExit(f"{scenario} requested flags mismatch")
               verdicts[scenario] = document
 
           if kind == "smoke":
@@ -1024,6 +1151,7 @@ jobs:
               "passed": global_passed,
               "conclusion": conclusion,
               "requiredScenarios": ["dropped-items", "block-active"],
+              "runtimeProfile": "optimized-candidate",
               "scenarioVerdicts": {
                   scenario: {
                       "passed": verdict["passed"],

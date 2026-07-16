@@ -36,6 +36,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.util.Vector;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -62,6 +64,7 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
             Material.BEEHIVE,
             Material.BEE_NEST
     };
+    private static final double TILE_TRACKING_REFRESH_BLOCKS = 64.0D;
 
     private final double[] tickDurations = new double[MAX_TICK_SAMPLES];
     private final List<Block> sceneBlocks = new ArrayList<>();
@@ -76,6 +79,8 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
     private String scenario = "";
     private int requestedSceneSize;
     private String observer = "";
+    private RequestedFlags requestedFlags = RequestedFlags.disabled();
+    private EffectiveFlags effectiveFlags = EffectiveFlags.unsupportedLegacy();
 
     @Override
     public void onEnable() {
@@ -182,6 +187,9 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
         }
         label = sanitize(args[1]);
         variant = requestedVariant;
+        requestedFlags = readRequestedFlags(target);
+        effectiveFlags = inspectEffectiveFlags(target.getClass());
+        assertOptimizationProfile(variant, requestedFlags, effectiveFlags);
         tickSamples = 0;
         boundaryTickSamplesDiscarded = 0;
         droppedTickSamples = 0L;
@@ -277,6 +285,7 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
                 observer, observerOnline, targetVersion, targetEnabled,
                 composition.furnaces(), composition.blastFurnaces(), composition.smokers(),
                 composition.beehives(), composition.beeNests(), composition.activeFurnaces(),
+                requestedFlags, effectiveFlags,
                 elapsedNanos, tickSamples, boundaryTickSamplesDiscarded, droppedTickSamples,
                 percentile(sorted, 0.50D), percentile(sorted, 0.95D), percentile(sorted, 0.99D),
                 percentile(sorted, 0.999D), sorted.length == 0 ? 0.0D : sorted[sorted.length - 1],
@@ -327,7 +336,10 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
     }
 
     private static void refreshTileEntityTracking(Player player, Location center) {
-        Location refresh = center.clone().add(32.0D, 0.0D, 0.0D);
+        // The candidate watches a 3x3 chunk square. Move four chunks so the
+        // temporary and scene-side watcher sets cannot overlap, then return to
+        // force every block created through direct Bukkit writes to be scanned.
+        Location refresh = center.clone().add(TILE_TRACKING_REFRESH_BLOCKS, 0.0D, 0.0D);
         refresh.getChunk().load();
         if (!player.teleport(refresh) || !player.teleport(center)) {
             throw new IllegalStateException("failed to refresh tile-entity tracking");
@@ -447,6 +459,67 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
         return sanitized.substring(0, Math.min(64, sanitized.length()));
     }
 
+    static RequestedFlags readRequestedFlags(Plugin target) {
+        if (!(target instanceof JavaPlugin javaPlugin)) {
+            throw new IllegalStateException("InteractionVisualizer target is not a JavaPlugin");
+        }
+        return new RequestedFlags(
+                javaPlugin.getConfig().getBoolean(
+                        "Settings.Performance.VirtualItems.PacketOnlyStatic"),
+                javaPlugin.getConfig().getBoolean(
+                        "Settings.Performance.BlockUpdates.EventDriven"));
+    }
+
+    static EffectiveFlags inspectEffectiveFlags(Class<?> targetClass) {
+        return new EffectiveFlags(
+                inspectEffectiveFlag(targetClass, "packetOnlyStaticVirtualItems"),
+                inspectEffectiveFlag(targetClass, "eventDrivenBlockUpdates"));
+    }
+
+    static EffectiveFlag inspectEffectiveFlag(Class<?> targetClass, String fieldName) {
+        final Field field;
+        try {
+            field = targetClass.getField(fieldName);
+        } catch (NoSuchFieldException ignored) {
+            return EffectiveFlag.unsupportedLegacy(fieldName);
+        }
+        if (field.getType() != boolean.class || !Modifier.isPublic(field.getModifiers())
+                || !Modifier.isStatic(field.getModifiers())) {
+            throw new IllegalStateException(
+                    "Optimization flag is not a public static boolean: " + fieldName);
+        }
+        try {
+            return EffectiveFlag.runtimeField(fieldName, field.getBoolean(null));
+        } catch (IllegalAccessException exception) {
+            throw new IllegalStateException(
+                    "Cannot inspect effective optimization flag: " + fieldName, exception);
+        }
+    }
+
+    static void assertOptimizationProfile(
+            String variant, RequestedFlags requested, EffectiveFlags effective) {
+        if (requested.packetOnlyStatic() != requested.eventDrivenBlockUpdates()) {
+            throw new IllegalStateException(
+                    "Controlled runtime profile must request both optimization flags together");
+        }
+        if (!requested.packetOnlyStatic()) {
+            return;
+        }
+        if (variant.equals("A")) {
+            if (!effective.packetOnlyStatic().unsupportedLegacy()
+                    || !effective.eventDrivenBlockUpdates().unsupportedLegacy()) {
+                throw new IllegalStateException(
+                        "Official upstream unexpectedly implements candidate optimization flags");
+            }
+            return;
+        }
+        if (!effective.packetOnlyStatic().enabled()
+                || !effective.eventDrivenBlockUpdates().enabled()) {
+            throw new IllegalStateException(
+                    "Optimized candidate did not activate PacketOnlyStatic/EventDriven at runtime");
+        }
+    }
+
     private record SceneComposition(
             int furnaces,
             int blastFurnaces,
@@ -454,6 +527,62 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
             int beehives,
             int beeNests,
             int activeFurnaces) {
+    }
+
+    record RequestedFlags(boolean packetOnlyStatic, boolean eventDrivenBlockUpdates) {
+
+        static RequestedFlags disabled() {
+            return new RequestedFlags(false, false);
+        }
+
+        String json() {
+            return String.format(Locale.ROOT,
+                    "{\"packetOnlyStatic\":%b,\"eventDrivenBlockUpdates\":%b}",
+                    packetOnlyStatic, eventDrivenBlockUpdates);
+        }
+    }
+
+    record EffectiveFlag(String status, Boolean value, String fieldName) {
+
+        static EffectiveFlag unsupportedLegacy(String fieldName) {
+            return new EffectiveFlag("unsupported-legacy", null, fieldName);
+        }
+
+        static EffectiveFlag runtimeField(String fieldName, boolean value) {
+            return new EffectiveFlag("runtime-field", value, fieldName);
+        }
+
+        boolean unsupportedLegacy() {
+            return status.equals("unsupported-legacy") && value == null;
+        }
+
+        boolean enabled() {
+            return status.equals("runtime-field") && Boolean.TRUE.equals(value);
+        }
+
+        String json() {
+            String encodedValue = value == null ? "null" : value.toString();
+            return String.format(Locale.ROOT,
+                    "{\"status\":\"%s\",\"value\":%s,\"field\":\"%s\"}",
+                    status, encodedValue, fieldName);
+        }
+    }
+
+    record EffectiveFlags(
+            EffectiveFlag packetOnlyStatic,
+            EffectiveFlag eventDrivenBlockUpdates) {
+
+        static EffectiveFlags unsupportedLegacy() {
+            return new EffectiveFlags(
+                    EffectiveFlag.unsupportedLegacy("packetOnlyStaticVirtualItems"),
+                    EffectiveFlag.unsupportedLegacy("eventDrivenBlockUpdates"));
+        }
+
+        String json() {
+            return String.format(Locale.ROOT,
+                    "{\"packetOnlyStatic\":%s,\"eventDrivenBlockUpdates\":%s}",
+                    packetOnlyStatic.json(), eventDrivenBlockUpdates.json());
+        }
     }
 
     private record Snapshot(
@@ -472,6 +601,8 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
             int beehiveBlocks,
             int beeNestBlocks,
             int activeFurnaces,
+            RequestedFlags requestedFlags,
+            EffectiveFlags effectiveFlags,
             long elapsedNanos,
             int tickSamples,
             int boundaryTickSamplesDiscarded,
@@ -503,6 +634,7 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
                             "\"furnaceBlocks\":%d,\"blastFurnaceBlocks\":%d," +
                             "\"smokerBlocks\":%d,\"beehiveBlocks\":%d," +
                             "\"beeNestBlocks\":%d,\"activeFurnaces\":%d," +
+                            "\"requestedFlags\":%s,\"effectiveFlags\":%s," +
                             "\"seconds\":%.6f,\"tickSamples\":%d," +
                             "\"boundaryTickSamplesDiscarded\":%d,\"droppedTickSamples\":%d," +
                             "\"observedTps\":%.6f,\"msptP50\":%.6f,\"msptP95\":%.6f," +
@@ -511,7 +643,8 @@ public final class RuntimeComparisonPlugin extends JavaPlugin implements Listene
                     label, variant, scenario, expectedSceneSize, actualSceneSize, observer,
                     observerOnline, targetVersion, targetEnabled,
                     furnaceBlocks, blastFurnaceBlocks, smokerBlocks, beehiveBlocks,
-                    beeNestBlocks, activeFurnaces, seconds(), tickSamples,
+                    beeNestBlocks, activeFurnaces, requestedFlags.json(), effectiveFlags.json(),
+                    seconds(), tickSamples,
                     boundaryTickSamplesDiscarded, droppedTickSamples,
                     observedTps(), msptP50, msptP95, msptP99, msptP999, msptMax,
                     msptMean, ticksOver50ms);

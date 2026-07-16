@@ -9,6 +9,7 @@ for variable in \
   COMPARE_PLUGIN_JAR COMPARE_DRIVER_JAR COMPARE_PAPER_JAR COMPARE_CONFIG_FILE \
   COMPARE_CLIENT_ROOT \
   COMPARE_OUTPUT_ROOT COMPARE_RUN_ID COMPARE_SCENARIO COMPARE_VARIANT \
+  COMPARE_RUNTIME_PROFILE \
   COMPARE_SCENE_SIZE COMPARE_WARMUP_SECONDS COMPARE_SETTLE_SECONDS \
   COMPARE_MEASURE_SECONDS; do
   [[ -n "${!variable:-}" ]] || { echo "$variable is required" >&2; exit 64; }
@@ -23,6 +24,7 @@ output_root="$(realpath -m "$COMPARE_OUTPUT_ROOT")"
 run_id="$COMPARE_RUN_ID"
 scenario="$COMPARE_SCENARIO"
 variant="$COMPARE_VARIANT"
+runtime_profile="$COMPARE_RUNTIME_PROFILE"
 scene_size="$COMPARE_SCENE_SIZE"
 warmup_seconds="$COMPARE_WARMUP_SECONDS"
 settle_seconds="$COMPARE_SETTLE_SECONDS"
@@ -35,6 +37,13 @@ protocol_trace_aggregate_packet_allowlist="${COMPARE_PROTOCOL_TRACE_AGGREGATE_PA
 
 [[ "$variant" == A || "$variant" == B ]] \
   || { echo "COMPARE_VARIANT must be A or B" >&2; exit 64; }
+case "$runtime_profile" in
+  legacy-parity|optimized-candidate) ;;
+  *)
+    echo "COMPARE_RUNTIME_PROFILE must be legacy-parity or optimized-candidate" >&2
+    exit 64
+    ;;
+esac
 [[ "$scenario" == dropped-items || "$scenario" == block-active ]] \
   || { echo "Unsupported comparison scenario: $scenario" >&2; exit 64; }
 [[ "$protocol_trace_enabled" == 0 || "$protocol_trace_enabled" == 1 ]] \
@@ -123,12 +132,14 @@ cp "$driver_jar" "$run_directory/plugins/InteractionVisualizerRuntimeCompare.jar
 cp "$config_file" "$run_directory/plugins/InteractionVisualizer/config.yml"
 cmp -s "$config_file" "$run_directory/plugins/InteractionVisualizer/config.yml" \
   || { echo "Canonical config changed while copying" >&2; exit 1; }
-python3 - "$run_directory/plugins/InteractionVisualizer/config.yml" <<'PY'
+python3 - "$run_directory/plugins/InteractionVisualizer/config.yml" \
+  "$runtime_profile" <<'PY'
 from pathlib import Path
 import re
 import sys
 
-text = Path(sys.argv[1]).read_text(encoding="utf-8")
+path, runtime_profile = sys.argv[1:]
+text = Path(path).read_text(encoding="utf-8")
 values = {}
 stack = []
 for raw_line in text.splitlines():
@@ -148,6 +159,9 @@ for raw_line in text.splitlines():
     else:
         stack.append((indent, key))
 
+optimized = runtime_profile == "optimized-candidate"
+if runtime_profile not in {"legacy-parity", "optimized-candidate"}:
+    raise SystemExit(f"Unsupported runtime profile: {runtime_profile!r}")
 expected = {
     "Entities.Item.Options.UpdateRate": "20",
     "Entities.Item.Options.LabelYOffset": "0.8",
@@ -156,9 +170,9 @@ expected = {
     "Entities.Item.Options.DespawnTicks": "6000",
     "Settings.HideIfViewObstructed": "false",
     "Settings.Performance.VirtualItems.StaticAnchorDuringAnimation": "false",
-    "Settings.Performance.VirtualItems.PacketOnlyStatic": "false",
+    "Settings.Performance.VirtualItems.PacketOnlyStatic": str(optimized).lower(),
     "Settings.Performance.VisibilityRateLimit.Enabled": "false",
-    "Settings.Performance.BlockUpdates.EventDriven": "false",
+    "Settings.Performance.BlockUpdates.EventDriven": str(optimized).lower(),
     "Settings.Performance.BlockUpdates.MaxDirtyPerTick": "64",
     "Options.Updater": "false",
     "Options.DownloadLanguageFiles": "false",
@@ -488,15 +502,18 @@ wait_for_file "$driver_result" 30
 cp "$driver_result" "$metrics_path"
 
 python3 - "$metrics_path" "$run_id" "$variant" "$scenario" "$scene_size" \
-  "$measure_seconds" <<'PY'
+  "$measure_seconds" "$runtime_profile" <<'PY'
 import json
 import math
 import sys
 
-path, run_id, variant, scenario, scene_size_text, measure_text = sys.argv[1:]
+path, run_id, variant, scenario, scene_size_text, measure_text, runtime_profile = sys.argv[1:]
 data = json.load(open(path, encoding="utf-8"))
 scene_size = int(scene_size_text)
 measure = int(measure_text)
+optimized = runtime_profile == "optimized-candidate"
+if runtime_profile not in {"legacy-parity", "optimized-candidate"}:
+    raise SystemExit(f"unsupported runtime profile: {runtime_profile!r}")
 expected = {
     "schemaVersion": 1,
     "label": run_id,
@@ -514,6 +531,32 @@ expected = {
 for key, value in expected.items():
     if data.get(key) != value:
         raise SystemExit(f"comparison result mismatch for {key}: {data.get(key)!r} != {value!r}")
+expected_requested_flags = {
+    "packetOnlyStatic": optimized,
+    "eventDrivenBlockUpdates": optimized,
+}
+expected_effective_flags = {
+    "packetOnlyStatic": {
+        "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+        "value": None if variant == "A" else optimized,
+        "field": "packetOnlyStaticVirtualItems",
+    },
+    "eventDrivenBlockUpdates": {
+        "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+        "value": None if variant == "A" else optimized,
+        "field": "eventDrivenBlockUpdates",
+    },
+}
+if data.get("requestedFlags") != expected_requested_flags:
+    raise SystemExit(
+        f"comparison requested flags mismatch: "
+        f"{data.get('requestedFlags')!r} != {expected_requested_flags!r}"
+    )
+if data.get("effectiveFlags") != expected_effective_flags:
+    raise SystemExit(
+        f"comparison effective flags mismatch: "
+        f"{data.get('effectiveFlags')!r} != {expected_effective_flags!r}"
+    )
 if data.get("seconds", 0) < measure - 2 or data.get("seconds", 0) > measure + 3:
     raise SystemExit(f"comparison measurement duration is invalid: {data.get('seconds')}")
 if data.get("tickSamples", 0) <= 0 or data.get("observedTps", 0) <= 0:
@@ -578,7 +621,8 @@ python3 - "$run_directory/run-manifest.json" "$run_id" "$scenario" "$variant" \
   "$protocol_trace_enabled" "$protocol_trace_packet_allowlist" \
   "$protocol_trace_aggregate_packet_allowlist" \
   "$trace_window_start_epoch_ms" "$trace_window_end_epoch_ms" \
-  "$available_cpu_count" "$server_cpu_set" "$client_cpu_set" <<'PY'
+  "$available_cpu_count" "$server_cpu_set" "$client_cpu_set" \
+  "$runtime_profile" "$metrics_path" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -590,13 +634,18 @@ import sys
     trace_enabled, trace_packet_allowlist, trace_aggregate_packet_allowlist,
     trace_window_start_epoch_ms, trace_window_end_epoch_ms,
     available_cpu_count, server_cpu_set, client_cpu_set,
+    runtime_profile, metrics_path,
 ) = sys.argv[1:]
+metrics = json.load(open(metrics_path, encoding="utf-8"))
 Path(output).write_text(json.dumps({
     "schemaVersion": 1,
     "runId": run_id,
     "scenario": scenario,
     "variant": variant,
     "variantMeaning": "official-upstream" if variant == "A" else "rewritten-candidate",
+    "runtimeProfile": runtime_profile,
+    "requestedFlags": metrics["requestedFlags"],
+    "effectiveFlags": metrics["effectiveFlags"],
     "sceneSize": int(scene_size),
     "warmupSeconds": int(warmup),
     "settleSeconds": int(settle),
@@ -667,15 +716,16 @@ if [[ "$protocol_trace_enabled" == 1 ]]; then
     --overwrite > "$run_directory/protocol-trace-analysis.stdout.json"
   python3 - "$protocol_trace_analysis_path" "$scenario" "$variant" "$scene_size" \
     "$protocol_trace_packet_allowlist" \
-    "$protocol_trace_aggregate_packet_allowlist" <<'PY'
+    "$protocol_trace_aggregate_packet_allowlist" "$metrics_path" <<'PY'
 import json
 import sys
 
 (
     analysis_path, scenario, variant, scene_size_text, packet_allowlist,
-    aggregate_packet_allowlist,
+    aggregate_packet_allowlist, metrics_path,
 ) = sys.argv[1:]
 analysis = json.load(open(analysis_path, encoding="utf-8"))
+metrics = json.load(open(metrics_path, encoding="utf-8"))
 expected_allowlist = (
     sorted(packet_allowlist.lower().split(",")) if packet_allowlist else None
 )
@@ -720,10 +770,13 @@ if scenario == "dropped-items" and metadata_observations < 5 * scene_size:
         f"dropped-item preflight saw only {metadata_observations} metadata packets; "
         f"expected at least {5 * scene_size} to prove repeated visual updates"
     )
-if scenario == "block-active" and spawn_observations < scene_size:
+minimum_block_spawns = 2 * (
+    metrics.get("beehiveBlocks", 0) + metrics.get("beeNestBlocks", 0)
+)
+if scenario == "block-active" and spawn_observations < minimum_block_spawns:
     raise SystemExit(
         f"block-active preflight saw only {spawn_observations} visual spawns; "
-        f"expected at least {scene_size}"
+        f"expected at least {minimum_block_spawns} for two TextDisplays per bee block"
     )
 if metadata_observations <= 0:
     raise SystemExit("preflight observed no visual entity metadata")

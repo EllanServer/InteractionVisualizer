@@ -86,6 +86,11 @@ val runtimeComparisonSourceSet = sourceSets.create("runtimeComparison") {
     runtimeClasspath += output + compileClasspath
 }
 
+sourceSets.test {
+    compileClasspath += runtimeComparisonSourceSet.output
+    runtimeClasspath += runtimeComparisonSourceSet.output
+}
+
 val benchmarkJar = tasks.register<Jar>("benchmarkJar") {
     description = "Builds the standalone Paper A/B benchmark plugin (never shipped in production)."
     group = LifecycleBasePlugin.VERIFICATION_GROUP
