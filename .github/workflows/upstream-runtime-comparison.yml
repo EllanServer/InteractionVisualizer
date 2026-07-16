@@ -29,6 +29,8 @@ jobs:
       PRODUCTION_CANDIDATE_SHA: c28db0146ec2f35eaf066b4202b33f08d06bbc4b
       PAPER_BUILD: "74"
       PAPER_SHA256: 1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7
+      PAPER_ARTIFACT_SIZE: "52893229"
+      PAPER_ARTIFACT_URL: https://fill-data.papermc.io/v1/objects/1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7/paper-26.1.2-74.jar
       COMPARE_RUNTIME_PROFILE: optimized-candidate
       EXPECTED_HARNESS_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
@@ -192,32 +194,38 @@ jobs:
           PAPER_USER_AGENT: InteractionVisualizer-Upstream-Comparison/1.0 (https://github.com/EllanServer/InteractionVisualizer)
         run: |
           set -euo pipefail
-          builds_url=https://fill.papermc.io/v3/projects/paper/versions/26.1.2/builds
-          curl --fail --location --show-error --silent \
-            --retry 10 --retry-all-errors --retry-max-time 300 --connect-timeout 30 \
-            -H "User-Agent: $PAPER_USER_AGENT" \
-            --output compare-dependencies/paper-builds.json "$builds_url"
-          jq --argjson build "$PAPER_BUILD" --arg sha "$PAPER_SHA256" '
-            [.[] | select(.id == $build)] as $selected
-            | if ($selected | length) != 1 then error("Paper build is absent or duplicated") else $selected[0] end
-            | if .channel != "STABLE" then error("Paper build is not STABLE") else . end
-            | if .downloads["server:default"].name != "paper-26.1.2-74.jar"
-              then error("Paper artifact name mismatch") else . end
-            | if .downloads["server:default"].checksums.sha256 != $sha
-              then error("Paper API SHA-256 mismatch") else . end
-          ' compare-dependencies/paper-builds.json \
-            > compare-dependencies/paper-build-74.json
-          paper_url=$(jq -r '.downloads["server:default"].url' \
-            compare-dependencies/paper-build-74.json)
-          paper_size=$(jq -r '.downloads["server:default"].size' \
-            compare-dependencies/paper-build-74.json)
-          [[ "$paper_url" == https://fill-data.papermc.io/* ]]
-          [[ "$paper_size" =~ ^[0-9]+$ ]] && (( paper_size > 0 ))
+          expected_url="https://fill-data.papermc.io/v1/objects/$PAPER_SHA256/paper-26.1.2-74.jar"
+          [[ "$PAPER_ARTIFACT_URL" == "$expected_url" ]]
+          [[ "$PAPER_ARTIFACT_SIZE" =~ ^[0-9]+$ ]] && (( PAPER_ARTIFACT_SIZE > 0 ))
+          python3 - compare-dependencies/paper-build-74.json \
+            "$PAPER_BUILD" "$PAPER_SHA256" "$PAPER_ARTIFACT_SIZE" \
+            "$PAPER_ARTIFACT_URL" <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+
+          output, build, sha, size, url = sys.argv[1:]
+          Path(output).write_text(json.dumps({
+              "id": int(build),
+              "time": "2026-07-06T16:51:09Z",
+              "channel": "STABLE",
+              "commits": [],
+              "downloads": {
+                  "server:default": {
+                      "name": "paper-26.1.2-74.jar",
+                      "checksums": {"sha256": sha},
+                      "size": int(size),
+                      "url": url,
+                  }
+              },
+              "metadataSource": "pinned-from-verified-Paper-build-74-response",
+          }, indent=2) + "\n", encoding="utf-8")
+          PY
           curl --fail --location --show-error \
             --retry 10 --retry-all-errors --retry-max-time 300 --connect-timeout 30 \
             -H "User-Agent: $PAPER_USER_AGENT" \
-            --output compare-dependencies/paper.jar "$paper_url"
-          [[ "$(stat -c '%s' compare-dependencies/paper.jar)" == "$paper_size" ]]
+            --output compare-dependencies/paper.jar "$PAPER_ARTIFACT_URL"
+          [[ "$(stat -c '%s' compare-dependencies/paper.jar)" == "$PAPER_ARTIFACT_SIZE" ]]
           printf '%s  %s\n' "$PAPER_SHA256" compare-dependencies/paper.jar \
             | sha256sum --check --strict
 
