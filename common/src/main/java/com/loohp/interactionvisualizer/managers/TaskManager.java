@@ -449,6 +449,31 @@ public class TaskManager {
         }
     }
 
+    /**
+     * Stops every scheduler task owned by this plugin and releases the display
+     * registries that otherwise retain a full graph of listeners and task handles
+     * until the old plugin class loader is collected.
+     */
+    public static void shutdown() {
+        try {
+            if (plugin != null) {
+                Bukkit.getScheduler().cancelTasks(plugin);
+            }
+        } finally {
+            clearRuntimeState();
+        }
+    }
+
+    static void clearRuntimeState() {
+        pendingInventoryOpenProcesses.clear();
+        pendingInventoryRefreshes.clear();
+        for (List<VisualizerInteractDisplay> displays : processes.values()) {
+            displays.clear();
+        }
+        processes.clear();
+        runnables.clear();
+    }
+
     public static void processOpenInventory(Player player) {
         if (!player.isOnline()) {
             return;

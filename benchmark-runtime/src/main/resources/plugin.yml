@@ -1,0 +1,13 @@
+name: InteractionVisualizerRuntimeCompare
+version: '1.0'
+main: com.loohp.interactionvisualizer.benchmark.runtime.RuntimeComparisonPlugin
+api-version: '26.1'
+softdepend: [InteractionVisualizer]
+description: Disposable target-independent runtime comparison driver for GitHub Actions
+commands:
+  ivcompare:
+    description: Controls the disposable InteractionVisualizer runtime comparison
+    permission: interactionvisualizer.runtimecompare
+permissions:
+  interactionvisualizer.runtimecompare:
+    default: op

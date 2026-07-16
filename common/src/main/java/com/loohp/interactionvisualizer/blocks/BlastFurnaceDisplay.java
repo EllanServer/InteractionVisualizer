@@ -217,7 +217,7 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
                         if (!block.getType().equals(Material.BLAST_FURNACE)) {
                             return;
                         }
-                        org.bukkit.block.BlastFurnace blastfurnace = (org.bukkit.block.BlastFurnace) block.getState();
+                        org.bukkit.block.BlastFurnace blastfurnace = (org.bukkit.block.BlastFurnace) block.getState(false);
 
                         {
                         Inventory inv = blastfurnace.getInventory();
@@ -336,7 +336,7 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
             values.putAll(spawnDisplayEntitys(block));
             blastfurnaceMap.put(block, values);
         }
-        org.bukkit.block.Furnace furnace = (org.bukkit.block.Furnace) block.getState();
+        org.bukkit.block.Furnace furnace = (org.bukkit.block.Furnace) block.getState(false);
         return FurnaceDisplayUpdater.update(furnace, values, KEY, progressBarCharacter, emptyColor,
                 filledColor, noFuelColor, progressBarLength, amountPending);
     }
@@ -628,7 +628,7 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
         Map<String, DisplayEntity> map = new HashMap<>();
         Location origin = block.getLocation();
 
-        BlockData blockData = block.getState().getBlockData();
+        BlockData blockData = block.getBlockData();
         BlockFace facing = ((Directional) blockData).getFacing();
         Location target = block.getRelative(facing).getLocation();
         Vector direction = target.toVector().subtract(origin.toVector()).multiply(0.7);

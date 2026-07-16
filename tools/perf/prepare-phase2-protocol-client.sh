@@ -167,7 +167,7 @@ NODE
 
 (
   cd "$output_directory"
-  find . -type f ! -name client-files.sha256 -print0 \
+  find . -type f ! -name client-files.sha256 ! -path '*/.git/*' -print0 \
     | sort -z \
     | xargs -0 sha256sum \
     > client-files.sha256

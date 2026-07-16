@@ -88,15 +88,36 @@ function analyzeTrace (trace, startEpochMs, endEpochMs, tracePath = null) {
     throw new Error('analysis requires a finite non-negative half-open window')
   }
 
+  const captureAllowlist = normalizePacketNameAllowlist(
+    trace.capturePacketAllowlist,
+    'capturePacketAllowlist'
+  )
+  const aggregateAllowlist = normalizePacketNameAllowlist(
+    trace.aggregatePacketAllowlist,
+    'aggregatePacketAllowlist'
+  )
   const normalization = normalizeEvents(trace.events)
   const allEvents = normalization.events.sort((left, right) =>
     left.epochMs - right.epochMs || left.sourceIndex - right.sourceIndex)
+  const aggregateNormalization = normalizePacketCountSeries(trace.packetCountSeries)
+  const allAggregateBuckets = aggregateNormalization.buckets.sort((left, right) =>
+    left.epochMs - right.epochMs || left.packetName.localeCompare(right.packetName))
+  const provenanceErrors = validateTraceProvenance(
+    allEvents,
+    aggregateNormalization.packetNames,
+    captureAllowlist.names,
+    aggregateAllowlist.names
+  )
   const beforeWindow = allEvents.filter(event => event.epochMs < startEpochMs)
   const windowEvents = allEvents.filter(event => event.epochMs >= startEpochMs && event.epochMs < endEpochMs)
+  const windowAggregateBuckets = allAggregateBuckets.filter(bucket =>
+    bucket.epochMs >= startEpochMs && bucket.epochMs < endEpochMs)
   const baseline = replayLifecycle(beforeWindow)
   const lifecycle = replayLifecycle(windowEvents, baseline.live, baseline.everSpawned)
 
   const packetCounts = new Map()
+  const rawPacketCounts = new Map()
+  const aggregatePacketCounts = new Map()
   const kindCounts = new Map()
   const parseStatusCounts = new Map()
   const spawnTypeCounts = new Map()
@@ -108,6 +129,7 @@ function analyzeTrace (trace, startEpochMs, endEpochMs, tracePath = null) {
 
   for (const event of windowEvents) {
     increment(packetCounts, event.packetName)
+    increment(rawPacketCounts, event.packetName)
     increment(kindCounts, event.kind)
     increment(parseStatusCounts, event.parseStatus)
     if (event.kind === 'spawn') {
@@ -122,6 +144,11 @@ function analyzeTrace (trace, startEpochMs, endEpochMs, tracePath = null) {
       destroyIds.push(...event.entityIds)
     }
   }
+  for (const bucket of windowAggregateBuckets) {
+    increment(packetCounts, bucket.packetName, bucket.count)
+    increment(aggregatePacketCounts, bucket.packetName, bucket.count)
+    increment(kindCounts, bucket.kind, bucket.count)
+  }
 
   const traceStatus = trace.status && typeof trace.status === 'object' ? trace.status : {}
   const sourceParseErrorCount = nonNegativeInteger(
@@ -129,8 +156,41 @@ function analyzeTrace (trace, startEpochMs, endEpochMs, tracePath = null) {
     Array.isArray(traceStatus.parseErrors) ? traceStatus.parseErrors.length : 0
   )
   const sourceDroppedEvents = nonNegativeInteger(traceStatus.droppedEvents, 0)
+  const sourceAggregatedEventCount = allAggregateBuckets.reduce((sum, bucket) => sum + bucket.count, 0)
+  const windowAggregatedEventCount = windowAggregateBuckets.reduce((sum, bucket) => sum + bucket.count, 0)
+  const declaredAggregatedEventCount = optionalNonNegativeInteger(traceStatus.aggregatedEvents)
+  const aggregateStatusErrors = []
+  if (Array.isArray(trace.aggregatePacketAllowlist) && declaredAggregatedEventCount == null) {
+    aggregateStatusErrors.push({ message: 'status.aggregatedEvents must be a non-negative integer when aggregate capture is enabled' })
+  } else if (declaredAggregatedEventCount != null &&
+      declaredAggregatedEventCount !== sourceAggregatedEventCount) {
+    aggregateStatusErrors.push({
+      message: `status.aggregatedEvents ${declaredAggregatedEventCount} does not match packetCountSeries total ${sourceAggregatedEventCount}`
+    })
+  }
+  if (aggregateAllowlist.names != null) {
+    if (Number(trace.packetCountSeriesResolutionMs) !== 1) {
+      aggregateStatusErrors.push({ message: 'packetCountSeriesResolutionMs must be 1' })
+    }
+    if (trace.packetCountSeriesTimestampSource !== 'Date.now') {
+      aggregateStatusErrors.push({ message: 'packetCountSeriesTimestampSource must be Date.now' })
+    }
+    if (trace.packetCountSeriesTimestampSemantics !== 'point-observation') {
+      aggregateStatusErrors.push({ message: 'packetCountSeriesTimestampSemantics must be point-observation' })
+    }
+  }
+  const sourceAccountingErrors = validateSourceAccounting(
+    traceStatus,
+    trace.events.length,
+    sourceAggregatedEventCount
+  )
   const traceStartEpochMs = optionalFiniteNumber(trace.startedEpochMs)
   const traceEndEpochMs = optionalFiniteNumber(trace.endedEpochMs)
+  const aggregateBoundsErrors = validateAggregateBounds(
+    allAggregateBuckets,
+    traceStartEpochMs,
+    traceEndEpochMs
+  )
   const windowCovered = traceStartEpochMs != null && traceEndEpochMs != null &&
     traceStartEpochMs <= startEpochMs && traceEndEpochMs >= endEpochMs
   const evidenceParseStatusCounts = countParseStatuses([...beforeWindow, ...windowEvents])
@@ -141,9 +201,20 @@ function analyzeTrace (trace, startEpochMs, endEpochMs, tracePath = null) {
   // Generic entity updates are retained as packet-rate evidence even when a
   // future protocol shape has no extractable entity id. Spawn/destroy identity
   // is the formal semantic claim, so only incomplete lifecycle records block it.
-  const parseOk = sourceParseErrorCount === 0 && normalization.errors.length === 0 &&
+  const analyzerErrors = [
+    ...captureAllowlist.errors,
+    ...aggregateAllowlist.errors,
+    ...provenanceErrors,
+    ...normalization.errors,
+    ...aggregateNormalization.errors,
+    ...aggregateBoundsErrors,
+    ...aggregateStatusErrors,
+    ...sourceAccountingErrors
+  ]
+  const analyzerDroppedRecords = normalization.droppedRecords + aggregateNormalization.droppedRecords
+  const parseOk = sourceParseErrorCount === 0 && analyzerErrors.length === 0 &&
     criticalPartialEvidenceEventCount === 0
-  const dropOk = sourceDroppedEvents === 0 && normalization.droppedRecords === 0
+  const dropOk = sourceDroppedEvents === 0 && analyzerDroppedRecords === 0
   const traceComplete = traceStatus.complete === true
   const sourceExitCodeOk = traceStatus.requestedExitCode == null || Number(traceStatus.requestedExitCode) === 0
   const bundleBalanced = traceStatus.openBundleAtEnd !== true
@@ -156,7 +227,16 @@ function analyzeTrace (trace, startEpochMs, endEpochMs, tracePath = null) {
       traceSchemaVersion: trace.schemaVersion == null ? null : trace.schemaVersion,
       producer: trace.producer == null ? null : String(trace.producer),
       clientVersion: trace.clientVersion == null ? null : String(trace.clientVersion),
-      direction: trace.direction == null ? null : String(trace.direction)
+      direction: trace.direction == null ? null : String(trace.direction),
+      capturePacketAllowlist: captureAllowlist.names,
+      aggregatePacketAllowlist: aggregateAllowlist.names,
+      packetCountSeriesResolutionMs: optionalFiniteNumber(trace.packetCountSeriesResolutionMs),
+      packetCountSeriesTimestampSource: trace.packetCountSeriesTimestampSource == null
+        ? null
+        : String(trace.packetCountSeriesTimestampSource),
+      packetCountSeriesTimestampSemantics: trace.packetCountSeriesTimestampSemantics == null
+        ? null
+        : String(trace.packetCountSeriesTimestampSemantics)
     },
     window: {
       semantics: '[startEpochMs, endEpochMs)',
@@ -172,10 +252,17 @@ function analyzeTrace (trace, startEpochMs, endEpochMs, tracePath = null) {
       sourceEventCount: trace.events.length,
       normalizedEventCount: allEvents.length,
       beforeWindowEventCount: beforeWindow.length,
-      windowEventCount: windowEvents.length
+      windowEventCount: windowEvents.length,
+      sourceAggregateBucketCount: aggregateNormalization.sourceBucketCount,
+      normalizedAggregateBucketCount: allAggregateBuckets.length,
+      windowAggregateBucketCount: windowAggregateBuckets.length,
+      sourceAggregatedEventCount,
+      windowAggregatedEventCount
     },
     counts: {
       byPacket: sortedMapObject(packetCounts),
+      byPacketRaw: sortedMapObject(rawPacketCounts),
+      byPacketAggregated: sortedMapObject(aggregatePacketCounts),
       byKind: sortedMapObject(kindCounts),
       byParseStatus: sortedMapObject(parseStatusCounts),
       spawnByEntityType: sortedMapObject(spawnTypeCounts),
@@ -209,8 +296,18 @@ function analyzeTrace (trace, startEpochMs, endEpochMs, tracePath = null) {
         ok: parseOk,
         sourceParseErrorCount,
         sourceParseErrors: Array.isArray(traceStatus.parseErrors) ? traceStatus.parseErrors.slice(0, 32) : [],
-        analyzerErrorCount: normalization.errors.length,
-        analyzerErrors: normalization.errors.slice(0, 32),
+        analyzerErrorCount: analyzerErrors.length,
+        analyzerErrors: analyzerErrors.slice(0, 32),
+        sourceAccountingErrorCount: sourceAccountingErrors.length,
+        sourceAccountingErrors: sourceAccountingErrors.slice(0, 32),
+        aggregateAnalyzerErrorCount: aggregateAllowlist.errors.length +
+          aggregateNormalization.errors.length + aggregateBoundsErrors.length + aggregateStatusErrors.length,
+        aggregateAnalyzerErrors: [
+          ...aggregateAllowlist.errors,
+          ...aggregateNormalization.errors,
+          ...aggregateBoundsErrors,
+          ...aggregateStatusErrors
+        ].slice(0, 32),
         partialOrFallbackWindowEvents: partialWindowEventCount,
         partialOrFallbackEventsThroughWindowEnd: partialEvidenceEventCount,
         lifecycleCriticalPartialWindowEvents: criticalPartialWindowEventCount,
@@ -219,7 +316,7 @@ function analyzeTrace (trace, startEpochMs, endEpochMs, tracePath = null) {
       drop: {
         ok: dropOk,
         sourceDroppedEvents,
-        analyzerDroppedRecords: normalization.droppedRecords
+        analyzerDroppedRecords
       },
       bundleBalanced,
       formalEvidenceReady: traceComplete && sourceExitCodeOk && windowCovered && parseOk && dropOk && bundleBalanced
@@ -265,6 +362,196 @@ function normalizeEvents (events) {
     })
   }
   return { events: normalized, errors, droppedRecords }
+}
+
+function normalizePacketCountSeries (rawSeries) {
+  const buckets = []
+  const errors = []
+  const packetNames = new Set()
+  let droppedRecords = 0
+  let sourceBucketCount = 0
+  let aggregateEventCount = 0
+
+  if (rawSeries == null) {
+    return { buckets, errors, packetNames, droppedRecords, sourceBucketCount }
+  }
+  if (typeof rawSeries !== 'object' || Array.isArray(rawSeries)) {
+    return {
+      buckets,
+      errors: [{ message: 'packetCountSeries must be an object keyed by packet name' }],
+      packetNames,
+      droppedRecords: 1,
+      sourceBucketCount
+    }
+  }
+
+  for (const [packetName, rawBuckets] of Object.entries(rawSeries)) {
+    if (!/^[a-z0-9_-]+$/.test(packetName)) {
+      errors.push({ packetName, message: 'aggregate packet name is invalid' })
+      droppedRecords += Array.isArray(rawBuckets) ? rawBuckets.length : 1
+      sourceBucketCount += Array.isArray(rawBuckets) ? rawBuckets.length : 0
+      continue
+    }
+    packetNames.add(packetName)
+    if (!Array.isArray(rawBuckets)) {
+      errors.push({ packetName, message: 'aggregate packet series must be an array' })
+      droppedRecords++
+      continue
+    }
+    const kind = normalizeKind(null, packetName)
+    if (kind !== 'entity') {
+      errors.push({ packetName, message: `aggregate capture cannot retain ${kind} lifecycle identity` })
+      droppedRecords += rawBuckets.length
+      sourceBucketCount += rawBuckets.length
+      continue
+    }
+    const seenEpochs = new Set()
+    for (let index = 0; index < rawBuckets.length; index++) {
+      sourceBucketCount++
+      const raw = rawBuckets[index]
+      if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+        errors.push({ packetName, sourceIndex: index, message: 'aggregate bucket must be an object' })
+        droppedRecords++
+        continue
+      }
+      const epochMs = optionalFiniteNumber(raw.epochMs)
+      const count = optionalPositiveInteger(raw.count)
+      if (!Number.isSafeInteger(epochMs) || epochMs < 0) {
+        errors.push({ packetName, sourceIndex: index, message: 'aggregate bucket epochMs must be a non-negative safe integer' })
+        droppedRecords++
+        continue
+      }
+      if (count == null) {
+        errors.push({ packetName, sourceIndex: index, message: 'aggregate bucket count must be a positive safe integer' })
+        droppedRecords++
+        continue
+      }
+      if (seenEpochs.has(epochMs)) {
+        errors.push({ packetName, sourceIndex: index, message: `duplicate aggregate bucket epochMs: ${epochMs}` })
+        droppedRecords++
+        continue
+      }
+      if (!Number.isSafeInteger(aggregateEventCount + count)) {
+        errors.push({ packetName, sourceIndex: index, message: 'aggregate event total exceeds the safe integer range' })
+        droppedRecords++
+        continue
+      }
+      seenEpochs.add(epochMs)
+      aggregateEventCount += count
+      buckets.push({ packetName, kind, epochMs, count })
+    }
+  }
+  return { buckets, errors, packetNames, droppedRecords, sourceBucketCount }
+}
+
+function normalizePacketNameAllowlist (raw, fieldName) {
+  if (raw == null) return { names: null, errors: [] }
+  if (!Array.isArray(raw)) {
+    return { names: null, errors: [{ message: `${fieldName} must be an array or null` }] }
+  }
+  const names = []
+  const errors = []
+  const seen = new Set()
+  for (let index = 0; index < raw.length; index++) {
+    const name = typeof raw[index] === 'string' ? raw[index] : ''
+    if (!/^[a-z0-9_-]+$/.test(name)) {
+      errors.push({ sourceIndex: index, message: `${fieldName} contains an invalid packet name` })
+      continue
+    }
+    if (seen.has(name)) {
+      errors.push({ sourceIndex: index, message: `${fieldName} contains duplicate packet name: ${name}` })
+      continue
+    }
+    seen.add(name)
+    names.push(name)
+  }
+  if (names.length === 0) errors.push({ message: `${fieldName} must not be empty` })
+  return { names: names.sort(), errors }
+}
+
+function validateTraceProvenance (events, aggregatePacketNames, captureNames, aggregateNames) {
+  const errors = []
+  const capture = captureNames == null ? null : new Set(captureNames)
+  const aggregate = aggregateNames == null ? null : new Set(aggregateNames)
+
+  if (capture != null && aggregate != null) {
+    for (const packetName of capture) {
+      if (aggregate.has(packetName)) {
+        errors.push({ packetName, message: 'capture and aggregate packet allowlists overlap' })
+      }
+    }
+  }
+  for (const event of events) {
+    const packetName = event.packetName.toLowerCase()
+    if (capture != null && !capture.has(packetName)) {
+      errors.push({ sourceIndex: event.sourceIndex, packetName, message: 'raw event is outside capturePacketAllowlist' })
+    }
+    if (aggregate != null && aggregate.has(packetName)) {
+      errors.push({ sourceIndex: event.sourceIndex, packetName, message: 'aggregate packet was retained as a raw event' })
+    }
+  }
+  for (const packetName of aggregatePacketNames) {
+    if (aggregate == null || !aggregate.has(packetName)) {
+      errors.push({ packetName, message: 'packetCountSeries key is outside aggregatePacketAllowlist' })
+    }
+  }
+  return errors
+}
+
+function validateAggregateBounds (buckets, traceStartEpochMs, traceEndEpochMs) {
+  if (traceStartEpochMs == null || traceEndEpochMs == null) return []
+  const errors = []
+  for (const bucket of buckets) {
+    if (bucket.epochMs < traceStartEpochMs || bucket.epochMs > traceEndEpochMs) {
+      errors.push({
+        packetName: bucket.packetName,
+        epochMs: bucket.epochMs,
+        message: 'aggregate bucket is outside trace startedEpochMs/endedEpochMs'
+      })
+    }
+  }
+  return errors
+}
+
+function validateSourceAccounting (status, sourceEventCount, sourceAggregatedEventCount) {
+  if (status.observedEvents == null) return []
+  const errors = []
+  const values = {}
+  for (const field of ['observedEvents', 'capturedEvents', 'droppedEvents', 'parseErrorCount']) {
+    values[field] = optionalNonNegativeInteger(status[field])
+    if (values[field] == null) errors.push({ message: `status.${field} must be a non-negative safe integer` })
+  }
+  values.filteredEvents = status.filteredEvents == null
+    ? 0
+    : optionalNonNegativeInteger(status.filteredEvents)
+  if (values.filteredEvents == null) {
+    errors.push({ message: 'status.filteredEvents must be a non-negative safe integer' })
+  }
+  values.aggregatedEvents = status.aggregatedEvents == null
+    ? 0
+    : optionalNonNegativeInteger(status.aggregatedEvents)
+  if (values.aggregatedEvents == null) {
+    errors.push({ message: 'status.aggregatedEvents must be a non-negative safe integer' })
+  }
+  if (errors.length > 0) return errors
+  if (values.capturedEvents !== sourceEventCount) {
+    errors.push({
+      message: `status.capturedEvents ${values.capturedEvents} does not match events length ${sourceEventCount}`
+    })
+  }
+  if (values.aggregatedEvents !== sourceAggregatedEventCount) {
+    errors.push({
+      message: `status.aggregatedEvents ${values.aggregatedEvents} does not match aggregate total ${sourceAggregatedEventCount}`
+    })
+  }
+  const categorized = values.filteredEvents + values.capturedEvents + values.droppedEvents +
+    values.parseErrorCount + values.aggregatedEvents
+  if (!Number.isSafeInteger(categorized) || categorized !== values.observedEvents) {
+    errors.push({
+      message: `status.observedEvents ${values.observedEvents} does not match categorized total ${categorized}`
+    })
+  }
+  return errors
 }
 
 function countParseStatuses (events) {
@@ -500,6 +787,17 @@ function nonNegativeInteger (value, fallback) {
   return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : fallback
 }
 
+function optionalNonNegativeInteger (value) {
+  if (value == null || value === '') return null
+  const numeric = Number(value)
+  return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : null
+}
+
+function optionalPositiveInteger (value) {
+  const numeric = optionalNonNegativeInteger(value)
+  return numeric != null && numeric > 0 ? numeric : null
+}
+
 function requiredOption (value, name) {
   if (value == null || value === '') throw new Error(`${name} is required`)
   return value
@@ -542,15 +840,40 @@ function runSelfTest () {
     producer: 'self-test',
     clientVersion: '26.2',
     direction: 'clientbound',
+    capturePacketAllowlist: [
+      'bundle_delimiter',
+      'destroy_entities',
+      'entity_destroy',
+      'entity_future_shape',
+      'remove_entities',
+      'spawn_entity'
+    ],
+    aggregatePacketAllowlist: ['entity_metadata'],
+    packetCountSeriesResolutionMs: 1,
+    packetCountSeriesTimestampSource: 'Date.now',
+    packetCountSeriesTimestampSemantics: 'point-observation',
     startedEpochMs: 900,
     endedEpochMs: 2200,
     status: {
       complete: true,
       requestedExitCode: 0,
+      observedEvents: 43,
+      filteredEvents: 0,
+      capturedEvents: 15,
+      aggregatedEvents: 28,
       droppedEvents: 0,
       parseErrorCount: 0,
       parseErrors: [],
       openBundleAtEnd: false
+    },
+    packetCountSeries: {
+      entity_metadata: [
+        { epochMs: 999, count: 2 },
+        { epochMs: 1000, count: 3 },
+        { epochMs: 1500, count: 5 },
+        { epochMs: 1999, count: 7 },
+        { epochMs: 2000, count: 11 }
+      ]
     },
     events: [
       event(950, 'spawn_entity', 'spawn', [99], 10),
@@ -572,8 +895,29 @@ function runSelfTest () {
   }
 
   const result = analyzeTrace(trace, 1000, 2000, '<self-test>')
+  assertDeepEqual(
+    result.input.capturePacketAllowlist,
+    [
+      'bundle_delimiter',
+      'destroy_entities',
+      'entity_destroy',
+      'entity_future_shape',
+      'remove_entities',
+      'spawn_entity'
+    ],
+    'capture packet allowlist provenance'
+  )
+  assertDeepEqual(
+    result.input.aggregatePacketAllowlist,
+    ['entity_metadata'],
+    'aggregate packet allowlist provenance'
+  )
   assertEqual(result.traceCoverage.windowEventCount, 12, 'half-open window event count')
+  assertEqual(result.traceCoverage.windowAggregateBucketCount, 3, 'half-open aggregate bucket count')
+  assertEqual(result.traceCoverage.windowAggregatedEventCount, 15, 'half-open aggregate event count')
   assertEqual(result.counts.byPacket.spawn_entity, 6, 'spawn packet count')
+  assertEqual(result.counts.byPacket.entity_metadata, 15, 'aggregate metadata packet count')
+  assertEqual(result.counts.byKind.entity, 16, 'combined generic entity packet count')
   assertEqual(result.counts.spawnByEntityType['11'], 4, 'numeric entity type count')
   assertEqual(result.identity.spawn.observations, 6, 'spawn id observations')
   assertEqual(result.identity.spawn.uniqueIdCount, 4, 'spawn unique ids')
@@ -597,6 +941,61 @@ function runSelfTest () {
   assertEqual(malformedResult.status.drop.analyzerDroppedRecords, 1, 'malformed record drop count')
   assertEqual(malformedResult.status.parse.ok, false, 'malformed parse status')
   assertEqual(malformedResult.status.formalEvidenceReady, false, 'malformed evidence readiness')
+
+  const malformedAggregate = JSON.parse(JSON.stringify(trace))
+  malformedAggregate.packetCountSeries.entity_metadata.push({ epochMs: 1700, count: 0 })
+  const malformedAggregateResult = analyzeTrace(malformedAggregate, 1000, 2000)
+  assertEqual(malformedAggregateResult.status.drop.analyzerDroppedRecords, 1, 'malformed aggregate drop count')
+  assertEqual(malformedAggregateResult.status.parse.aggregateAnalyzerErrorCount, 1, 'malformed aggregate error count')
+  assertEqual(malformedAggregateResult.status.formalEvidenceReady, false, 'malformed aggregate evidence readiness')
+
+  const unauthorized = JSON.parse(JSON.stringify(trace))
+  unauthorized.capturePacketAllowlist = ['spawn_entity']
+  const unauthorizedResult = analyzeTrace(unauthorized, 1000, 2000)
+  assertEqual(unauthorizedResult.status.formalEvidenceReady, false, 'allowlist provenance enforcement')
+
+  const overlap = JSON.parse(JSON.stringify(trace))
+  overlap.aggregatePacketAllowlist.push('spawn_entity')
+  const overlapResult = analyzeTrace(overlap, 1000, 2000)
+  assertEqual(overlapResult.status.formalEvidenceReady, false, 'allowlist overlap enforcement')
+
+  const totalMismatch = JSON.parse(JSON.stringify(trace))
+  totalMismatch.status.aggregatedEvents++
+  totalMismatch.status.observedEvents++
+  const totalMismatchResult = analyzeTrace(totalMismatch, 1000, 2000)
+  assertEqual(totalMismatchResult.status.formalEvidenceReady, false, 'aggregate total enforcement')
+
+  const duplicateBucket = JSON.parse(JSON.stringify(trace))
+  duplicateBucket.packetCountSeries.entity_metadata.push({ epochMs: 1500, count: 1 })
+  const duplicateBucketResult = analyzeTrace(duplicateBucket, 1000, 2000)
+  assertEqual(duplicateBucketResult.status.formalEvidenceReady, false, 'aggregate bucket uniqueness')
+
+  const outOfBoundsBucket = JSON.parse(JSON.stringify(trace))
+  outOfBoundsBucket.packetCountSeries.entity_metadata.push({ epochMs: 899, count: 1 })
+  outOfBoundsBucket.status.aggregatedEvents++
+  outOfBoundsBucket.status.observedEvents++
+  const outOfBoundsBucketResult = analyzeTrace(outOfBoundsBucket, 1000, 2000)
+  assertEqual(outOfBoundsBucketResult.status.formalEvidenceReady, false, 'aggregate trace bounds')
+
+  const lifecycleAggregate = JSON.parse(JSON.stringify(trace))
+  lifecycleAggregate.aggregatePacketAllowlist.push('spawn_entity_aggregate')
+  lifecycleAggregate.packetCountSeries.spawn_entity = [{ epochMs: 1500, count: 1 }]
+  lifecycleAggregate.status.aggregatedEvents++
+  lifecycleAggregate.status.observedEvents++
+  const lifecycleAggregateResult = analyzeTrace(lifecycleAggregate, 1000, 2000)
+  assertEqual(lifecycleAggregateResult.status.formalEvidenceReady, false, 'lifecycle aggregate rejection')
+
+  const legacyTrace = JSON.parse(JSON.stringify(trace))
+  delete legacyTrace.aggregatePacketAllowlist
+  delete legacyTrace.packetCountSeries
+  delete legacyTrace.packetCountSeriesResolutionMs
+  delete legacyTrace.packetCountSeriesTimestampSource
+  delete legacyTrace.packetCountSeriesTimestampSemantics
+  delete legacyTrace.status.aggregatedEvents
+  delete legacyTrace.status.filteredEvents
+  legacyTrace.status.observedEvents = 15
+  const legacyResult = analyzeTrace(legacyTrace, 1000, 2000)
+  assertEqual(legacyResult.status.formalEvidenceReady, true, 'legacy trace compatibility')
 
   const secondsWindow = resolveWindow({ windowStartEpochSeconds: '1', windowEndEpochSeconds: '2' })
   assertDeepEqual(secondsWindow, { startEpochMs: 1000, endEpochMs: 2000 }, 'second window conversion')

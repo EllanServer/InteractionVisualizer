@@ -79,6 +79,18 @@ val benchmarkSourceSet = sourceSets.create("benchmark") {
     runtimeClasspath += output + compileClasspath
 }
 
+val runtimeComparisonSourceSet = sourceSets.create("runtimeComparison") {
+    java.setSrcDirs(listOf("benchmark-runtime/src/main/java"))
+    resources.setSrcDirs(listOf("benchmark-runtime/src/main/resources"))
+    compileClasspath += configurations.compileClasspath.get()
+    runtimeClasspath += output + compileClasspath
+}
+
+sourceSets.test {
+    compileClasspath += runtimeComparisonSourceSet.output
+    runtimeClasspath += runtimeComparisonSourceSet.output
+}
+
 val benchmarkJar = tasks.register<Jar>("benchmarkJar") {
     description = "Builds the standalone Paper A/B benchmark plugin (never shipped in production)."
     group = LifecycleBasePlugin.VERIFICATION_GROUP
@@ -88,6 +100,14 @@ val benchmarkJar = tasks.register<Jar>("benchmarkJar") {
     from(sourceSets.main.get().output) {
         include("com/loohp/interactionvisualizer/entities/DroppedItemSpatialIndex*.class")
     }
+}
+
+val runtimeComparisonJar = tasks.register<Jar>("runtimeComparisonJar") {
+    description = "Builds the target-independent Paper runtime comparison driver."
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    dependsOn(runtimeComparisonSourceSet.classesTaskName)
+    archiveClassifier = "runtime-compare"
+    from(runtimeComparisonSourceSet.output)
 }
 
 tasks.withType<JavaCompile>().configureEach {
@@ -237,6 +257,7 @@ tasks.check {
     dependsOn(verifyPaperOnlyArchitecture)
     dependsOn(verifyCustomContentIsolation)
     dependsOn(testLegacyTextComponentCacheDisabled)
+    dependsOn(runtimeComparisonJar)
 }
 
 tasks.named<ShadowJar>("shadowJar") {

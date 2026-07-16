@@ -433,7 +433,7 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
 
         Map<String, Object> map = beenestMap.get(block);
 
-        org.bukkit.block.Beehive beehiveState = (org.bukkit.block.Beehive) block.getState();
+        org.bukkit.block.Beehive beehiveState = (org.bukkit.block.Beehive) block.getState(false);
         org.bukkit.block.data.type.Beehive beehiveData = (org.bukkit.block.data.type.Beehive) block.getBlockData();
 
         {
@@ -468,7 +468,7 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
 
     public Map<String, DisplayEntity> spawnDisplayEntitys(Block block) {
         Map<String, DisplayEntity> map = new HashMap<>();
-        BlockData blockData = block.getState().getBlockData();
+        BlockData blockData = block.getBlockData();
         BlockFace facing = ((Directional) blockData).getFacing();
 
         Location loc0 = labelLocation(block.getLocation(), facing, 0.25);

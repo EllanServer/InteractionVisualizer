@@ -80,6 +80,11 @@ public class PlayerLocationManager {
         return player.getEyeLocation();
     }
 
+    /** Releases per-world snapshots retained by the previous plugin lifecycle. */
+    public static void clearCache() {
+        PLAYER_CHUNKS.clear();
+    }
+
     public static Collection<Player> filterOutOfRange(Collection<Player> players, VisualizerEntity entity) {
         return filterOutOfRange(players, entity.getLocation());
     }
