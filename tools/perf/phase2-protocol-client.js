@@ -36,6 +36,10 @@ assertDisjointPacketAllowlists(
   protocolTraceAggregatePacketAllowlist
 )
 const readyTimeoutMs = parseInteger(process.env.PHASE2_CLIENT_READY_TIMEOUT_MS, 120000)
+const keepAliveTimeoutMs = parsePositiveInteger(
+  process.env.PHASE2_CLIENT_KEEPALIVE_TIMEOUT_MS,
+  120000
+)
 
 let ending = false
 let exitCode = 0
@@ -85,7 +89,7 @@ const client = minecraftProtocol.createClient({
   version,
   auth: 'offline',
   keepAlive: true,
-  checkTimeoutInterval: 120000,
+  checkTimeoutInterval: keepAliveTimeoutMs,
   hideErrors: false
 })
 
@@ -243,6 +247,10 @@ function finishStop () {
     clearTimeout(bundleDrainTimeout)
     bundleDrainTimeout = null
   }
+  // Record a completed local shutdown before asking the saturated server to
+  // acknowledge the socket close. The forced-exit fallback must not leave a
+  // stale play-state snapshot after an otherwise valid measurement.
+  writeState('stopped', { reason: 'client-stop-requested' })
   client.end('phase2 validation complete')
   setTimeout(() => exitAfterTrace(0, 'stop-timeout'), 2000).unref()
 }
@@ -490,6 +498,7 @@ function flushProtocolTrace (reason, requestedExitCode) {
     producer: 'phase2-protocol-client',
     direction: 'clientbound',
     clientVersion: version,
+    keepAliveTimeoutMs,
     capturePacketAllowlist: protocolTracePacketAllowlist == null
       ? null
       : [...protocolTracePacketAllowlist].sort(),
@@ -576,6 +585,7 @@ function stateSnapshot (phase, extra = {}) {
     port,
     username,
     version,
+    keepAliveTimeoutMs,
     loginSeen,
     positionSeen,
     chunkSeen,

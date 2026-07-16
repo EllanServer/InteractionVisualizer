@@ -283,6 +283,7 @@ jobs:
                 'preflightWarmup=10' 'preflightSettle=5' 'preflightMeasure=10' \
                 'paper=26.1.2-74' 'client=26.1.2' \
                 'networkTimeoutSeconds=300' \
+                'protocolClientKeepAliveTimeoutMs=300000' \
                 "availableCpuCount=$available_cpu_count" \
                 "serverCpuSet=$server_cpu_set" \
                 "clientCpuSet=$client_cpu_set"
@@ -343,6 +344,7 @@ jobs:
               "settleSeconds": int(settle),
               "measureSeconds": int(measure),
               "networkTimeoutSeconds": 300,
+              "protocolClientKeepAliveTimeoutMs": 300000,
               "runtimeProfile": runtime_profile,
               "samplingMode": "independent-runners",
               "requestedFlags": {
@@ -851,6 +853,7 @@ jobs:
               "runtimeProfile": "optimized-candidate",
               "samplingMode": "independent-runners",
               "networkTimeoutSeconds": 300,
+              "protocolClientKeepAliveTimeoutMs": 300000,
           }
           for field, value in expected.items():
               if data.get(field) != value:

@@ -424,6 +424,7 @@ env \
   "PHASE2_SERVER_PORT=$server_port" \
   PHASE2_CLIENT_USERNAME=IVBench \
   PHASE2_CLIENT_VERSION=26.1.2 \
+  "PHASE2_CLIENT_KEEPALIVE_TIMEOUT_MS=$((network_timeout_seconds * 1000))" \
   "PHASE2_CLIENT_READY_FILE=$client_ready" \
   "PHASE2_CLIENT_STATE_FILE=$client_state" \
   "${protocol_trace_environment[@]}" \
@@ -727,6 +728,10 @@ import sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 if state.get("phase") != "stopped":
     raise SystemExit(f"protocol client final phase is not stopped: {state.get('phase')!r}")
+if state.get("keepAliveTimeoutMs") != 300000:
+    raise SystemExit(
+        f"protocol client keepalive timeout drifted: {state.get('keepAliveTimeoutMs')!r}"
+    )
 for field in ("loginSeen", "positionSeen", "chunkSeen", "playerLoadedSent"):
     if state.get(field) is not True:
         raise SystemExit(f"protocol client lost required ready state: {field}")
