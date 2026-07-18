@@ -42,6 +42,7 @@ public final class PerformanceMetrics implements Listener {
     private String label = "";
     private boolean configStaticAnchor;
     private boolean configPacketOnlyStatic;
+    private boolean configHideIfViewObstructed;
     private boolean configVisibilityRateLimit;
     private int configVisibilityBucketSize;
     private int configVisibilityRestorePerTick;
@@ -69,6 +70,11 @@ public final class PerformanceMetrics implements Listener {
     private long virtualViewerChecks;
     private long visibilityShowsQueued;
     private long visibilityShowsDrained;
+    private long viewerFullReconciles;
+    private long viewerCandidates;
+    private long craftEngineCullingCandidates;
+    private long craftEngineCullingShowDecisions;
+    private long craftEngineCullingHideDecisions;
     private long itemAnimationNanos;
     private long droppedItemNanos;
     private long blockUpdateChecks;
@@ -101,6 +107,8 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.label = sanitizeLabel(requestedLabel);
         INSTANCE.configStaticAnchor = InteractionVisualizer.staticVirtualItemAnchorsDuringAnimation;
         INSTANCE.configPacketOnlyStatic = InteractionVisualizer.packetOnlyStaticVirtualItems;
+        INSTANCE.configHideIfViewObstructed = InteractionVisualizer.hideIfObstructed
+                && InteractionVisualizer.viewerCullingManager.enabled();
         INSTANCE.configVisibilityRateLimit = InteractionVisualizer.visibilityRateLimiting;
         INSTANCE.configVisibilityBucketSize = InteractionVisualizer.visibilityRateLimitBucketSize;
         INSTANCE.configVisibilityRestorePerTick = InteractionVisualizer.visibilityRateLimitRestorePerTick;
@@ -126,6 +134,11 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.virtualViewerChecks = 0;
         INSTANCE.visibilityShowsQueued = 0;
         INSTANCE.visibilityShowsDrained = 0;
+        INSTANCE.viewerFullReconciles = 0;
+        INSTANCE.viewerCandidates = 0;
+        INSTANCE.craftEngineCullingCandidates = 0;
+        INSTANCE.craftEngineCullingShowDecisions = 0;
+        INSTANCE.craftEngineCullingHideDecisions = 0;
         INSTANCE.itemAnimationNanos = 0;
         INSTANCE.droppedItemNanos = 0;
         INSTANCE.blockUpdateChecks = 0;
@@ -249,6 +262,29 @@ public final class PerformanceMetrics implements Listener {
         }
     }
 
+    public static void viewerReconcile(int candidates) {
+        if (INSTANCE.collecting) {
+            INSTANCE.viewerFullReconciles++;
+            INSTANCE.viewerCandidates += candidates;
+        }
+    }
+
+    public static void craftEngineCullingCandidate() {
+        if (INSTANCE.collecting) {
+            INSTANCE.craftEngineCullingCandidates++;
+        }
+    }
+
+    public static void craftEngineCullingDecision(boolean visible) {
+        if (INSTANCE.collecting) {
+            if (visible) {
+                INSTANCE.craftEngineCullingShowDecisions++;
+            } else {
+                INSTANCE.craftEngineCullingHideDecisions++;
+            }
+        }
+    }
+
     public static void itemAnimationNanos(long nanos) {
         if (INSTANCE.collecting) {
             INSTANCE.itemAnimationNanos += nanos;
@@ -299,7 +335,9 @@ public final class PerformanceMetrics implements Listener {
         }
         mean = samples == 0 ? 0.0D : mean / samples;
         long elapsedNanos = Math.max(1L, System.nanoTime() - startedNanos);
-        return new Snapshot(label, configStaticAnchor, configPacketOnlyStatic, configVisibilityRateLimit,
+        int retainedCullingRegistrations = InteractionVisualizer.viewerCullingManager.retainedRegistrations();
+        return new Snapshot(label, configStaticAnchor, configPacketOnlyStatic, configHideIfViewObstructed,
+                configVisibilityRateLimit,
                 configVisibilityBucketSize, configVisibilityRestorePerTick, configDroppedLabelVisibility,
                 configEventDrivenBlockUpdates,
                 configBlockUpdateMaxDirtyPerTick, LegacyTextComponentCache.isEnabled(),
@@ -313,6 +351,9 @@ public final class PerformanceMetrics implements Listener {
                 virtualPickupPackets, bukkitEntitySpawns, bukkitEntityRemoves, bukkitEntityTeleports,
                 bukkitShowCalls, bukkitHideCalls, displaySyncs, itemSyncs, packetOnlyItemSyncs,
                 virtualViewerChecks, visibilityShowsQueued, visibilityShowsDrained,
+                viewerFullReconciles, viewerCandidates, craftEngineCullingCandidates,
+                craftEngineCullingShowDecisions, craftEngineCullingHideDecisions,
+                retainedCullingRegistrations,
                 itemAnimationNanos, droppedItemNanos, blockUpdateChecks, blockUpdateNanos,
                 textCache.requests(), textCache.misses(), textCache.sameRawFastPaths());
     }
@@ -345,6 +386,7 @@ public final class PerformanceMetrics implements Listener {
             String label,
             boolean staticAnchorDuringAnimation,
             boolean packetOnlyStatic,
+            boolean hideIfViewObstructed,
             boolean visibilityRateLimit,
             int visibilityBucketSize,
             int visibilityRestorePerTick,
@@ -382,6 +424,12 @@ public final class PerformanceMetrics implements Listener {
             long virtualViewerChecks,
             long visibilityShowsQueued,
             long visibilityShowsDrained,
+            long viewerFullReconciles,
+            long viewerCandidates,
+            long craftEngineCullingCandidates,
+            long craftEngineCullingShowDecisions,
+            long craftEngineCullingHideDecisions,
+            int craftEngineCullingRetainedRegistrations,
             long itemAnimationNanos,
             long droppedItemNanos,
             long blockUpdateChecks,
@@ -418,8 +466,9 @@ public final class PerformanceMetrics implements Listener {
 
         public String summary() {
             return String.format(Locale.ROOT,
-                    "label=%s modes=%s/%s/%s/%s textCache=%s/%.1f%% samples=%d tps=%.3f p50/p95/p99=%.3f/%.3f/%.3fms virtualPackets=%d anchors=%d/%d/%d",
-                    label, staticAnchorDuringAnimation, packetOnlyStatic, visibilityRateLimit,
+                    "label=%s modes=%s/%s/%s/%s/%s textCache=%s/%.1f%% samples=%d tps=%.3f p50/p95/p99=%.3f/%.3f/%.3fms virtualPackets=%d anchors=%d/%d/%d",
+                    label, staticAnchorDuringAnimation, packetOnlyStatic, hideIfViewObstructed,
+                    visibilityRateLimit,
                     eventDrivenBlockUpdates, legacyTextComponentCache, legacyTextCacheHitRate() * 100.0D,
                     tickSamples, observedTps(), msptP50, msptP95, msptP99, knownVirtualPackets(),
                     bukkitEntitySpawns, bukkitEntityTeleports, bukkitEntityRemoves);
@@ -428,7 +477,8 @@ public final class PerformanceMetrics implements Listener {
         public String json() {
             return String.format(Locale.ROOT,
                     "{\"label\":\"%s\",\"staticAnchorDuringAnimation\":%b," +
-                            "\"packetOnlyStatic\":%b,\"visibilityRateLimit\":%b," +
+                            "\"packetOnlyStatic\":%b,\"hideIfViewObstructed\":%b," +
+                            "\"visibilityRateLimit\":%b," +
                             "\"visibilityBucketSize\":%d,\"visibilityRestorePerTick\":%d," +
                             "\"droppedLabelVisibilityCulling\":%b,\"droppedLabelViewDistance\":%d," +
                             "\"droppedLabelVisibilityRateLimit\":%b," +
@@ -451,12 +501,18 @@ public final class PerformanceMetrics implements Listener {
                             "\"bukkitHideCalls\":%d,\"displaySyncs\":%d,\"itemSyncs\":%d," +
                             "\"packetOnlyItemSyncs\":%d,\"virtualViewerChecks\":%d," +
                             "\"visibilityShowsQueued\":%d,\"visibilityShowsDrained\":%d," +
+                            "\"viewerFullReconciles\":%d,\"viewerCandidates\":%d," +
+                            "\"craftEngineCullingCandidates\":%d," +
+                            "\"craftEngineCullingShowDecisions\":%d," +
+                            "\"craftEngineCullingHideDecisions\":%d," +
+                            "\"craftEngineCullingRetainedRegistrations\":%d," +
                             "\"itemAnimationMs\":%.6f,\"droppedItemMs\":%.6f," +
                             "\"blockUpdateChecks\":%d,\"blockUpdateMs\":%.6f," +
                             "\"legacyTextCacheRequests\":%d,\"legacyTextCacheMisses\":%d," +
                             "\"legacyTextCacheHits\":%d,\"legacyTextCacheHitRate\":%.6f," +
                             "\"legacyTextSameRawFastPaths\":%d}",
-                    label, staticAnchorDuringAnimation, packetOnlyStatic, visibilityRateLimit,
+                    label, staticAnchorDuringAnimation, packetOnlyStatic, hideIfViewObstructed,
+                    visibilityRateLimit,
                     visibilityBucketSize, visibilityRestorePerTick,
                     droppedLabelVisibility.cullingEnabled(), droppedLabelVisibility.viewDistance(),
                     droppedLabelVisibility.rateLimitEnabled(), droppedLabelVisibility.bucketSize(),
@@ -470,6 +526,9 @@ public final class PerformanceMetrics implements Listener {
                     knownVirtualPackets(), bukkitEntitySpawns, bukkitEntityRemoves, bukkitEntityTeleports,
                     bukkitShowCalls, bukkitHideCalls, displaySyncs, itemSyncs, packetOnlyItemSyncs,
                     virtualViewerChecks, visibilityShowsQueued, visibilityShowsDrained,
+                    viewerFullReconciles, viewerCandidates, craftEngineCullingCandidates,
+                    craftEngineCullingShowDecisions, craftEngineCullingHideDecisions,
+                    craftEngineCullingRetainedRegistrations,
                     itemAnimationNanos / 1_000_000.0D, droppedItemNanos / 1_000_000.0D,
                     blockUpdateChecks, blockUpdateNanos / 1_000_000.0D,
                     legacyTextCacheRequests, legacyTextCacheMisses, legacyTextCacheHits(),

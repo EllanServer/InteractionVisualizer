@@ -70,8 +70,10 @@ against Paper 26.2.
   overridden in `material.yml` under `CustomItems`. It also supplies display
   lighting: InteractionVisualizer shares its light-block reference counts so
   CraftEngine furniture and IV displays do not remove each other's light, and
-  performs no lighting task while idle. CraftEngine is not bundled and the
-  plugin behaves exactly as before when it is absent.
+  performs no lighting task while idle. With `Settings.HideIfViewObstructed`,
+  IV registers only its sent-chunk candidates in CraftEngine's entity-culling
+  API for a second-stage ray-traced wall-occlusion check. CraftEngine is not
+  bundled and the plugin behaves exactly as before when it is absent.
 - [OpenInv](https://dev.bukkit.org/projects/openinv)
 - [PlaceholderAPI](https://www.spigotmc.org/resources/placeholderapi.6245/)
 - Essentials, SuperVanish, PremiumVanish, and CMI

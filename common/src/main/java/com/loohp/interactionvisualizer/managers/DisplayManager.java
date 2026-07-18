@@ -21,6 +21,8 @@ import com.loohp.interactionvisualizer.entityholders.ItemFrame;
 import com.loohp.interactionvisualizer.entityholders.VisualizerEntity;
 import com.loohp.interactionvisualizer.integration.packet.ClientPickupAnimationBridge;
 import com.loohp.interactionvisualizer.integration.packet.ClientTextDisplayBridge;
+import com.loohp.interactionvisualizer.integration.CullingBounds;
+import com.loohp.interactionvisualizer.integration.ViewerCullingManager;
 import com.loohp.interactionvisualizer.objectholders.SynchronizedFilteredCollection;
 import com.loohp.interactionvisualizer.utils.DisplayTransformFactory;
 import io.papermc.paper.event.packet.PlayerChunkLoadEvent;
@@ -97,6 +99,7 @@ public final class DisplayManager implements Listener {
     private static final Set<VisualizerEntity> forceScheduled = ConcurrentHashMap.newKeySet();
     private static final Map<UUID, VisualizerEntity> logicalByActualUuid = new ConcurrentHashMap<>();
     private static final Map<VisualizerEntity, UUID> actualUuidByLogical = new ConcurrentHashMap<>();
+    private static final Map<UUID, VisualizerEntity> logicalById = new ConcurrentHashMap<>();
     private static final Map<ChunkKey, Set<VisualizerEntity>> logicalsByChunk = new ConcurrentHashMap<>();
     private static final Map<VisualizerEntity, ChunkKey> chunkByLogical = new ConcurrentHashMap<>();
     private static final ViewerChunkIndex<UUID, ChunkKey> viewerChunks = new ViewerChunkIndex<>();
@@ -213,6 +216,8 @@ public final class DisplayManager implements Listener {
 
     public static void shutdown() {
         Runnable cleanup = () -> {
+            InteractionVisualizer.viewerCullingManager.shutdown();
+            InteractionVisualizer.viewerCullingManager = ViewerCullingManager.DISABLED;
             // An asynchronous removal can leave active before its main-thread
             // cleanup task runs. Include every representation index so disable
             // and hot reload still destroy client-only IDs instead of leaving
@@ -236,6 +241,7 @@ public final class DisplayManager implements Listener {
             forceScheduled.clear();
             logicalByActualUuid.clear();
             actualUuidByLogical.clear();
+            logicalById.clear();
             logicalsByChunk.clear();
             chunkByLogical.clear();
             viewerChunks.clear();
@@ -401,6 +407,7 @@ public final class DisplayManager implements Listener {
     public static void removeAll(Player player) {
         runSync(() -> {
             UUID viewer = player.getUniqueId();
+            InteractionVisualizer.viewerCullingManager.clearViewer(viewer);
             clearVisibilityShowQueue(viewer);
             VirtualItemIdBuffer virtualItemIdsToRemove = new VirtualItemIdBuffer();
             Set<VisualizerEntity> shown = shownByViewer.remove(viewer);
@@ -469,9 +476,11 @@ public final class DisplayManager implements Listener {
                 try {
                     boolean forceSync = forceScheduled.remove(logical);
                     if (active.containsKey(logical)) {
+                        logicalById.put(logical.getUniqueId(), logical);
                         ChunkKey previousChunk = chunkByLogical.get(logical);
                         RepresentationKey previousRepresentation = representationKey(logical);
                         index(logical);
+                        updateCullingBounds(logical);
                         int revision = logical.cacheCode();
                         if (forceSync || (requiresActualEntity(logical) && logical.getBukkitEntity().isEmpty())
                                 || renderedRevision.getOrDefault(logical, Integer.MIN_VALUE) != revision) {
@@ -1128,6 +1137,7 @@ public final class DisplayManager implements Listener {
         }
         boolean chunkChanged = !animation.staticAnchor
                 && index(logical, world, destinationX, destinationZ);
+        updateCullingBounds(logical);
         if (chunkChanged) {
             reconcileViewers(logical);
         }
@@ -1678,6 +1688,7 @@ public final class DisplayManager implements Listener {
     }
 
     private static void clearViewerTracking(VisualizerEntity logical, org.bukkit.entity.Entity actual) {
+        InteractionVisualizer.viewerCullingManager.clearLogical(logical.getUniqueId());
         cancelVisibilityShows(logical);
         if (logical instanceof BillboardDisplayEntity billboard) {
             forgetDynamicEntity(billboard);
@@ -1726,6 +1737,59 @@ public final class DisplayManager implements Listener {
 
     private static boolean isViewerDesired(VisualizerEntity logical, Player player) {
         return isViewerRenderable(logical, player) && isViewerEnabledFor(logical, player);
+    }
+
+    private static boolean usesCraftEngineCulling(VisualizerEntity logical) {
+        // Per-viewer billboard paths move around their anchor and therefore do
+        // not have one shared AABB. Keep their exact existing visibility path.
+        return InteractionVisualizer.viewerCullingManager.enabled()
+                && !(logical instanceof BillboardDisplayEntity);
+    }
+
+    private static void updateCullingBounds(VisualizerEntity logical) {
+        if (!usesCraftEngineCulling(logical) || !active.containsKey(logical)) {
+            return;
+        }
+        InteractionVisualizer.viewerCullingManager.update(
+                logical.getUniqueId(), cullingBounds(logical));
+    }
+
+    private static CullingBounds cullingBounds(VisualizerEntity logical) {
+        double x;
+        double y;
+        double z;
+        if (logical instanceof Item item) {
+            ItemAnimationState animation = itemAnimations.get(item);
+            if (animation != null) {
+                x = animation.positionX;
+                y = animation.positionY;
+                z = animation.positionZ;
+            } else {
+                PacketItemPosition packetPosition = packetItemPositions.get(item);
+                if (packetPosition != null) {
+                    x = packetPosition.x;
+                    y = packetPosition.y;
+                    z = packetPosition.z;
+                } else {
+                    Location location = logical.getLocation();
+                    x = location.getX();
+                    y = location.getY();
+                    z = location.getZ();
+                }
+            }
+        } else {
+            Location location = logical.getLocation();
+            x = location.getX();
+            y = location.getY();
+            z = location.getZ();
+        }
+        double width = logical instanceof ItemFrame ? 0.75D
+                : logical instanceof Item ? 0.5D : 1.0D;
+        double height = Math.max(0.25D, logical.getHeight());
+        double halfWidth = width * 0.5D;
+        return new CullingBounds(x - halfWidth, y, z - halfWidth,
+                x + halfWidth, y + height, z + halfWidth,
+                0, 0.2D, true);
     }
 
     private static boolean isQueuedViewerStillRenderable(VisualizerEntity logical, Player player) {
@@ -2194,33 +2258,83 @@ public final class DisplayManager implements Listener {
     private static void reconcileViewers(VisualizerEntity logical) {
         ChunkKey key = chunkByLogical.get(logical);
         Set<UUID> candidates = key == null ? Set.of() : viewerChunks.viewers(key);
+        PerformanceMetrics.viewerReconcile(candidates.size());
+        ViewerCullingManager culling = InteractionVisualizer.viewerCullingManager;
         Set<UUID> shown = shownViewers.get(logical);
         if (shown != null) {
             for (UUID viewer : shown) {
                 Player player = Bukkit.getPlayer(viewer);
                 if (!candidates.contains(viewer) || player == null || !isViewerDesired(logical, player)) {
+                    culling.untrack(viewer, logical.getUniqueId());
                     hideViewer(logical, viewer, player);
                 }
             }
         }
+        Set<UUID> retainedCullViewers = usesCraftEngineCulling(logical)
+                ? new HashSet<>() : Set.of();
         for (UUID viewer : candidates) {
             Player player = Bukkit.getPlayer(viewer);
-            if (player != null) {
-                reconcileViewer(logical, player);
+            if (player != null && reconcileViewer(logical, player)) {
+                retainedCullViewers.add(viewer);
             }
         }
+        culling.retainLogical(logical.getUniqueId(), retainedCullViewers);
     }
 
-    private static void reconcileViewer(VisualizerEntity logical, Player player) {
+    /** Returns true when the optional culling backend owns this candidate. */
+    private static boolean reconcileViewer(VisualizerEntity logical, Player player) {
         UUID viewer = player.getUniqueId();
         if (!isViewerDesired(logical, player)) {
+            InteractionVisualizer.viewerCullingManager.untrack(viewer, logical.getUniqueId());
             hideViewer(logical, viewer, player);
-            return;
+            return false;
+        }
+        if (usesCraftEngineCulling(logical)) {
+            PerformanceMetrics.craftEngineCullingCandidate();
+            if (InteractionVisualizer.viewerCullingManager.track(
+                    player, logical.getUniqueId(), cullingBounds(logical))) {
+                return true;
+            }
         }
         Set<UUID> shown = shownViewers.get(logical);
         if (shown == null || !shown.contains(viewer)) {
             requestViewerShow(logical, player);
         }
+        return false;
+    }
+
+    /** Called on the main thread after CraftEngine's async decisions are coalesced. */
+    public static void onCullingVisibility(UUID viewer, UUID logicalId, boolean visible) {
+        PerformanceMetrics.craftEngineCullingDecision(visible);
+        runSync(() -> {
+            VisualizerEntity logical = logicalById.get(logicalId);
+            Player player = Bukkit.getPlayer(viewer);
+            if (logical == null || player == null || !player.isOnline()) {
+                InteractionVisualizer.viewerCullingManager.untrack(viewer, logicalId);
+                return;
+            }
+            if (!isViewerDesired(logical, player)) {
+                InteractionVisualizer.viewerCullingManager.untrack(viewer, logicalId);
+                hideViewer(logical, viewer, player);
+                return;
+            }
+            if (!InteractionVisualizer.viewerCullingManager.enabled()) {
+                requestViewerShow(logical, player);
+            } else if (visible) {
+                requestViewerShow(logical, player);
+            } else {
+                hideViewer(logical, viewer, player);
+            }
+        });
+    }
+
+    /** Rebuilds only sent-chunk candidates after the optional backend changes on reload. */
+    public static void onCullingBackendChanged() {
+        runSync(() -> {
+            for (VisualizerEntity logical : active.keySet()) {
+                reconcileViewers(logical);
+            }
+        });
     }
 
     private static void remove(Collection<Player> players, VisualizerEntity logical, boolean removeFromActive) {
@@ -2261,6 +2375,8 @@ public final class DisplayManager implements Listener {
 
     private static void clearRemovedLogicalState(VisualizerEntity logical) {
         active.remove(logical);
+        logicalById.remove(logical.getUniqueId(), logical);
+        InteractionVisualizer.viewerCullingManager.clearLogical(logical.getUniqueId());
         renderedRevision.remove(logical);
         forceScheduled.remove(logical);
         if (logical instanceof BillboardDisplayEntity billboard) {
@@ -2354,6 +2470,7 @@ public final class DisplayManager implements Listener {
     @EventHandler
     public void onLeave(PlayerQuitEvent event) {
         UUID uuid = event.getPlayer().getUniqueId();
+        InteractionVisualizer.viewerCullingManager.clearViewer(uuid);
         forgetDynamicViewer(uuid);
         clearVisibilityShowQueue(uuid);
         viewerChunks.removeViewer(uuid);
@@ -2378,7 +2495,9 @@ public final class DisplayManager implements Listener {
     }
 
     private static void resetViewerChunksAndSend(Player player) {
-        viewerChunks.removeViewer(player.getUniqueId());
+        UUID viewer = player.getUniqueId();
+        InteractionVisualizer.viewerCullingManager.clearViewer(viewer);
+        viewerChunks.removeViewer(viewer);
         Bukkit.getScheduler().runTask(plugin(), () -> {
             seedSentChunks(player);
             sendPlayerPackets(player);
@@ -2417,6 +2536,8 @@ public final class DisplayManager implements Listener {
         Player player = event.getPlayer();
         VirtualItemIdBuffer virtualItemIdsToRemove = new VirtualItemIdBuffer();
         for (VisualizerEntity logical : logicals) {
+            InteractionVisualizer.viewerCullingManager.untrack(
+                    player.getUniqueId(), logical.getUniqueId());
             if (logical instanceof Item item && packetOnlyItems.contains(item)) {
                 Integer id = forgetShownViewer(item, player.getUniqueId(), player);
                 if (id != null) {
@@ -2462,6 +2583,7 @@ public final class DisplayManager implements Listener {
         clearViewerTracking(logical);
         if (event.getCause() == EntityRemoveEvent.Cause.UNLOAD && movingItem) {
             active.remove(logical);
+            logicalById.remove(logical.getUniqueId(), logical);
             renderedRevision.remove(logical);
             unindex(logical);
             renderedItemStacks.remove((Item) logical);

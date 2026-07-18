@@ -205,21 +205,29 @@ val verifyCustomContentIsolation = tasks.register("verifyCustomContentIsolation"
         val allowedCraftEngineLightSource = file(
             "common/src/main/java/com/loohp/interactionvisualizer/integration/craftengine/CraftEngineLightManager.java",
         ).canonicalFile
+        val allowedCraftEngineCullingSource = file(
+            "common/src/main/java/com/loohp/interactionvisualizer/integration/craftengine/CraftEngineViewerCullingManager.java",
+        ).canonicalFile
         val managerSource = file(
             "common/src/main/java/com/loohp/interactionvisualizer/integration/CustomContentManager.java",
         ).canonicalFile
         val lightLoaderSource = file(
             "common/src/main/java/com/loohp/interactionvisualizer/managers/LightManager.java",
         ).canonicalFile
+        val cullingLoaderSource = file(
+            "common/src/main/java/com/loohp/interactionvisualizer/integration/ViewerCullingManagerLoader.java",
+        ).canonicalFile
         val stableApiClass = "net.momirealms.craftengine.bukkit.api.CraftEngineItems"
         val lightSentinelClass = "net.momirealms.craftengine.bukkit.api.BukkitAdaptor"
+        val cullingSentinelClass = "net.momirealms.craftengine.core.entity.culling.Cullable"
         val craftEngineToken = Regex("net\\.momirealms\\.craftengine(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)+")
         val violations = sources.files.flatMap { source ->
             craftEngineToken.findAll(source.readText()).mapNotNull { match ->
                 val allowed = when (source.canonicalFile) {
                     allowedCraftEngineSource, managerSource -> match.value == stableApiClass
                     lightLoaderSource -> match.value == lightSentinelClass
-                    allowedCraftEngineLightSource -> true
+                    cullingLoaderSource -> match.value == cullingSentinelClass
+                    allowedCraftEngineLightSource, allowedCraftEngineCullingSource -> true
                     else -> false
                 }
                 if (allowed) null else "${source.relativeTo(rootDir)}: ${match.value}"

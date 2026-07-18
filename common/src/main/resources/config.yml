@@ -328,9 +328,9 @@ Settings:
   UseHandSwingAnimation: true
   PickupAnimationPlayerYOffset: 0
   DisabledWorlds: []
-  #MIGHT BE RESOURCE INTENSIVE
-  #MIGHT BE RESOURCE INTENSIVE
-  #MIGHT BE RESOURCE INTENSIVE
+  #Optional second-stage wall-occlusion culling for entities in chunks already sent to each viewer.
+  #Requires CraftEngine 26.7+ with both entity culling and ray tracing enabled.
+  #CraftEngine checks distance/occlusion; this is not camera-direction or frustum culling.
   HideIfViewObstructed: false
   Performance:
     VirtualItems:

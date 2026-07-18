@@ -26,6 +26,8 @@ import com.loohp.interactionvisualizer.database.Database;
 import com.loohp.interactionvisualizer.debug.PerformanceBlockScene;
 import com.loohp.interactionvisualizer.debug.PerformanceScene;
 import com.loohp.interactionvisualizer.integration.CustomContentManager;
+import com.loohp.interactionvisualizer.integration.ViewerCullingManager;
+import com.loohp.interactionvisualizer.integration.ViewerCullingManagerLoader;
 import com.loohp.interactionvisualizer.managers.AsyncExecutorManager;
 import com.loohp.interactionvisualizer.managers.LangManager;
 import com.loohp.interactionvisualizer.managers.LightManager;
@@ -126,8 +128,11 @@ public class InteractionVisualizer extends JavaPlugin {
     public static int blockUpdateMaxDirtyPerTick = 64;
 
     private boolean blockUpdateModeInitialized;
+    private boolean cullingLifecycleInitialized;
+    private boolean cullingProviderWarningLogged;
 
     public static ILightManager lightManager;
+    public static ViewerCullingManager viewerCullingManager = ViewerCullingManager.DISABLED;
     public static PreferenceManager preferenceManager;
     public static AsyncExecutorManager asyncExecutorManager;
 
@@ -194,6 +199,10 @@ public class InteractionVisualizer extends JavaPlugin {
                 craftEngineHooked = true;
             }
         }
+        if (configureViewerCulling()) {
+            craftEngineHooked = true;
+        }
+        cullingLifecycleInitialized = true;
         if (craftEngineHooked) {
             hookMessage("CraftEngine");
         }
@@ -262,6 +271,8 @@ public class InteractionVisualizer extends JavaPlugin {
             lightManager.shutdown();
             lightManager = ILightManager.DUMMY_INSTANCE;
         }
+        viewerCullingManager.shutdown();
+        viewerCullingManager = ViewerCullingManager.DISABLED;
         CustomContentManager.shutdown();
         if (preferenceManager != null) {
             preferenceManager.close();
@@ -335,6 +346,9 @@ public class InteractionVisualizer extends JavaPlugin {
 
         disabledWorlds = new HashSet<>(getConfiguration().getStringList("Settings.DisabledWorlds"));
         hideIfObstructed = getConfiguration().getBoolean("Settings.HideIfViewObstructed");
+        if (cullingLifecycleInitialized) {
+            configureViewerCulling();
+        }
 
         lightUpdatePeriod = getConfiguration().getInt("LightUpdate.Period");
         if (lightManager != null) {
@@ -374,6 +388,48 @@ public class InteractionVisualizer extends JavaPlugin {
         blockUpdateModeInitialized = true;
 
         getServer().getPluginManager().callEvent(new InteractionVisualizerReloadEvent());
+    }
+
+    private boolean configureViewerCulling() {
+        if (!hideIfObstructed) {
+            boolean backendChanged = viewerCullingManager.enabled();
+            viewerCullingManager.shutdown();
+            viewerCullingManager = ViewerCullingManager.DISABLED;
+            if (backendChanged && cullingLifecycleInitialized) {
+                DisplayManager.onCullingBackendChanged();
+            }
+            return false;
+        }
+        if (viewerCullingManager.enabled()) {
+            return true;
+        }
+        viewerCullingManager.shutdown();
+        viewerCullingManager = ViewerCullingManager.DISABLED;
+        if (!isPluginEnabled("CraftEngine")) {
+            if (!cullingProviderWarningLogged) {
+                cullingProviderWarningLogged = true;
+                getLogger().warning("Settings.HideIfViewObstructed requires CraftEngine 26.7+; "
+                        + "using sent-chunk visibility without occlusion culling.");
+            }
+            return false;
+        }
+        ViewerCullingManager manager = ViewerCullingManagerLoader.createCraftEngine(
+                this, DisplayManager::onCullingVisibility).orElse(ViewerCullingManager.DISABLED);
+        if (!manager.enabled()) {
+            manager.shutdown();
+            if (!cullingProviderWarningLogged) {
+                cullingProviderWarningLogged = true;
+                getLogger().warning("CraftEngine entity culling and ray tracing must both be enabled "
+                        + "for Settings.HideIfViewObstructed; using sent-chunk visibility only.");
+            }
+            return false;
+        }
+        cullingProviderWarningLogged = false;
+        viewerCullingManager = manager;
+        if (cullingLifecycleInitialized) {
+            DisplayManager.onCullingBackendChanged();
+        }
+        return true;
     }
 
 }
