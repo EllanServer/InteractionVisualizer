@@ -457,6 +457,7 @@ public class TaskManager {
     public static void shutdown() {
         try {
             if (plugin != null) {
+                Scheduler.shutdown(plugin);
                 Bukkit.getScheduler().cancelTasks(plugin);
             }
         } finally {

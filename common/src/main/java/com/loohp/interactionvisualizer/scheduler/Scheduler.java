@@ -67,23 +67,29 @@ public final class Scheduler {
     }
 
     public static ScheduledTask runTask(Plugin plugin, Runnable runnable) {
-        return wrap(Bukkit.getScheduler().runTask(plugin, runnable));
+        return MainThreadTaskCoordinator.schedule(plugin, runnable, 1L, 0L);
     }
 
     public static ScheduledTask runTaskLater(Plugin plugin, Runnable runnable, long delay) {
-        return wrap(Bukkit.getScheduler().runTaskLater(plugin, runnable, delay));
+        return MainThreadTaskCoordinator.schedule(plugin, runnable, delay, 0L);
     }
 
     public static ScheduledTask runTaskTimer(Plugin plugin, Runnable runnable, long delay, long period) {
-        return wrap(Bukkit.getScheduler().runTaskTimer(plugin, runnable, delay, period));
+        return MainThreadTaskCoordinator.schedule(plugin, runnable, delay, period);
     }
 
     public static void cancelTask(int taskId) {
-        Bukkit.getScheduler().cancelTask(taskId);
+        if (!MainThreadTaskCoordinator.cancel(taskId)) {
+            Bukkit.getScheduler().cancelTask(taskId);
+        }
     }
 
-    private static ScheduledTask wrap(org.bukkit.scheduler.BukkitTask task) {
-        return new ScheduledTask(task);
+    public static void shutdown(Plugin plugin) {
+        MainThreadTaskCoordinator.shutdown(plugin);
+    }
+
+    public static int retainedTaskCount(Plugin plugin) {
+        return MainThreadTaskCoordinator.retainedTaskCount(plugin);
     }
 
 }
