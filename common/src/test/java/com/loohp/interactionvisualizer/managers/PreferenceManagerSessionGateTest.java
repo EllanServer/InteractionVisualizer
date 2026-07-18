@@ -11,10 +11,17 @@
 
 package com.loohp.interactionvisualizer.managers;
 
+import com.loohp.interactionvisualizer.InteractionVisualizer;
+import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
+import com.loohp.interactionvisualizer.objectholders.EntryKey;
+import org.bukkit.entity.Player;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -127,32 +134,85 @@ class PreferenceManagerSessionGateTest {
     }
 
     @Test
-    void differentPlayersCanUseSeparateDrainsConcurrently() throws Exception {
+    void differentPlayersShareOneFifoDatabaseDrain() throws Exception {
         ExecutorService workers = Executors.newFixedThreadPool(2);
-        CountDownLatch bothStarted = new CountDownLatch(2);
-        CountDownLatch releaseBoth = new CountDownLatch(1);
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondStarted = new CountDownLatch(1);
+        List<String> order = Collections.synchronizedList(new ArrayList<>());
         try {
             PreferenceManager.PlayerIoQueue queue = new PreferenceManager.PlayerIoQueue(workers);
             CompletableFuture<Void> first = queue.submit(UUID.randomUUID(), () -> {
-                bothStarted.countDown();
-                await(releaseBoth);
+                order.add("first-start");
+                firstStarted.countDown();
+                await(releaseFirst);
+                order.add("first-end");
             });
             CompletableFuture<Void> second = queue.submit(UUID.randomUUID(), () -> {
-                bothStarted.countDown();
-                await(releaseBoth);
+                order.add("second");
+                secondStarted.countDown();
             });
 
             assertNotNull(first);
             assertNotNull(second);
-            assertTrue(bothStarted.await(5, TimeUnit.SECONDS),
-                    "unrelated player queues were serialized behind one drain");
-            releaseBoth.countDown();
+            assertTrue(firstStarted.await(5, TimeUnit.SECONDS));
+            assertFalse(secondStarted.await(100, TimeUnit.MILLISECONDS),
+                    "a second player bypassed the global JDBC FIFO");
+            releaseFirst.countDown();
             CompletableFuture.allOf(first, second).get(5, TimeUnit.SECONDS);
+            assertEquals(List.of("first-start", "first-end", "second"), order);
             queue.closeAndWait();
         } finally {
-            releaseBoth.countDown();
+            releaseFirst.countDown();
             workers.shutdownNow();
             assertTrue(workers.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void viewerGroupReplacesReconnectInstancesWithoutAllocatingNewViews() {
+        PreferenceManager.ViewerGroup group = new PreferenceManager.ViewerGroup();
+        UUID uuid = UUID.randomUUID();
+        Player oldPlayer = player(uuid, "old");
+        Player reconnectedPlayer = player(uuid, "new");
+
+        Collection<Player> view = group.view();
+        assertSame(view, group.view());
+        assertTrue(group.add(oldPlayer));
+        assertTrue(group.add(reconnectedPlayer));
+        assertFalse(group.remove(oldPlayer));
+        assertTrue(view.contains(reconnectedPlayer));
+        assertEquals(1, view.size());
+        assertThrows(UnsupportedOperationException.class, view::clear);
+        assertTrue(group.remove(reconnectedPlayer));
+        assertTrue(view.isEmpty());
+    }
+
+    @Test
+    void cachedServerViewTracksReloadedModuleSettingsWithoutRebuildingTheGroup() {
+        boolean previousEnabled = InteractionVisualizer.hologramsEnabled;
+        var previousDisabled = InteractionVisualizer.hologramsDisabled;
+        try {
+            InteractionVisualizer.hologramsEnabled = true;
+            InteractionVisualizer.hologramsDisabled = new HashSet<>();
+            EntryKey entry = new EntryKey("preference_cache_test");
+            PreferenceManager.ViewerGroup group = new PreferenceManager.ViewerGroup(
+                    Modules.HOLOGRAM, entry);
+            Player player = player(UUID.randomUUID(), "viewer");
+            group.add(player);
+
+            Collection<Player> serverView = group.serverView();
+            assertSame(serverView, group.serverView());
+            assertTrue(serverView.contains(player));
+            assertThrows(UnsupportedOperationException.class, serverView::clear);
+
+            InteractionVisualizer.hologramsEnabled = false;
+            assertTrue(serverView.isEmpty());
+            assertEquals(1, group.view().size(),
+                    "server setting changes must not discard the preference membership cache");
+        } finally {
+            InteractionVisualizer.hologramsEnabled = previousEnabled;
+            InteractionVisualizer.hologramsDisabled = previousDisabled;
         }
     }
 
@@ -243,5 +303,18 @@ class PreferenceManagerSessionGateTest {
             Thread.currentThread().interrupt();
             throw new AssertionError("interrupted while waiting for test latch", exception);
         }
+    }
+
+    private static Player player(UUID uuid, String name) {
+        return (Player) Proxy.newProxyInstance(
+                Player.class.getClassLoader(), new Class<?>[] {Player.class}, (proxy, method, args) -> {
+                    return switch (method.getName()) {
+                        case "getUniqueId" -> uuid;
+                        case "getName", "toString" -> name;
+                        case "hashCode" -> System.identityHashCode(proxy);
+                        case "equals" -> proxy == args[0];
+                        default -> throw new UnsupportedOperationException(method.getName());
+                    };
+                });
     }
 }

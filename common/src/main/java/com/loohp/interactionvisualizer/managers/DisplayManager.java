@@ -1731,6 +1731,9 @@ public final class DisplayManager implements Listener {
             return false;
         }
         UUID viewer = player.getUniqueId();
+        if (desiredPlayers instanceof PreferenceManager.ViewerMembership membership) {
+            return membership.containsViewer(viewer);
+        }
         return SynchronizedFilteredCollection.anyMatch(desiredPlayers,
                 candidate -> candidate != null && viewer.equals(candidate.getUniqueId()));
     }

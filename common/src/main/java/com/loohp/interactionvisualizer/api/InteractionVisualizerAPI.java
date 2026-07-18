@@ -41,6 +41,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.EulerAngle;
 import org.bukkit.util.Vector;
 
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
@@ -48,7 +49,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 public class InteractionVisualizerAPI {
 
@@ -113,13 +113,19 @@ public class InteractionVisualizerAPI {
      */
     public static Collection<Player> getPlayerModuleList(Modules module, EntryKey entry, boolean excludeDisabledWorlds, Player... excludes) {
         Collection<Player> players = InteractionVisualizer.preferenceManager.getPlayerList(module, entry);
-        Set<Player> excludedPlayers = Stream.of(excludes).collect(Collectors.toSet());
-        if (excludeDisabledWorlds) {
-            Set<String> disabledWorlds = getDisabledWorlds();
-            players = SynchronizedFilteredCollection.filter(players, each -> !excludedPlayers.contains(each) && !disabledWorlds.contains(each.getWorld().getName()));
-        } else {
-            players = SynchronizedFilteredCollection.filter(players, each -> !excludedPlayers.contains(each));
+        Set<String> disabledWorlds = excludeDisabledWorlds
+                ? InteractionVisualizer.disabledWorlds : Set.of();
+        if (excludes.length == 0 && disabledWorlds.isEmpty()) {
+            return players;
         }
+        Set<Player> excludedPlayers = excludes.length == 0
+                ? Set.of()
+                : excludes.length == 1 ? Collections.singleton(excludes[0])
+                : new HashSet<>(Arrays.asList(excludes));
+        players = SynchronizedFilteredCollection.filter(players,
+                each -> !excludedPlayers.contains(each)
+                        && (disabledWorlds.isEmpty()
+                        || !disabledWorlds.contains(each.getWorld().getName())));
         return SynchronizedFilteredCollection.unmodifiableCollection(players);
     }
 
@@ -176,7 +182,8 @@ public class InteractionVisualizerAPI {
             return hasPlayerEnabledModule(player, module, entry);
         } else {
             InteractionVisualizer.preferenceManager.loadPlayer(uuid, "", false);
-            boolean value = hasPlayerEnabledModule(player, module, entry);
+            boolean value = InteractionVisualizer.preferenceManager
+                    .getPlayerPreference(uuid, module, entry);
             InteractionVisualizer.preferenceManager.unloadPlayerWithoutSaving(uuid);
             return value;
         }

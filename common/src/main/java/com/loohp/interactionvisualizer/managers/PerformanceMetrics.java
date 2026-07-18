@@ -82,6 +82,11 @@ public final class PerformanceMetrics implements Listener {
     private int blockUpdateCoordinatorLanesMax;
     private int blockUpdateDirtyQueueMax;
     private int blockUpdateActiveQueueMax;
+    private long preferenceIoOperations;
+    private long preferenceIoFailures;
+    private int preferenceIoQueueDepthMax;
+    private long preferenceSqlStatements;
+    private long preferenceDatabaseReconnects;
 
     private PerformanceMetrics() {
     }
@@ -149,6 +154,11 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.blockUpdateCoordinatorLanesMax = 0;
         INSTANCE.blockUpdateDirtyQueueMax = 0;
         INSTANCE.blockUpdateActiveQueueMax = 0;
+        INSTANCE.preferenceIoOperations = 0;
+        INSTANCE.preferenceIoFailures = 0;
+        INSTANCE.preferenceIoQueueDepthMax = 0;
+        INSTANCE.preferenceSqlStatements = 0;
+        INSTANCE.preferenceDatabaseReconnects = 0;
         INSTANCE.slowestTickTracker.reset();
         LegacyTextComponentCache.startMeasurement();
         INSTANCE.collecting = true;
@@ -320,6 +330,47 @@ public final class PerformanceMetrics implements Listener {
         }
     }
 
+    public static void preferenceIoOperation() {
+        if (INSTANCE.collecting) {
+            synchronized (INSTANCE) {
+                INSTANCE.preferenceIoOperations++;
+            }
+        }
+    }
+
+    public static void preferenceIoFailure() {
+        if (INSTANCE.collecting) {
+            synchronized (INSTANCE) {
+                INSTANCE.preferenceIoFailures++;
+            }
+        }
+    }
+
+    public static void preferenceIoQueueDepth(int depth) {
+        if (INSTANCE.collecting) {
+            synchronized (INSTANCE) {
+                INSTANCE.preferenceIoQueueDepthMax = Math.max(
+                        INSTANCE.preferenceIoQueueDepthMax, depth);
+            }
+        }
+    }
+
+    public static void preferenceSqlStatement() {
+        if (INSTANCE.collecting) {
+            synchronized (INSTANCE) {
+                INSTANCE.preferenceSqlStatements++;
+            }
+        }
+    }
+
+    public static void preferenceDatabaseReconnect() {
+        if (INSTANCE.collecting) {
+            synchronized (INSTANCE) {
+                INSTANCE.preferenceDatabaseReconnects++;
+            }
+        }
+    }
+
     @EventHandler
     public void onServerTickEnd(ServerTickEndEvent event) {
         if (!collecting) {
@@ -371,6 +422,8 @@ public final class PerformanceMetrics implements Listener {
                 retainedCullingRegistrations,
                 itemAnimationNanos, droppedItemNanos, blockUpdateChecks, blockUpdateNanos,
                 blockUpdateCoordinatorLanesMax, blockUpdateDirtyQueueMax, blockUpdateActiveQueueMax,
+                preferenceIoOperations, preferenceIoFailures, preferenceIoQueueDepthMax,
+                preferenceSqlStatements, preferenceDatabaseReconnects,
                 textCache.requests(), textCache.misses(), textCache.sameRawFastPaths());
     }
 
@@ -453,6 +506,11 @@ public final class PerformanceMetrics implements Listener {
             int blockUpdateCoordinatorLanesMax,
             int blockUpdateDirtyQueueMax,
             int blockUpdateActiveQueueMax,
+            long preferenceIoOperations,
+            long preferenceIoFailures,
+            int preferenceIoQueueDepthMax,
+            long preferenceSqlStatements,
+            long preferenceDatabaseReconnects,
             long legacyTextCacheRequests,
             long legacyTextCacheMisses,
             long legacyTextSameRawFastPaths) {
@@ -530,6 +588,11 @@ public final class PerformanceMetrics implements Listener {
                             "\"blockUpdateCoordinatorLanesMax\":%d," +
                             "\"blockUpdateDirtyQueueMax\":%d," +
                             "\"blockUpdateActiveQueueMax\":%d," +
+                            "\"preferenceIoOperations\":%d," +
+                            "\"preferenceIoFailures\":%d," +
+                            "\"preferenceIoQueueDepthMax\":%d," +
+                            "\"preferenceSqlStatements\":%d," +
+                            "\"preferenceDatabaseReconnects\":%d," +
                             "\"legacyTextCacheRequests\":%d,\"legacyTextCacheMisses\":%d," +
                             "\"legacyTextCacheHits\":%d,\"legacyTextCacheHitRate\":%.6f," +
                             "\"legacyTextSameRawFastPaths\":%d}",
@@ -554,6 +617,8 @@ public final class PerformanceMetrics implements Listener {
                     itemAnimationNanos / 1_000_000.0D, droppedItemNanos / 1_000_000.0D,
                     blockUpdateChecks, blockUpdateNanos / 1_000_000.0D,
                     blockUpdateCoordinatorLanesMax, blockUpdateDirtyQueueMax, blockUpdateActiveQueueMax,
+                    preferenceIoOperations, preferenceIoFailures, preferenceIoQueueDepthMax,
+                    preferenceSqlStatements, preferenceDatabaseReconnects,
                     legacyTextCacheRequests, legacyTextCacheMisses, legacyTextCacheHits(),
                     legacyTextCacheHitRate(), legacyTextSameRawFastPaths);
         }

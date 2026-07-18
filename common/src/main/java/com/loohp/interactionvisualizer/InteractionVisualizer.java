@@ -277,6 +277,7 @@ public class InteractionVisualizer extends JavaPlugin {
         if (preferenceManager != null) {
             preferenceManager.close();
         }
+        Database.close();
         TaskManager.shutdown();
         DisplayManager.shutdown();
         TileEntityManager.shutdown();
