@@ -78,7 +78,10 @@ public class InteractionVisualizer extends JavaPlugin {
 
     public static InteractionVisualizer plugin = null;
 
+    /** @deprecated LightAPI is no longer used; retained for binary compatibility. */
+    @Deprecated(forRemoval = false)
     public static Boolean lightapi = false;
+    public static Boolean craftEngineLight = false;
     public static Boolean openinv = false;
 
     public static Set<String> exemptBlocks = new HashSet<>();
@@ -162,18 +165,9 @@ public class InteractionVisualizer extends JavaPlugin {
                 new ThreadPoolExecutor.CallerRunsPolicy());
         asyncExecutorManager = new AsyncExecutorManager(threadPool);
 
-        if (isPluginEnabled("LightAPI")) {
-            try {
-                Class.forName("ru.beykerykt.lightapi.utils.Debug");
-                hookMessage("LightAPI");
-                lightapi = true;
-                lightManager = new LightManager(this);
-            } catch (ClassNotFoundException ignored) {
-            }
-        }
-        if (!lightapi) {
-            lightManager = ILightManager.DUMMY_INSTANCE;
-        }
+        lightapi = false;
+        craftEngineLight = false;
+        lightManager = ILightManager.DUMMY_INSTANCE;
         if (isPluginEnabled("OpenInv")) {
             hookMessage("OpenInv");
             openinv = true;
@@ -191,7 +185,16 @@ public class InteractionVisualizer extends JavaPlugin {
         }
         loadConfig();
 
-        if (CustomContentManager.initialize(this).contains("craftengine")) {
+        boolean craftEngineHooked = CustomContentManager.initialize(this).contains("craftengine");
+        if (isPluginEnabled("CraftEngine")) {
+            ILightManager craftEngineManager = LightManager.createCraftEngine(this, lightUpdatePeriod).orElse(null);
+            if (craftEngineManager != null) {
+                lightManager = craftEngineManager;
+                craftEngineLight = true;
+                craftEngineHooked = true;
+            }
+        }
+        if (craftEngineHooked) {
             hookMessage("CraftEngine");
         }
 
@@ -255,6 +258,10 @@ public class InteractionVisualizer extends JavaPlugin {
     @Override
     public void onDisable() {
         shutdownPerformanceScenes();
+        if (lightManager != null) {
+            lightManager.shutdown();
+            lightManager = ILightManager.DUMMY_INSTANCE;
+        }
         CustomContentManager.shutdown();
         if (preferenceManager != null) {
             preferenceManager.close();
@@ -330,6 +337,9 @@ public class InteractionVisualizer extends JavaPlugin {
         hideIfObstructed = getConfiguration().getBoolean("Settings.HideIfViewObstructed");
 
         lightUpdatePeriod = getConfiguration().getInt("LightUpdate.Period");
+        if (lightManager != null) {
+            lightManager.setUpdatePeriod(lightUpdatePeriod);
+        }
 
         updaterEnabled = getConfiguration().getBoolean("Options.Updater");
 

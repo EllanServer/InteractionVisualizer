@@ -1,149 +1,56 @@
 /*
  * This file is part of InteractionVisualizer.
  *
- * Copyright (C) 2025. LoohpJames <jamesloohp@gmail.com>
- * Copyright (C) 2025. Contributors
+ * Copyright (C) 2026. Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
 package com.loohp.interactionvisualizer.managers;
 
-import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.objectholders.ILightManager;
-import com.loohp.interactionvisualizer.objectholders.LightData;
-import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
-import com.loohp.interactionvisualizer.scheduler.Scheduler;
-import org.bukkit.Location;
-import ru.beykerykt.lightapi.LightAPI;
-import ru.beykerykt.lightapi.LightType;
-import ru.beykerykt.lightapi.chunks.ChunkInfo;
+import org.bukkit.plugin.Plugin;
 
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.Queue;
-import java.util.Set;
+import java.lang.reflect.InvocationTargetException;
+import java.util.Optional;
+import java.util.logging.Level;
 
-public class LightManager implements ILightManager {
+/**
+ * Resolves the optional CraftEngine light implementation without linking the
+ * core plugin classes against CraftEngine when it is absent.
+ */
+public final class LightManager {
 
-    private static LightType convert(com.loohp.interactionvisualizer.objectholders.LightType lightType) {
-        if (lightType == null) {
-            return null;
+    static final String CRAFT_ENGINE_SENTINEL =
+            "net.momirealms.craftengine.bukkit.api.BukkitAdaptor";
+    static final String CRAFT_ENGINE_IMPLEMENTATION =
+            "com.loohp.interactionvisualizer.integration.craftengine.CraftEngineLightManager";
+
+    private LightManager() {
+    }
+
+    public static Optional<ILightManager> createCraftEngine(Plugin plugin, long updatePeriod) {
+        try {
+            return Optional.of(load(plugin.getClass().getClassLoader(), CRAFT_ENGINE_SENTINEL,
+                    CRAFT_ENGINE_IMPLEMENTATION, plugin, updatePeriod));
+        } catch (ReflectiveOperationException | LinkageError | ClassCastException exception) {
+            Throwable cause = exception instanceof InvocationTargetException invocation
+                    && invocation.getCause() != null ? invocation.getCause() : exception;
+            plugin.getLogger().log(Level.WARNING,
+                    "Could not enable CraftEngine lighting; continuing without display lighting", cause);
+            return Optional.empty();
         }
-        switch (lightType) {
-            case BLOCK:
-                return LightType.BLOCK;
-            case SKY:
-                return LightType.SKY;
-        }
-        return null;
     }
 
-    private final InteractionVisualizer plugin;
-    private Set<LightData> addqueue;
-    private Set<LightData> deletequeue;
-
-    public LightManager(InteractionVisualizer plugin) {
-        this.plugin = plugin;
-        this.addqueue = new HashSet<>();
-        this.deletequeue = new HashSet<>();
+    static ILightManager load(ClassLoader classLoader, String sentinelClass, String implementationClass,
+                              Plugin plugin, long updatePeriod) throws ReflectiveOperationException {
+        Class.forName(sentinelClass, false, classLoader);
+        return Class.forName(implementationClass, true, classLoader)
+                .asSubclass(ILightManager.class)
+                .getDeclaredConstructor(Plugin.class, long.class)
+                .newInstance(plugin, updatePeriod);
     }
-
-    @Override
-    public void createLight(Location location, int lightlevel, com.loohp.interactionvisualizer.objectholders.LightType lightType) {
-        addqueue.add(LightData.of(location, lightlevel, lightType));
-    }
-
-    @Override
-    public void deleteLight(Location location) {
-        addqueue.remove(LightData.of(location, com.loohp.interactionvisualizer.objectholders.LightType.BLOCK));
-        addqueue.remove(LightData.of(location, com.loohp.interactionvisualizer.objectholders.LightType.SKY));
-        deletequeue.add(LightData.of(location));
-    }
-
-    @Override
-    public ScheduledTask run() {
-        return Scheduler.runTaskTimer(plugin, () -> {
-            boolean changed = false;
-
-            Queue<LightData> updateQueue = new LinkedList<>();
-
-            Set<LightData> addqueue = this.addqueue;
-            Set<LightData> deletequeue = this.deletequeue;
-
-            this.addqueue = new HashSet<>();
-            this.deletequeue = new HashSet<>();
-
-            if (!deletequeue.isEmpty()) {
-                changed = true;
-            }
-
-            for (Iterator<LightData> itr = deletequeue.iterator(); itr.hasNext();) {
-                LightData lightdata = itr.next();
-                if (lightdata.isLocationLoaded()) {
-                    Location location = lightdata.getLocation();
-                    if (LightAPI.isSupported(location.getWorld(), LightType.SKY)) {
-                        LightAPI.deleteLight(location, LightType.SKY, false);
-                    }
-                    LightAPI.deleteLight(location, LightType.BLOCK, false);
-                    updateQueue.add(LightData.of(location, 14, com.loohp.interactionvisualizer.objectholders.LightType.SKY));
-                    updateQueue.add(LightData.of(location, 14, com.loohp.interactionvisualizer.objectholders.LightType.BLOCK));
-                }
-                itr.remove();
-            }
-
-            if (!addqueue.isEmpty()) {
-                changed = true;
-            }
-
-            for (Iterator<LightData> itr = addqueue.iterator(); itr.hasNext();) {
-                LightData lightdata = itr.next();
-                if (lightdata.isLocationLoaded()) {
-                    Location location = lightdata.getLocation();
-                    int lightlevel = lightdata.getLightLevel();
-                    if (LightAPI.isSupported(location.getWorld(), convert(lightdata.getLightType()))) {
-                        LightAPI.createLight(location, convert(lightdata.getLightType()), lightlevel, false);
-                        updateQueue.add(lightdata);
-                    }
-                }
-                itr.remove();
-            }
-
-            if (changed) {
-                Set<ChunkInfo> blockinfos = new HashSet<>();
-                Set<ChunkInfo> skyinfos = new HashSet<>();
-                while (!updateQueue.isEmpty()) {
-                    LightData lightdata = updateQueue.poll();
-                    LightType lightType = convert(lightdata.getLightType());
-                    switch (lightType) {
-                        case BLOCK:
-                            blockinfos.addAll(LightAPI.collectChunks(lightdata.getLocation(), lightType, lightdata.getLightLevel()));
-                            break;
-                        case SKY:
-                            skyinfos.addAll(LightAPI.collectChunks(lightdata.getLocation(), lightType, lightdata.getLightLevel()));
-                            break;
-                    }
-                }
-                for (ChunkInfo info : skyinfos) {
-                    LightAPI.updateChunk(info, LightType.SKY);
-                }
-                for (ChunkInfo info : blockinfos) {
-                    LightAPI.updateChunk(info, LightType.BLOCK);
-                }
-            }
-        }, 0, InteractionVisualizer.lightUpdatePeriod);
-    }
-
 }

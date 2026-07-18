@@ -67,9 +67,11 @@ against Paper 26.2.
 - [CraftEngine](https://github.com/Xiao-MoMi/craft-engine) 26.7.2: optional
   custom-item ID recognition. CraftEngine items can be selected by the third
   field of an item-label blacklist rule, and their display pose can be
-  overridden in `material.yml` under `CustomItems`. CraftEngine is not bundled
-  and the plugin behaves exactly as before when it is absent.
-- [LightAPI](https://www.spigotmc.org/resources/lightapi-fork.48247/)
+  overridden in `material.yml` under `CustomItems`. It also supplies display
+  lighting: InteractionVisualizer shares its light-block reference counts so
+  CraftEngine furniture and IV displays do not remove each other's light, and
+  performs no lighting task while idle. CraftEngine is not bundled and the
+  plugin behaves exactly as before when it is absent.
 - [OpenInv](https://dev.bukkit.org/projects/openinv)
 - [PlaceholderAPI](https://www.spigotmc.org/resources/placeholderapi.6245/)
 - Essentials, SuperVanish, PremiumVanish, and CMI
