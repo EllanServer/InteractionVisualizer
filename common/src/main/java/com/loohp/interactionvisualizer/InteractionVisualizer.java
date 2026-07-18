@@ -112,6 +112,8 @@ public class InteractionVisualizer extends JavaPlugin {
     public static boolean staticVirtualItemAnchorsDuringAnimation = false;
     /** A/B switch: eligible stationary virtual items are tracked and rendered entirely by packets. */
     public static boolean packetOnlyStaticVirtualItems = false;
+    /** A/B switch: safe animated virtual items use Typewriter-style per-viewer packet tracking. */
+    public static boolean packetOnlyAnimatedVirtualItems = false;
     /** A/B switch: smooths visibility recovery bursts; hides are always immediate. */
     public static boolean visibilityRateLimiting = false;
     public static int visibilityRateLimitBucketSize = 128;
@@ -341,6 +343,8 @@ public class InteractionVisualizer extends JavaPlugin {
                 "Settings.Performance.VirtualItems.StaticAnchorDuringAnimation");
         packetOnlyStaticVirtualItems = getConfiguration().getBoolean(
                 "Settings.Performance.VirtualItems.PacketOnlyStatic");
+        packetOnlyAnimatedVirtualItems = getConfiguration().getBoolean(
+                "Settings.Performance.VirtualItems.PacketOnlyAnimated");
         visibilityRateLimiting = getConfiguration().getBoolean(
                 "Settings.Performance.VisibilityRateLimit.Enabled");
         visibilityRateLimitBucketSize = Math.max(1, getConfiguration().getInt(

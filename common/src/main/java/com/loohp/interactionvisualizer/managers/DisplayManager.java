@@ -105,6 +105,7 @@ public final class DisplayManager implements Listener {
     private static final Map<Item, Map<UUID, Integer>> virtualItemIds = new ConcurrentHashMap<>();
     private static final Map<Item, ItemStack> renderedItemStacks = new ConcurrentHashMap<>();
     private static final Map<Item, Location> renderedItemLocations = new ConcurrentHashMap<>();
+    private static final Map<Item, PacketItemPosition> packetItemPositions = new ConcurrentHashMap<>();
     private static final Set<Item> packetOnlyItems = ConcurrentHashMap.newKeySet();
     private static final Set<Item> fixedItemDisplays = ConcurrentHashMap.newKeySet();
     private static final Map<DisplayEntity, VirtualTextState> virtualTextDisplays = new ConcurrentHashMap<>();
@@ -171,7 +172,7 @@ public final class DisplayManager implements Listener {
                     boolean desiredStaticAnchor = useStaticAnchorForAnimation(
                             InteractionVisualizer.staticVirtualItemAnchorsDuringAnimation,
                             item.isCustomNameVisible());
-                    boolean packetOnly = qualifiesForPacketOnlyStatic(item);
+                    boolean packetOnly = qualifiesForPacketOnly(item);
                     boolean representationChanged = fixedItemDisplays.contains(item) != item.isFixedDisplay()
                             || packetOnlyItems.contains(item) != packetOnly
                             || animation != null && animation.staticAnchor != desiredStaticAnchor;
@@ -243,6 +244,7 @@ public final class DisplayManager implements Listener {
             virtualItemIds.clear();
             renderedItemStacks.clear();
             renderedItemLocations.clear();
+            packetItemPositions.clear();
             packetOnlyItems.clear();
             fixedItemDisplays.clear();
             virtualTextDisplays.clear();
@@ -658,14 +660,18 @@ public final class DisplayManager implements Listener {
                 clearViewerTracking(logical);
             }
         }
-        boolean packetOnly = qualifiesForPacketOnlyStatic(logical);
+        boolean packetOnly = qualifiesForPacketOnly(logical);
         boolean wasPacketOnly = packetOnlyItems.contains(logical);
         org.bukkit.entity.Entity current = logical.getBukkitEntity().orElse(null);
         Location logicalLocation = logical.getLocation();
+        ItemAnimationState previousAnimation = itemAnimations.get(logical);
 
         if (packetOnly) {
             PerformanceMetrics.packetOnlyItemSync();
             ItemStack itemStack = logical.getItemStack();
+            Location previousPosition = previousAnimation == null ? null : previousAnimation.position();
+            Location previousLogicalLocation = previousAnimation == null
+                    ? null : previousAnimation.logicalLocation();
 
             if (current != null) {
                 discardActual(logical, current);
@@ -676,22 +682,43 @@ public final class DisplayManager implements Listener {
             }
 
             packetOnlyItems.add(logical);
-            itemAnimations.remove(logical);
             // Visualizer Item getters already return defensive copies. Retain those
             // snapshots directly instead of cloning them a second time on every sync.
             ItemStack previousItemStack = renderedItemStacks.put(logical, itemStack);
             Location previousLocation = renderedItemLocations.put(logical, logicalLocation);
             boolean itemChanged = previousItemStack == null || !previousItemStack.equals(itemStack);
             boolean locationChanged = previousLocation == null || !previousLocation.equals(logicalLocation);
-            index(logical, logicalLocation);
-            if (wasPacketOnly && (itemChanged || locationChanged)) {
+            Vector velocity = logical.getVelocity();
+            boolean gravity = logical.hasGravity();
+            boolean animated = requiresItemAnimation(gravity, velocity);
+            ItemAnimationState nextAnimation = null;
+            if (animated) {
+                Location position = itemAnimationStartPosition(
+                        logicalLocation, previousPosition, previousLogicalLocation, logicalLocation);
+                nextAnimation = new ItemAnimationState(velocity, gravity, position, false, logicalLocation);
+                itemAnimations.put(logical, nextAnimation);
+                rememberPacketItemPosition(logical, nextAnimation.world,
+                        nextAnimation.positionX, nextAnimation.positionY, nextAnimation.positionZ);
+                scheduleItemAnimationTick();
+                index(logical, nextAnimation.world, nextAnimation.positionX, nextAnimation.positionZ);
+            } else {
+                itemAnimations.remove(logical);
+                rememberPacketItemPosition(logical, logicalLocation.getWorld(), logicalLocation.getX(),
+                        logicalLocation.getY(), logicalLocation.getZ());
+                index(logical, logicalLocation);
+            }
+            if (wasPacketOnly && itemChanged) {
                 respawnVirtualItems(logical);
+            } else if (wasPacketOnly && (locationChanged || previousAnimation != null || animated)) {
+                Location visualLocation = nextAnimation == null ? logicalLocation : nextAnimation.position();
+                synchronizeVirtualItemMotion(logical, visualLocation);
             }
             return;
         }
 
         if (wasPacketOnly) {
             packetOnlyItems.remove(logical);
+            packetItemPositions.remove(logical);
             renderedItemLocations.remove(logical);
             itemAnimations.remove(logical);
             clearViewerTracking(logical);
@@ -737,9 +764,8 @@ public final class DisplayManager implements Listener {
         Vector velocity = logical.getVelocity();
         boolean gravity = logical.hasGravity();
         boolean animated = requiresItemAnimation(gravity, velocity);
-        ItemAnimationState previousAnimation = itemAnimations.get(logical);
-        Location previousPosition = previousAnimation == null ? null : previousAnimation.position;
-        Location previousLogicalLocation = previousAnimation == null ? null : previousAnimation.logicalLocation;
+        Location previousPosition = previousAnimation == null ? null : previousAnimation.position();
+        Location previousLogicalLocation = previousAnimation == null ? null : previousAnimation.logicalLocation();
         boolean applyLogicalLocation = shouldApplyItemLogicalLocation(
                 animated, previousPosition, previousLogicalLocation, logicalLocation);
         boolean anchorMoved = applyItemBase(actual, logical, logicalLocation, applyLogicalLocation);
@@ -760,7 +786,7 @@ public final class DisplayManager implements Listener {
         Location anchorLocation = actual.getLocation();
         Location visualLocation = itemAnimationIndexLocation(
                 nextAnimation != null && nextAnimation.staticAnchor,
-                anchorLocation, nextAnimation == null ? null : nextAnimation.position);
+                anchorLocation, nextAnimation == null ? null : nextAnimation.position());
         index(logical, visualLocation);
 
         if (itemChanged) {
@@ -926,7 +952,7 @@ public final class DisplayManager implements Listener {
             return shouldRender(frame);
         }
         if (logical instanceof Item item) {
-            return item.isFixedDisplay() ? !item.getItemStack().isEmpty() : !qualifiesForPacketOnlyStatic(item);
+            return item.isFixedDisplay() ? !item.getItemStack().isEmpty() : !qualifiesForPacketOnly(item);
         }
         return false;
     }
@@ -991,16 +1017,28 @@ public final class DisplayManager implements Listener {
     }
 
     static boolean qualifiesForPacketOnlyStatic(boolean configured, boolean gravity, Vector velocity,
-                                                 boolean customNameVisible, boolean glowing) {
+                                                  boolean customNameVisible, boolean glowing) {
         return configured && !gravity && velocity != null
                 && velocity.getX() == 0.0D && velocity.getY() == 0.0D && velocity.getZ() == 0.0D
                 && !customNameVisible && !glowing;
     }
 
-    private static boolean qualifiesForPacketOnlyStatic(Item logical) {
-        return !logical.isFixedDisplay() && qualifiesForPacketOnlyStatic(
-                InteractionVisualizer.packetOnlyStaticVirtualItems,
-                logical.hasGravity(), logical.getVelocity(), logical.isCustomNameVisible(), logical.isGlowing());
+    static boolean qualifiesForPacketOnlyAnimated(boolean configured, boolean gravity, Vector velocity,
+                                                   boolean customNameVisible, boolean glowing) {
+        return configured && velocity != null && requiresItemAnimation(gravity, velocity)
+                && !customNameVisible && !glowing;
+    }
+
+    private static boolean qualifiesForPacketOnly(Item logical) {
+        if (logical.isFixedDisplay()) {
+            return false;
+        }
+        Vector velocity = logical.getVelocity();
+        boolean gravity = logical.hasGravity();
+        return qualifiesForPacketOnlyStatic(InteractionVisualizer.packetOnlyStaticVirtualItems,
+                gravity, velocity, logical.isCustomNameVisible(), logical.isGlowing())
+                || qualifiesForPacketOnlyAnimated(InteractionVisualizer.packetOnlyAnimatedVirtualItems,
+                gravity, velocity, logical.isCustomNameVisible(), logical.isGlowing());
     }
 
     private static void scheduleItemAnimationTick() {
@@ -1046,43 +1084,62 @@ public final class DisplayManager implements Listener {
 
     private static void tickItemAnimation(Item logical, ItemAnimationState animation) {
         org.bukkit.entity.Entity entity = logical.getBukkitEntity().orElse(null);
-        if (!active.containsKey(logical) || !(entity instanceof ItemDisplay actual)) {
+        boolean packetOnly = packetOnlyItems.contains(logical);
+        if (!active.containsKey(logical) || !packetOnly && !(entity instanceof ItemDisplay)) {
             itemAnimations.remove(logical, animation);
             return;
         }
+        ItemDisplay actual = entity instanceof ItemDisplay display ? display : null;
 
-        Vector movement = itemMovementForTick(animation.gravity, animation.velocity);
-        Location destination = animation.position.clone().add(movement);
-        destination.checkFinite();
-        World world = destination.getWorld();
-        if (destination.getY() < world.getMinHeight() - ITEM_VOID_MARGIN
-                || !world.isChunkLoaded(destination.getBlockX() >> 4, destination.getBlockZ() >> 4)) {
+        double movementX = animation.velocityX;
+        double movementY = animation.velocityY - (animation.gravity ? ITEM_GRAVITY_PER_TICK : 0.0D);
+        double movementZ = animation.velocityZ;
+        double destinationX = animation.positionX + movementX;
+        double destinationY = animation.positionY + movementY;
+        double destinationZ = animation.positionZ + movementZ;
+        if (!Double.isFinite(destinationX) || !Double.isFinite(destinationY)
+                || !Double.isFinite(destinationZ)) {
+            throw new IllegalArgumentException("Non-finite item animation position");
+        }
+        World world = animation.world;
+        if (destinationY < world.getMinHeight() - ITEM_VOID_MARGIN
+                || !world.isChunkLoaded(blockCoordinate(destinationX) >> 4,
+                blockCoordinate(destinationZ) >> 4)) {
             remove(null, logical, true);
             return;
         }
 
-        animation.velocity = itemVelocityAfterMovement(movement);
-        animation.position = destination.clone();
-        if (!animation.staticAnchor) {
+        animation.positionX = destinationX;
+        animation.positionY = destinationY;
+        animation.positionZ = destinationZ;
+        animation.velocityX = movementX * ITEM_HORIZONTAL_DRAG_PER_TICK;
+        animation.velocityY = movementY * ITEM_VERTICAL_DRAG_PER_TICK;
+        animation.velocityZ = movementZ * ITEM_HORIZONTAL_DRAG_PER_TICK;
+        if (packetOnlyItems.contains(logical)) {
+            rememberPacketItemPosition(logical, world, destinationX, destinationY, destinationZ);
+        }
+        if (!packetOnly && !animation.staticAnchor) {
+            Location destination = animation.position();
             PerformanceMetrics.bukkitEntityTeleport();
             if (!actual.teleport(destination)) {
                 remove(null, logical, true);
                 return;
             }
         }
-        boolean chunkChanged = index(logical, itemAnimationIndexLocation(
-                animation.staticAnchor, actual.getLocation(), animation.position));
+        boolean chunkChanged = !animation.staticAnchor
+                && index(logical, world, destinationX, destinationZ);
         if (chunkChanged) {
             reconcileViewers(logical);
         }
         if (animation.gravity) {
             // Heart's fake item is no-gravity. Absolute correction preserves the
             // vanilla gravity trajectory; no-gravity motion remains client-run.
-            synchronizeVirtualItemMotion(logical, destination);
+            synchronizeVirtualItemMotion(logical, world, destinationX, destinationY, destinationZ);
         }
-        if (!animation.gravity && animation.velocity.lengthSquared() <= ITEM_ANIMATION_EPSILON) {
+        if (!animation.gravity && animation.velocityLengthSquared() <= ITEM_ANIMATION_EPSILON) {
             itemAnimations.remove(logical, animation);
-            if (animation.staticAnchor) {
+            if (!packetOnly && animation.staticAnchor) {
+                Location destination = animation.position();
                 PerformanceMetrics.bukkitEntityTeleport();
                 if (!actual.teleport(destination)) {
                     remove(null, logical, true);
@@ -1092,7 +1149,7 @@ public final class DisplayManager implements Listener {
                     reconcileViewers(logical);
                 }
             }
-            synchronizeVirtualItemMotion(logical, destination);
+            synchronizeVirtualItemMotion(logical, world, destinationX, destinationY, destinationZ);
         }
     }
 
@@ -1189,7 +1246,8 @@ public final class DisplayManager implements Listener {
             return false;
         }
         if (packetOnly) {
-            source = logical.getLocation();
+            PacketItemPosition packetPosition = packetItemPositions.get(logical);
+            source = packetPosition == null ? logical.getLocation() : packetPosition.location();
             if (!player.getWorld().equals(source.getWorld())
                     || !player.isChunkSent(Chunk.getChunkKey(source))) {
                 return false;
@@ -1198,7 +1256,7 @@ public final class DisplayManager implements Listener {
             if (!(anchor instanceof ItemDisplay) || !player.getWorld().equals(anchor.getWorld())) {
                 return false;
             }
-            source = animation == null ? anchor.getLocation() : animation.position.clone();
+            source = animation == null ? anchor.getLocation() : animation.position();
         }
 
         Map<UUID, Integer> ids = virtualItemIds.computeIfAbsent(logical, ignored -> new ConcurrentHashMap<>());
@@ -1214,7 +1272,7 @@ public final class DisplayManager implements Listener {
             PerformanceMetrics.virtualSpawnBundle();
             ids.put(viewer, spawnedId);
             if (animation != null) {
-                Vector motion = itemMovementForTick(animation.gravity, animation.velocity);
+                Vector motion = animation.nextMovement();
                 if (motion.lengthSquared() > ITEM_ANIMATION_EPSILON) {
                     SparrowHeart.getInstance().sendClientSideEntityMotion(player, motion, spawnedId);
                     PerformanceMetrics.virtualMotionBundle();
@@ -1243,14 +1301,34 @@ public final class DisplayManager implements Listener {
         ItemAnimationState animation = itemAnimations.get(logical);
         return animation == null
                 ? new Vector()
-                : itemMovementForTick(animation.gravity, animation.velocity);
+                : animation.nextMovement();
+    }
+
+    private static void rememberPacketItemPosition(Item logical, World world,
+                                                   double x, double y, double z) {
+        PacketItemPosition position = packetItemPositions.get(logical);
+        if (position == null) {
+            packetItemPositions.put(logical, new PacketItemPosition(world, x, y, z));
+        } else {
+            position.world = world;
+            position.x = x;
+            position.y = y;
+            position.z = z;
+        }
     }
 
     private static void synchronizeVirtualItemMotion(Item logical, Location location) {
+        synchronizeVirtualItemMotion(logical, location.getWorld(),
+                location.getX(), location.getY(), location.getZ());
+    }
+
+    private static void synchronizeVirtualItemMotion(Item logical, World world,
+                                                     double x, double y, double z) {
         Map<UUID, Integer> ids = virtualItemIds.get(logical);
         if (ids == null || ids.isEmpty()) {
             return;
         }
+        Location location = new Location(world, x, y, z);
         Vector motion = nextVirtualItemMotion(logical);
         for (Map.Entry<UUID, Integer> entry : ids.entrySet()) {
             Player player = Bukkit.getPlayer(entry.getKey());
@@ -1533,11 +1611,14 @@ public final class DisplayManager implements Listener {
         if (logical instanceof Item item) {
             ItemAnimationState animation = itemAnimations.get(item);
             if (animation != null) {
-                Location anchorLocation = logical.getBukkitEntity()
-                        .map(org.bukkit.entity.Entity::getLocation)
-                        .orElseGet(logical::getLocation);
-                index(logical, itemAnimationIndexLocation(
-                        animation.staticAnchor, anchorLocation, animation.position));
+                if (animation.staticAnchor) {
+                    Location anchorLocation = logical.getBukkitEntity()
+                            .map(org.bukkit.entity.Entity::getLocation)
+                            .orElseGet(logical::getLocation);
+                    index(logical, anchorLocation);
+                } else {
+                    index(logical, animation.world, animation.positionX, animation.positionZ);
+                }
                 return;
             }
         }
@@ -1545,16 +1626,20 @@ public final class DisplayManager implements Listener {
     }
 
     static boolean index(VisualizerEntity logical, Location location) {
-        UUID world = location.getWorld().getUID();
-        int chunkX = location.getBlockX() >> 4;
-        int chunkZ = location.getBlockZ() >> 4;
+        return index(logical, location.getWorld(), location.getX(), location.getZ());
+    }
+
+    private static boolean index(VisualizerEntity logical, World world, double x, double z) {
+        UUID worldId = world.getUID();
+        int chunkX = blockCoordinate(x) >> 4;
+        int chunkZ = blockCoordinate(z) >> 4;
         ChunkKey previous = chunkByLogical.get(logical);
-        if (previous != null && previous.world().equals(world)
+        if (previous != null && previous.world().equals(worldId)
                 && previous.x() == chunkX && previous.z() == chunkZ) {
             return false;
         }
         ChunkKey current = new ChunkKey(
-                world, chunkX, chunkZ);
+                worldId, chunkX, chunkZ);
         previous = chunkByLogical.put(logical, current);
         boolean migrated = previous != null && !previous.equals(current);
         if (migrated) {
@@ -1568,6 +1653,10 @@ public final class DisplayManager implements Listener {
         }
         logicalsByChunk.computeIfAbsent(current, ignored -> ConcurrentHashMap.newKeySet()).add(logical);
         return migrated;
+    }
+
+    private static int blockCoordinate(double coordinate) {
+        return (int) Math.floor(coordinate);
     }
 
     static void unindex(VisualizerEntity logical) {
@@ -2181,6 +2270,7 @@ public final class DisplayManager implements Listener {
             itemAnimations.remove(item);
             renderedItemStacks.remove(item);
             renderedItemLocations.remove(item);
+            packetItemPositions.remove(item);
             packetOnlyItems.remove(item);
             fixedItemDisplays.remove(item);
         }
@@ -2638,19 +2728,71 @@ public final class DisplayManager implements Listener {
 
     private static final class ItemAnimationState {
 
-        private Vector velocity;
+        private double velocityX;
+        private double velocityY;
+        private double velocityZ;
         private final boolean gravity;
-        private Location position;
+        private final World world;
+        private double positionX;
+        private double positionY;
+        private double positionZ;
         private final boolean staticAnchor;
-        private final Location logicalLocation;
+        private final World logicalWorld;
+        private final double logicalX;
+        private final double logicalY;
+        private final double logicalZ;
 
         private ItemAnimationState(Vector velocity, boolean gravity, Location position,
                                    boolean staticAnchor, Location logicalLocation) {
-            this.velocity = velocity.clone();
+            this.velocityX = velocity.getX();
+            this.velocityY = velocity.getY();
+            this.velocityZ = velocity.getZ();
             this.gravity = gravity;
-            this.position = position.clone();
+            this.world = Objects.requireNonNull(position.getWorld(), "position world");
+            this.positionX = position.getX();
+            this.positionY = position.getY();
+            this.positionZ = position.getZ();
             this.staticAnchor = staticAnchor;
-            this.logicalLocation = logicalLocation.clone();
+            this.logicalWorld = Objects.requireNonNull(logicalLocation.getWorld(), "logical world");
+            this.logicalX = logicalLocation.getX();
+            this.logicalY = logicalLocation.getY();
+            this.logicalZ = logicalLocation.getZ();
+        }
+
+        private Location position() {
+            return new Location(world, positionX, positionY, positionZ);
+        }
+
+        private Location logicalLocation() {
+            return new Location(logicalWorld, logicalX, logicalY, logicalZ);
+        }
+
+        private Vector nextMovement() {
+            return new Vector(velocityX,
+                    velocityY - (gravity ? ITEM_GRAVITY_PER_TICK : 0.0D), velocityZ);
+        }
+
+        private double velocityLengthSquared() {
+            return velocityX * velocityX + velocityY * velocityY + velocityZ * velocityZ;
+        }
+    }
+
+    private static final class PacketItemPosition {
+
+        private World world;
+        private double x;
+        private double y;
+        private double z;
+
+        private PacketItemPosition(World world, double x, double y, double z) {
+            this.world = world;
+            this.x = x;
+            this.y = y;
+            this.z = z;
+        }
+
+        private Location location() {
+            return new Location(world, x, y, z);
         }
     }
 

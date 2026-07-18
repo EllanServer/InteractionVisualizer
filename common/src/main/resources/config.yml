@@ -340,6 +340,9 @@ Settings:
       #A/B switch: eligible stationary virtual items without a visible custom name use no Bukkit tracker entity.
       #Requires separate packet-capture and client compatibility validation before enabling in production.
       PacketOnlyStatic: false
+      #A/B switch: safe animated items use per-viewer packet entities and create no Bukkit tracker anchor.
+      #Visible custom names and glowing items retain the Paper-owned fallback representation.
+      PacketOnlyAnimated: false
     VisibilityRateLimit:
       #A/B switch: hides remain immediate; newly visible entities are restored through a per-player token bucket.
       Enabled: false
