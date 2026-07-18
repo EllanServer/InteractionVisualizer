@@ -25,7 +25,21 @@ const protocolTraceMaxEvents = parsePositiveInteger(
   process.env.PHASE2_PROTOCOL_TRACE_MAX_EVENTS,
   100000
 )
+const protocolTracePacketAllowlist = parsePacketNameAllowlist(
+  process.env.PHASE2_PROTOCOL_TRACE_PACKET_ALLOWLIST
+)
+const protocolTraceAggregatePacketAllowlist = parsePacketNameAllowlist(
+  process.env.PHASE2_PROTOCOL_TRACE_AGGREGATE_PACKET_ALLOWLIST
+)
+assertDisjointPacketAllowlists(
+  protocolTracePacketAllowlist,
+  protocolTraceAggregatePacketAllowlist
+)
 const readyTimeoutMs = parseInteger(process.env.PHASE2_CLIENT_READY_TIMEOUT_MS, 120000)
+const keepAliveTimeoutMs = parsePositiveInteger(
+  process.env.PHASE2_CLIENT_KEEPALIVE_TIMEOUT_MS,
+  120000
+)
 
 let ending = false
 let exitCode = 0
@@ -41,11 +55,14 @@ let chunkUnloadCount = 0
 let currentPosition = { x: 0, y: 0, z: 0, yaw: 0, pitch: 0 }
 const protocolTraceStartedEpochMs = Date.now()
 const protocolTraceEvents = []
+const protocolTracePacketCountSeries = new Map()
 const protocolTraceParseErrors = []
 const protocolTraceWriteErrors = []
 let protocolTraceParseErrorCount = 0
 let protocolTraceDroppedEvents = 0
+let protocolTraceFilteredEvents = 0
 let protocolTraceObservedEvents = 0
+let protocolTraceAggregatedEvents = 0
 let protocolTraceWritten = false
 let bundleDelimiterCount = 0
 let bundleOpen = false
@@ -72,7 +89,7 @@ const client = minecraftProtocol.createClient({
   version,
   auth: 'offline',
   keepAlive: true,
-  checkTimeoutInterval: 120000,
+  checkTimeoutInterval: keepAliveTimeoutMs,
   hideErrors: false
 })
 
@@ -230,6 +247,10 @@ function finishStop () {
     clearTimeout(bundleDrainTimeout)
     bundleDrainTimeout = null
   }
+  // Record a completed local shutdown before asking the saturated server to
+  // acknowledge the socket close. The forced-exit fallback must not leave a
+  // stale play-state snapshot after an otherwise valid measurement.
+  writeState('stopped', { reason: 'client-stop-requested' })
   client.end('phase2 validation complete')
   setTimeout(() => exitAfterTrace(0, 'stop-timeout'), 2000).unref()
 }
@@ -259,6 +280,20 @@ function captureProtocolPacket (packet, metadata) {
     const kind = classifyProtocolPacket(packetName)
     if (kind == null) return
 
+    protocolTraceObservedEvents++
+    const normalizedPacketName = packetName.toLowerCase()
+    if (protocolTraceAggregatePacketAllowlist != null &&
+        protocolTraceAggregatePacketAllowlist.has(normalizedPacketName)) {
+      aggregateProtocolPacket(normalizedPacketName, Date.now())
+      protocolTraceAggregatedEvents++
+      return
+    }
+    if (protocolTracePacketAllowlist != null &&
+        !protocolTracePacketAllowlist.has(normalizedPacketName)) {
+      protocolTraceFilteredEvents++
+      return
+    }
+
     const entityIds = extractEntityIds(packet)
     const entityType = kind === 'spawn' ? extractEntityType(packetName, packet) : null
     const event = {
@@ -285,7 +320,6 @@ function captureProtocolPacket (packet, metadata) {
       if (ending && exitCode === 0 && !bundleOpen) finishStop()
     }
 
-    protocolTraceObservedEvents++
     if (protocolTraceEvents.length >= protocolTraceMaxEvents) {
       protocolTraceDroppedEvents++
       return
@@ -301,6 +335,15 @@ function captureProtocolPacket (packet, metadata) {
       })
     }
   }
+}
+
+function aggregateProtocolPacket (packetName, epochMs) {
+  let series = protocolTracePacketCountSeries.get(packetName)
+  if (series == null) {
+    series = new Map()
+    protocolTracePacketCountSeries.set(packetName, series)
+  }
+  series.set(epochMs, (series.get(epochMs) || 0) + 1)
 }
 
 function packetNameFromMetadata (metadata) {
@@ -455,6 +498,16 @@ function flushProtocolTrace (reason, requestedExitCode) {
     producer: 'phase2-protocol-client',
     direction: 'clientbound',
     clientVersion: version,
+    keepAliveTimeoutMs,
+    capturePacketAllowlist: protocolTracePacketAllowlist == null
+      ? null
+      : [...protocolTracePacketAllowlist].sort(),
+    aggregatePacketAllowlist: protocolTraceAggregatePacketAllowlist == null
+      ? null
+      : [...protocolTraceAggregatePacketAllowlist].sort(),
+    packetCountSeriesResolutionMs: 1,
+    packetCountSeriesTimestampSource: 'Date.now',
+    packetCountSeriesTimestampSemantics: 'point-observation',
     server: { host, port },
     startedEpochMs: protocolTraceStartedEpochMs,
     endedEpochMs: Date.now(),
@@ -463,7 +516,9 @@ function flushProtocolTrace (reason, requestedExitCode) {
       finalizationReason: reason,
       requestedExitCode,
       observedEvents: protocolTraceObservedEvents,
+      filteredEvents: protocolTraceFilteredEvents,
       capturedEvents: protocolTraceEvents.length,
+      aggregatedEvents: protocolTraceAggregatedEvents,
       maxBufferedEvents: protocolTraceMaxEvents,
       memoryBuffered: true,
       droppedEvents: protocolTraceDroppedEvents,
@@ -473,7 +528,17 @@ function flushProtocolTrace (reason, requestedExitCode) {
       bundleDelimiterCount,
       openBundleAtEnd: bundleOpen
     },
-    events: protocolTraceEvents
+    events: protocolTraceEvents,
+    packetCountSeries: Object.fromEntries(
+      [...protocolTracePacketCountSeries.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([packetName, series]) => [
+          packetName,
+          [...series.entries()]
+            .sort(([left], [right]) => left - right)
+            .map(([epochMs, count]) => ({ epochMs, count }))
+        ])
+    )
   }
   const temporaryPath = `${protocolTraceFile}.tmp-${process.pid}-${Date.now()}`
 
@@ -520,6 +585,7 @@ function stateSnapshot (phase, extra = {}) {
     port,
     username,
     version,
+    keepAliveTimeoutMs,
     loginSeen,
     positionSeen,
     chunkSeen,
@@ -571,6 +637,29 @@ function parsePositiveInteger (value, fallback) {
     throw new Error(`expected a positive integer but received: ${value}`)
   }
   return parsed
+}
+
+function parsePacketNameAllowlist (value) {
+  if (value == null || String(value).trim() === '') return null
+  const names = String(value)
+    .split(',')
+    .map(name => name.trim().toLowerCase())
+    .filter(name => name.length > 0)
+  if (names.length === 0) throw new Error('protocol trace packet allowlist is empty')
+  for (const name of names) {
+    if (!/^[a-z0-9_-]+$/.test(name)) {
+      throw new Error(`invalid protocol trace packet name: ${name}`)
+    }
+  }
+  return new Set(names)
+}
+
+function assertDisjointPacketAllowlists (capture, aggregate) {
+  if (capture == null || aggregate == null) return
+  const overlap = [...capture].filter(name => aggregate.has(name)).sort()
+  if (overlap.length > 0) {
+    throw new Error(`protocol trace capture and aggregate allowlists overlap: ${overlap.join(',')}`)
+  }
 }
 
 function safeJson (value) {

@@ -1,0 +1,1657 @@
+name: Upstream Runtime Comparison
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-runtime-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare-upstream-runtime:
+    name: Prepare immutable comparison stack
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'upstream-runtime-formal'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UPSTREAM_BUILD_NUMBER: "163"
+      UPSTREAM_SOURCE_SHA: c7f9dd0457451537653bf4b4c0eb0e4298c51187
+      UPSTREAM_ARTIFACT_SIZE: "5799385"
+      UPSTREAM_ARTIFACT_SHA256: a7ffc2ba053c74681feabc698e9fdb959ebd4f8252206fedd8801979e3de30c0
+      PRODUCTION_CANDIDATE_SHA: c28db0146ec2f35eaf066b4202b33f08d06bbc4b
+      PAPER_BUILD: "74"
+      PAPER_SHA256: 1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7
+      PAPER_ARTIFACT_SIZE: "52893229"
+      PAPER_ARTIFACT_URL: https://fill-data.papermc.io/v1/objects/1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7/paper-26.1.2-74.jar
+      COMPARE_RUNTIME_PROFILE: optimized-candidate
+      EXPECTED_HARNESS_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Check out candidate head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Validate comparison harness sources
+        run: |
+          set -euo pipefail
+          bash -n tools/perf/prepare-phase2-protocol-client.sh
+          bash -n tools/perf/run-upstream-runtime-once.sh
+          node --check tools/perf/phase2-protocol-client.js
+          node --check tools/perf/analyze-phase2-protocol-trace.js
+          node tools/perf/analyze-phase2-protocol-trace.js --self-test
+          pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 -SelfTest
+
+      - name: Build and test comparison harness once
+        run: ./gradlew clean check runtimeComparisonJar --no-daemon --no-build-cache --rerun-tasks
+
+      - name: Build fixed production candidate once
+        run: |
+          set -euo pipefail
+          PRODUCTION_WORKTREE="$RUNNER_TEMP/interactionvisualizer-production-b3c2453"
+          printf 'PRODUCTION_WORKTREE=%s\n' "$PRODUCTION_WORKTREE" >> "$GITHUB_ENV"
+          git cat-file -e "$PRODUCTION_CANDIDATE_SHA^{commit}"
+          [[ ! -e "$PRODUCTION_WORKTREE" ]]
+          git worktree add --detach "$PRODUCTION_WORKTREE" "$PRODUCTION_CANDIDATE_SHA"
+          [[ "$(git -C "$PRODUCTION_WORKTREE" rev-parse HEAD)" == "$PRODUCTION_CANDIDATE_SHA" ]]
+          (
+            cd "$PRODUCTION_WORKTREE"
+            ./gradlew clean shadowJar --no-daemon --no-build-cache --rerun-tasks
+          )
+
+      - name: Select candidate artifacts and canonical configuration
+        run: |
+          set -euo pipefail
+          [[ "$COMPARE_RUNTIME_PROFILE" == optimized-candidate ]]
+          mkdir -p compare-dependencies
+          mapfile -t candidate_jars < <(find "$PRODUCTION_WORKTREE/build/libs" -maxdepth 1 -type f \
+            -name 'InteractionVisualizer-*.jar' \
+            ! -name '*-sources.jar' \
+            ! -name '*-benchmark.jar' \
+            ! -name '*-runtime-compare.jar' | sort)
+          mapfile -t driver_jars < <(find build/libs -maxdepth 1 -type f \
+            -name 'InteractionVisualizer-*-runtime-compare.jar' | sort)
+          [[ "${#candidate_jars[@]}" == 1 ]] || {
+            printf 'Expected one candidate JAR, found %s\n' "${#candidate_jars[@]}" >&2
+            printf '%s\n' "${candidate_jars[@]}" >&2
+            exit 1
+          }
+          [[ "${#driver_jars[@]}" == 1 ]] || {
+            printf 'Expected one runtime comparison driver, found %s\n' "${#driver_jars[@]}" >&2
+            printf '%s\n' "${driver_jars[@]}" >&2
+            exit 1
+          }
+          cp "${candidate_jars[0]}" compare-dependencies/rewrite.jar
+          cp "${driver_jars[0]}" compare-dependencies/runtime-comparison-driver.jar
+          unzip -p compare-dependencies/rewrite.jar config.yml \
+            > compare-dependencies/canonical-config.yml
+          python3 - compare-dependencies/canonical-config.yml <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          for key in ("Updater", "DownloadLanguageFiles"):
+              pattern = rf"(?m)^(\s*{key}:\s*)true\s*$"
+              text, count = re.subn(pattern, rf"\1false", text)
+              if count != 1:
+                  raise SystemExit(f"Expected exactly one true {key} setting, found {count}")
+          runtime_profile = os.environ["COMPARE_RUNTIME_PROFILE"]
+          if runtime_profile not in {"legacy-parity", "optimized-candidate"}:
+              raise SystemExit(f"Unsupported runtime profile: {runtime_profile!r}")
+          requested_value = "true" if runtime_profile == "optimized-candidate" else "false"
+          for key in ("PacketOnlyStatic", "EventDriven"):
+              pattern = rf"(?m)^(\s*{key}:\s*)(?:true|false)\s*$"
+              text, count = re.subn(pattern, rf"\g<1>{requested_value}", text)
+              if count != 1:
+                  raise SystemExit(f"Expected exactly one {key} setting, found {count}")
+          path.write_text(text, encoding="utf-8", newline="\n")
+          PY
+          test -s compare-dependencies/canonical-config.yml
+
+      - name: Download and verify official upstream once
+        env:
+          JENKINS_BUILD_URL: https://ci.loohpjames.com/job/InteractionVisualizer/163
+        run: |
+          set -euo pipefail
+          api_url="$JENKINS_BUILD_URL/api/json?tree=number,result,actions[lastBuiltRevision[SHA1]],artifacts[fileName,relativePath]"
+          artifact_url="$JENKINS_BUILD_URL/artifact/common/target/InteractionVisualizer-2026.1.2.0.jar"
+          curl --globoff --fail --location --show-error --silent \
+            --retry 10 --retry-all-errors --retry-max-time 300 --connect-timeout 30 \
+            --output compare-dependencies/upstream-build-163.json "$api_url"
+          python3 - compare-dependencies/upstream-build-163.json \
+            "$UPSTREAM_BUILD_NUMBER" "$UPSTREAM_SOURCE_SHA" <<'PY'
+          import json
+          import sys
+
+          path, expected_number, expected_revision = sys.argv[1:]
+          data = json.load(open(path, encoding="utf-8"))
+          revisions = {
+              action.get("lastBuiltRevision", {}).get("SHA1")
+              for action in data.get("actions", [])
+              if isinstance(action, dict) and isinstance(action.get("lastBuiltRevision"), dict)
+          }
+          revisions.discard(None)
+          artifacts = {
+              (artifact.get("fileName"), artifact.get("relativePath"))
+              for artifact in data.get("artifacts", [])
+              if isinstance(artifact, dict)
+          }
+          expected_artifact = (
+              "InteractionVisualizer-2026.1.2.0.jar",
+              "common/target/InteractionVisualizer-2026.1.2.0.jar",
+          )
+          if data.get("number") != int(expected_number):
+              raise SystemExit(f"Jenkins build number mismatch: {data.get('number')!r}")
+          if data.get("result") != "SUCCESS":
+              raise SystemExit(f"Jenkins build is not successful: {data.get('result')!r}")
+          if revisions != {expected_revision}:
+              raise SystemExit(f"Jenkins source revision mismatch: {sorted(revisions)!r}")
+          if expected_artifact not in artifacts:
+              raise SystemExit(f"Jenkins artifact is absent: {sorted(artifacts)!r}")
+          PY
+          curl --fail --location --show-error \
+            --retry 10 --retry-all-errors --retry-max-time 300 --connect-timeout 30 \
+            --output compare-dependencies/upstream.jar "$artifact_url"
+          [[ "$(stat -c '%s' compare-dependencies/upstream.jar)" == "$UPSTREAM_ARTIFACT_SIZE" ]]
+          printf '%s  %s\n' "$UPSTREAM_ARTIFACT_SHA256" compare-dependencies/upstream.jar \
+            | sha256sum --check --strict
+          unzip -p compare-dependencies/upstream.jar plugin.yml | tr -d '\r' \
+            > compare-dependencies/upstream-plugin.yml
+          grep -Fxq 'name: InteractionVisualizer' compare-dependencies/upstream-plugin.yml
+          grep -Fxq 'version: 2026.1.2.0' compare-dependencies/upstream-plugin.yml
+          grep -Fxq 'main: com.loohp.interactionvisualizer.InteractionVisualizer' \
+            compare-dependencies/upstream-plugin.yml
+
+      - name: Download and verify Paper once
+        env:
+          PAPER_USER_AGENT: InteractionVisualizer-Upstream-Comparison/1.0 (https://github.com/EllanServer/InteractionVisualizer)
+        run: |
+          set -euo pipefail
+          expected_url="https://fill-data.papermc.io/v1/objects/$PAPER_SHA256/paper-26.1.2-74.jar"
+          [[ "$PAPER_ARTIFACT_URL" == "$expected_url" ]]
+          [[ "$PAPER_ARTIFACT_SIZE" =~ ^[0-9]+$ ]] && (( PAPER_ARTIFACT_SIZE > 0 ))
+          python3 - compare-dependencies/paper-build-74.json \
+            "$PAPER_BUILD" "$PAPER_SHA256" "$PAPER_ARTIFACT_SIZE" \
+            "$PAPER_ARTIFACT_URL" <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+
+          output, build, sha, size, url = sys.argv[1:]
+          Path(output).write_text(json.dumps({
+              "id": int(build),
+              "time": "2026-07-06T16:51:09Z",
+              "channel": "STABLE",
+              "commits": [],
+              "downloads": {
+                  "server:default": {
+                      "name": "paper-26.1.2-74.jar",
+                      "checksums": {"sha256": sha},
+                      "size": int(size),
+                      "url": url,
+                  }
+              },
+              "metadataSource": "pinned-from-verified-Paper-build-74-response",
+          }, indent=2) + "\n", encoding="utf-8")
+          PY
+          curl --fail --location --show-error \
+            --retry 10 --retry-all-errors --retry-max-time 300 --connect-timeout 30 \
+            -H "User-Agent: $PAPER_USER_AGENT" \
+            --output compare-dependencies/paper.jar "$PAPER_ARTIFACT_URL"
+          [[ "$(stat -c '%s' compare-dependencies/paper.jar)" == "$PAPER_ARTIFACT_SIZE" ]]
+          printf '%s  %s\n' "$PAPER_SHA256" compare-dependencies/paper.jar \
+            | sha256sum --check --strict
+
+      - name: Prepare immutable protocol client once
+        run: bash tools/perf/prepare-phase2-protocol-client.sh compare-dependencies/protocol-client
+
+      - name: Seal prepared comparison stack
+        run: |
+          set -euo pipefail
+          harness_source_sha=$(git rev-parse HEAD)
+          candidate_source_sha=$(git -C "$PRODUCTION_WORKTREE" rev-parse HEAD)
+          [[ "$harness_source_sha" == "$EXPECTED_HARNESS_SHA" ]]
+          [[ "$candidate_source_sha" == "$PRODUCTION_CANDIDATE_SHA" ]]
+          sha256sum \
+            compare-dependencies/upstream.jar \
+            compare-dependencies/rewrite.jar \
+            compare-dependencies/runtime-comparison-driver.jar \
+            compare-dependencies/canonical-config.yml \
+            compare-dependencies/paper.jar \
+            compare-dependencies/protocol-client/client-build-manifest.json \
+            > compare-dependencies/prepared-files.sha256
+          python3 - compare-dependencies/prepared-stack.json \
+            "$harness_source_sha" "$candidate_source_sha" "$COMPARE_RUNTIME_PROFILE" \
+            "$UPSTREAM_SOURCE_SHA" "$UPSTREAM_ARTIFACT_SHA256" "$PAPER_SHA256" <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+
+          output, harness, candidate, profile, upstream_source, upstream_sha, paper_sha = sys.argv[1:]
+          Path(output).write_text(json.dumps({
+              "schemaVersion": 1,
+              "harnessSourceSha": harness,
+              "candidateSourceSha": candidate,
+              "runtimeProfile": profile,
+              "upstreamSourceSha": upstream_source,
+              "upstreamArtifactSha256": upstream_sha,
+              "paperSha256": paper_sha,
+              "distribution": "single-build-artifact",
+          }, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Package prepared comparison stack
+        run: |
+          set -euo pipefail
+          mkdir prepared-transfer
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+            -czf prepared-transfer/comparison-stack.tar.gz compare-dependencies
+          sha256sum prepared-transfer/comparison-stack.tar.gz \
+            > prepared-transfer/comparison-stack.sha256
+
+      - name: Upload prepared comparison stack
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-runtime-prepared-${{ github.run_id }}
+          path: prepared-transfer
+          if-no-files-found: error
+          retention-days: 1
+
+  compare-upstream-runtime:
+    name: Paper 26.1.2-74 ${{ matrix.scenario }} run ${{ matrix.run_number }}
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'upstream-runtime-formal'
+    runs-on: ubuntu-latest
+    needs: prepare-upstream-runtime
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 24
+      matrix:
+        scenario: [dropped-items, block-active]
+        run_number: ${{ fromJSON((github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '[1,2,3,4,5,6,7,8,9,10,11,12]' || '[1,2,3,4]') }}
+    env:
+      UPSTREAM_BUILD_NUMBER: "163"
+      UPSTREAM_SOURCE_SHA: c7f9dd0457451537653bf4b4c0eb0e4298c51187
+      UPSTREAM_ARTIFACT_SIZE: "5799385"
+      UPSTREAM_ARTIFACT_SHA256: a7ffc2ba053c74681feabc698e9fdb959ebd4f8252206fedd8801979e3de30c0
+      PRODUCTION_CANDIDATE_SHA: c28db0146ec2f35eaf066b4202b33f08d06bbc4b
+      PAPER_BUILD: "74"
+      PAPER_SHA256: 1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7
+      COMPARE_RUNTIME_PROFILE: optimized-candidate
+      CAMPAIGN_KIND: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && 'formal' || 'smoke' }}
+      CAMPAIGN_RUNS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '12' || '4' }}
+      CAMPAIGN_WARMUP_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '60' || '10' }}
+      CAMPAIGN_SETTLE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '20' || '5' }}
+      CAMPAIGN_MEASURE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '120' || '10' }}
+      CAMPAIGN_SCENARIO: ${{ matrix.scenario }}
+      # The 1024-block stress campaign is retained separately as stability
+      # evidence: official upstream lost its observer in 6/6 formal A runs.
+      # Use a still-heavy stable regime here so both sides produce valid CPU data.
+      CAMPAIGN_SCENE_SIZE: ${{ matrix.scenario == 'dropped-items' && '512' || '256' }}
+      CAMPAIGN_RUN_NUMBER: ${{ matrix.run_number }}
+      EXPECTED_HARNESS_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Check out candidate head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Distribute prepared comparison stack locally
+        uses: actions/download-artifact@v4
+        with:
+          name: upstream-runtime-prepared-${{ github.run_id }}
+          path: prepared-transfer
+
+      - name: Verify and unpack prepared comparison stack
+        run: |
+          set -euo pipefail
+          sha256sum --check --strict prepared-transfer/comparison-stack.sha256
+          tar -xzf prepared-transfer/comparison-stack.tar.gz
+
+      - name: Establish immutable campaign provenance
+        run: |
+          set -euo pipefail
+          sha256sum --check --strict compare-dependencies/prepared-files.sha256
+          (
+            cd compare-dependencies/protocol-client
+            sha256sum --check --strict client-files.sha256
+          )
+          python3 - compare-dependencies/prepared-stack.json \
+            "$EXPECTED_HARNESS_SHA" "$PRODUCTION_CANDIDATE_SHA" \
+            "$COMPARE_RUNTIME_PROFILE" "$UPSTREAM_SOURCE_SHA" \
+            "$UPSTREAM_ARTIFACT_SHA256" "$PAPER_SHA256" <<'PY'
+          import json
+          import sys
+
+          source, harness, candidate, profile, upstream_source, upstream_sha, paper_sha = sys.argv[1:]
+          data = json.load(open(source, encoding="utf-8"))
+          expected = {
+              "schemaVersion": 1,
+              "harnessSourceSha": harness,
+              "candidateSourceSha": candidate,
+              "runtimeProfile": profile,
+              "upstreamSourceSha": upstream_source,
+              "upstreamArtifactSha256": upstream_sha,
+              "paperSha256": paper_sha,
+              "distribution": "single-build-artifact",
+          }
+          if data != expected:
+              raise SystemExit(f"prepared comparison stack mismatch: {data!r} != {expected!r}")
+          PY
+          read -r available_cpu_count server_cpu_set client_cpu_set < <(
+            python3 - <<'PY'
+          import os
+
+          cpus = sorted(os.sched_getaffinity(0))
+          if len(cpus) < 3:
+              raise SystemExit(f"At least three logical CPUs are required; found {cpus!r}")
+          print(len(cpus), ",".join(map(str, cpus[:-1])), cpus[-1])
+          PY
+          )
+          harness_source_sha=$(git rev-parse HEAD)
+          [[ "$harness_source_sha" == "$EXPECTED_HARNESS_SHA" ]]
+          candidate_source_sha="$PRODUCTION_CANDIDATE_SHA"
+          [[ "$candidate_source_sha" == "$PRODUCTION_CANDIDATE_SHA" ]]
+          rewrite_sha=$(sha256sum compare-dependencies/rewrite.jar | awk '{print $1}')
+          driver_sha=$(sha256sum compare-dependencies/runtime-comparison-driver.jar | awk '{print $1}')
+          config_sha=$(sha256sum compare-dependencies/canonical-config.yml | awk '{print $1}')
+          client_sha=$(sha256sum compare-dependencies/protocol-client/client-build-manifest.json | awk '{print $1}')
+          runner_sha=$(sha256sum tools/perf/run-upstream-runtime-once.sh | awk '{print $1}')
+          protocol_source_sha=$(sha256sum tools/perf/phase2-protocol-client.js | awk '{print $1}')
+          protocol_analyzer_sha=$(sha256sum tools/perf/analyze-phase2-protocol-trace.js | awk '{print $1}')
+          jvm_fingerprint='-Xms4G -Xmx4G -XX:+UseG1GC -XX:+AlwaysPreTouch -Xlog:gc*=info,safepoint=info:file=jvm-gc-safepoint.log:time,uptime,level,tags:filecount=0 -Dfile.encoding=UTF-8'
+          jvm_sha=$(printf '%s' "$jvm_fingerprint" | sha256sum | awk '{print $1}')
+          stack_sha=$(
+            {
+              sha256sum \
+                compare-dependencies/paper.jar \
+                compare-dependencies/runtime-comparison-driver.jar \
+                compare-dependencies/canonical-config.yml \
+                compare-dependencies/protocol-client/client-build-manifest.json \
+                tools/perf/run-upstream-runtime-once.sh \
+                tools/perf/phase2-protocol-client.js \
+                tools/perf/analyze-phase2-protocol-trace.js \
+                tools/perf/analyze-phase2-abba.ps1
+              java -version 2>&1
+              node --version
+              printf '%s\n' \
+                "jvm=$jvm_fingerprint" \
+                "scenario=$CAMPAIGN_SCENARIO" \
+                "sceneSize=$CAMPAIGN_SCENE_SIZE" \
+                "warmup=$CAMPAIGN_WARMUP_SECONDS" \
+                "settle=$CAMPAIGN_SETTLE_SECONDS" \
+                "measure=$CAMPAIGN_MEASURE_SECONDS" \
+                'preflightWarmup=10' 'preflightSettle=5' 'preflightMeasure=10' \
+                'paper=26.1.2-74' 'client=26.1.2' \
+                'networkTimeoutSeconds=300' \
+                'protocolClientKeepAliveTimeoutMs=300000' \
+                "availableCpuCount=$available_cpu_count" \
+                "serverCpuSet=$server_cpu_set" \
+                "clientCpuSet=$client_cpu_set"
+              printf '%s\n' \
+                "runtimeProfile=$COMPARE_RUNTIME_PROFILE" \
+                'samplingMode=independent-runners' \
+                'dependencyDistribution=single-build-artifact' \
+                'requestedPacketOnlyStatic=true' \
+                'requestedEventDrivenBlockUpdates=true'
+              printf '%s\n' "harnessSourceSha=$harness_source_sha"
+            } | sha256sum | awk '{print $1}'
+          )
+          [[ "$rewrite_sha" != "$UPSTREAM_ARTIFACT_SHA256" ]]
+          {
+            printf 'CANDIDATE_SOURCE_SHA=%s\n' "$candidate_source_sha"
+            printf 'REWRITE_ARTIFACT_SHA256=%s\n' "$rewrite_sha"
+            printf 'DRIVER_SHA256=%s\n' "$driver_sha"
+            printf 'CANONICAL_CONFIG_SHA256=%s\n' "$config_sha"
+            printf 'CLIENT_MANIFEST_SHA256=%s\n' "$client_sha"
+            printf 'RUNNER_SHA256=%s\n' "$runner_sha"
+            printf 'PROTOCOL_SOURCE_SHA256=%s\n' "$protocol_source_sha"
+            printf 'PROTOCOL_ANALYZER_SHA256=%s\n' "$protocol_analyzer_sha"
+            printf 'JVM_ARGUMENTS_SHA256=%s\n' "$jvm_sha"
+            printf 'CAMPAIGN_STACK_SHA256=%s\n' "$stack_sha"
+            printf 'AVAILABLE_CPU_COUNT=%s\n' "$available_cpu_count"
+            printf 'SERVER_CPU_SET=%s\n' "$server_cpu_set"
+            printf 'CLIENT_CPU_SET=%s\n' "$client_cpu_set"
+          } >> "$GITHUB_ENV"
+          python3 - compare-dependencies/campaign-provenance.json \
+            "$candidate_source_sha" "$rewrite_sha" "$driver_sha" "$config_sha" \
+            "$client_sha" "$runner_sha" "$protocol_source_sha" \
+            "$protocol_analyzer_sha" "$jvm_sha" "$stack_sha" \
+            "$CAMPAIGN_SCENARIO" "$CAMPAIGN_SCENE_SIZE" "$CAMPAIGN_KIND" \
+            "$CAMPAIGN_RUNS" "$CAMPAIGN_WARMUP_SECONDS" \
+            "$CAMPAIGN_SETTLE_SECONDS" "$CAMPAIGN_MEASURE_SECONDS" \
+            "$UPSTREAM_BUILD_NUMBER" "$UPSTREAM_SOURCE_SHA" \
+            "$UPSTREAM_ARTIFACT_SHA256" "$PAPER_BUILD" "$PAPER_SHA256" \
+            "$available_cpu_count" "$server_cpu_set" "$client_cpu_set" \
+            "$harness_source_sha" "$COMPARE_RUNTIME_PROFILE" <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+
+          (
+              output, candidate_source, rewrite_sha, driver_sha, config_sha,
+              client_sha, runner_sha, protocol_source_sha, protocol_analyzer_sha,
+              jvm_sha, stack_sha, scenario, scene_size, kind, runs, warmup,
+              settle, measure, upstream_build, upstream_source, upstream_sha,
+              paper_build, paper_sha, available_cpu_count, server_cpu_set,
+              client_cpu_set, harness_source_sha, runtime_profile,
+          ) = sys.argv[1:]
+          Path(output).write_text(json.dumps({
+              "schemaVersion": 1,
+              "campaignKind": kind,
+              "scenario": scenario,
+              "sceneSize": int(scene_size),
+              "runs": int(runs),
+              "warmupSeconds": int(warmup),
+              "settleSeconds": int(settle),
+              "measureSeconds": int(measure),
+              "networkTimeoutSeconds": 300,
+              "protocolClientKeepAliveTimeoutMs": 300000,
+              "runtimeProfile": runtime_profile,
+              "samplingMode": "independent-runners",
+              "dependencyDistribution": "single-build-artifact",
+              "requestedFlags": {
+                  "packetOnlyStatic": runtime_profile == "optimized-candidate",
+                  "eventDrivenBlockUpdates": runtime_profile == "optimized-candidate",
+              },
+              "preflight": {"runs": 2, "warmupSeconds": 10, "settleSeconds": 5,
+                            "measureSeconds": 10, "protocolTraceEnabled": True},
+              "variantA": {"meaning": "official-upstream", "jenkinsBuild": int(upstream_build),
+                           "sourceSha": upstream_source, "artifactSha256": upstream_sha},
+              "variantB": {"meaning": "rewritten-candidate", "sourceSha": candidate_source,
+                           "artifactSha256": rewrite_sha},
+              "harnessSourceSha": harness_source_sha,
+              "paper": {"version": "26.1.2", "build": int(paper_build),
+                        "sha256": paper_sha},
+              "driverSha256": driver_sha,
+              "canonicalConfigSha256": config_sha,
+              "protocolClientManifestSha256": client_sha,
+              "runnerSha256": runner_sha,
+              "protocolClientSourceSha256": protocol_source_sha,
+              "protocolTraceAnalyzerSha256": protocol_analyzer_sha,
+              "jvmArgumentsSha256": jvm_sha,
+              "stackSha256": stack_sha,
+              "cpuIsolation": {
+                  "availableCpuCount": int(available_cpu_count),
+                  "serverCpuSet": [int(value) for value in server_cpu_set.split(",")],
+                  "clientCpuSet": [int(client_cpu_set)],
+                  "disjoint": True,
+              },
+          }, indent=2) + "\n", encoding="utf-8")
+          PY
+          sha256sum \
+            compare-dependencies/upstream.jar \
+            compare-dependencies/rewrite.jar \
+            compare-dependencies/runtime-comparison-driver.jar \
+            compare-dependencies/canonical-config.yml \
+            compare-dependencies/paper.jar \
+            compare-dependencies/protocol-client/client-build-manifest.json \
+            > compare-dependencies/campaign-files.sha256
+
+      - name: Run full-scene protocol preflight for both artifacts
+        if: matrix.run_number == 1
+        run: |
+          set -euo pipefail
+          preflight_root="compare-results/$CAMPAIGN_SCENARIO/preflight"
+          mkdir -p "$preflight_root"
+          for variant in A B; do
+            if [[ "$variant" == A ]]; then
+              target=compare-dependencies/upstream.jar
+              expected_artifact_sha="$UPSTREAM_ARTIFACT_SHA256"
+            else
+              target=compare-dependencies/rewrite.jar
+              expected_artifact_sha="$REWRITE_ARTIFACT_SHA256"
+            fi
+            run_id=$(printf '%s_preflight_%s' "${CAMPAIGN_SCENARIO//-/_}" "$variant")
+            COMPARE_PLUGIN_JAR="$target" \
+            COMPARE_DRIVER_JAR=compare-dependencies/runtime-comparison-driver.jar \
+            COMPARE_CONFIG_FILE=compare-dependencies/canonical-config.yml \
+            COMPARE_PAPER_JAR=compare-dependencies/paper.jar \
+            COMPARE_CLIENT_ROOT=compare-dependencies/protocol-client \
+            COMPARE_OUTPUT_ROOT="$preflight_root" \
+            COMPARE_RUN_ID="$run_id" \
+            COMPARE_SCENARIO="$CAMPAIGN_SCENARIO" \
+            COMPARE_VARIANT="$variant" \
+            COMPARE_RUNTIME_PROFILE="$COMPARE_RUNTIME_PROFILE" \
+            COMPARE_CAMPAIGN_KIND=preflight \
+            COMPARE_SCENE_SIZE="$CAMPAIGN_SCENE_SIZE" \
+            COMPARE_WARMUP_SECONDS=10 \
+            COMPARE_SETTLE_SECONDS=5 \
+            COMPARE_MEASURE_SECONDS=10 \
+            COMPARE_PROTOCOL_TRACE_ENABLED=1 \
+            COMPARE_PROTOCOL_TRACE_MAX_EVENTS=500000 \
+            COMPARE_PROTOCOL_TRACE_PACKET_ALLOWLIST=bundle_delimiter,entity_destroy,spawn_entity \
+            COMPARE_PROTOCOL_TRACE_AGGREGATE_PACKET_ALLOWLIST=entity_metadata \
+            bash tools/perf/run-upstream-runtime-once.sh
+
+            python3 - \
+              "$preflight_root/$run_id/iv-compare.json" \
+              "$preflight_root/$run_id/run-manifest.json" \
+              "$preflight_root/$run_id/$run_id.protocol-trace-analysis.json" \
+              "$run_id" "$variant" "$CAMPAIGN_SCENARIO" "$CAMPAIGN_SCENE_SIZE" \
+              "$expected_artifact_sha" "$CANONICAL_CONFIG_SHA256" \
+              "$AVAILABLE_CPU_COUNT" "$SERVER_CPU_SET" "$CLIENT_CPU_SET" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          (metrics_path, manifest_path, trace_path, run_id, variant, scenario,
+           scene_size_text, artifact_sha, config_sha, available_cpu_count,
+           server_cpu_set, client_cpu_set) = sys.argv[1:]
+          scene_size = int(scene_size_text)
+          metrics = json.load(open(metrics_path, encoding="utf-8"))
+          manifest = json.load(open(manifest_path, encoding="utf-8"))
+          trace = json.load(open(trace_path, encoding="utf-8"))
+          affinity = json.loads(
+              Path(manifest_path).with_name("cpu-affinity.json").read_text(encoding="utf-8"))
+          expected_cpu = {
+              "availableCpuCount": int(available_cpu_count),
+              "serverCpuSet": [int(value) for value in server_cpu_set.split(",")],
+              "clientCpuSet": [int(client_cpu_set)],
+          }
+          expected_metrics = {
+              "label": run_id,
+              "variant": variant,
+              "scenario": scenario,
+              "expectedSceneSize": scene_size,
+              "actualSceneSize": scene_size,
+              "observer": "IVBench",
+              "observerOnline": True,
+              "targetEnabled": True,
+              "targetVersion": "2026.1.2.0",
+              "boundaryTickSamplesDiscarded": 1,
+              "droppedTickSamples": 0,
+          }
+          for field, expected in expected_metrics.items():
+              if metrics.get(field) != expected:
+                  raise SystemExit(f"preflight metrics mismatch {field}: {metrics.get(field)!r} != {expected!r}")
+          expected_requested_flags = {
+              "packetOnlyStatic": True,
+              "eventDrivenBlockUpdates": True,
+          }
+          expected_effective_flags = {
+              "packetOnlyStatic": {
+                  "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+                  "value": None if variant == "A" else True,
+                  "field": "packetOnlyStaticVirtualItems",
+              },
+              "eventDrivenBlockUpdates": {
+                  "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+                  "value": None if variant == "A" else True,
+                  "field": "eventDrivenBlockUpdates",
+              },
+          }
+          if metrics.get("requestedFlags") != expected_requested_flags:
+              raise SystemExit("preflight requested optimization flags mismatch")
+          if metrics.get("effectiveFlags") != expected_effective_flags:
+              raise SystemExit("preflight effective optimization flags mismatch")
+          if manifest.get("artifactSha256") != artifact_sha:
+              raise SystemExit("preflight artifact SHA mismatch")
+          if manifest.get("canonicalConfigSha256") != config_sha:
+              raise SystemExit("preflight canonical config SHA mismatch")
+          if manifest.get("runtimeProfile") != "optimized-candidate":
+              raise SystemExit("preflight runtime profile mismatch")
+          if manifest.get("campaignKind") != "preflight":
+              raise SystemExit("preflight campaign kind mismatch")
+          if manifest.get("serverHeapGiB") != 4:
+              raise SystemExit("preflight server heap mismatch")
+          expected_shutdown = {
+              "mode": "clean",
+              "stopGraceSeconds": 120,
+              "termGraceSeconds": 10,
+              "forcedAllowed": False,
+          }
+          if manifest.get("serverShutdown") != expected_shutdown:
+              raise SystemExit(
+                  f"preflight server shutdown mismatch: {manifest.get('serverShutdown')!r}")
+          if manifest.get("requestedFlags") != expected_requested_flags:
+              raise SystemExit("preflight manifest requested flags mismatch")
+          if manifest.get("effectiveFlags") != expected_effective_flags:
+              raise SystemExit("preflight manifest effective flags mismatch")
+          expected_packet_allowlist = [
+              "bundle_delimiter", "entity_destroy", "spawn_entity"
+          ]
+          expected_aggregate_packet_allowlist = ["entity_metadata"]
+          if manifest.get("protocolTracePacketAllowlist") != expected_packet_allowlist:
+              raise SystemExit("preflight manifest protocol packet allowlist mismatch")
+          if (manifest.get("protocolTraceAggregatePacketAllowlist")
+                  != expected_aggregate_packet_allowlist):
+              raise SystemExit("preflight manifest aggregate packet allowlist mismatch")
+          if trace.get("input", {}).get("capturePacketAllowlist") != expected_packet_allowlist:
+              raise SystemExit("preflight analysis protocol packet allowlist mismatch")
+          if (trace.get("input", {}).get("aggregatePacketAllowlist")
+                  != expected_aggregate_packet_allowlist):
+              raise SystemExit("preflight analysis aggregate packet allowlist mismatch")
+          for field, expected in expected_cpu.items():
+              if manifest.get(field) != expected:
+                  raise SystemExit(
+                      f"preflight manifest CPU mismatch {field}: {manifest.get(field)!r} != {expected!r}")
+              if affinity.get(field) != expected:
+                  raise SystemExit(
+                      f"preflight affinity mismatch {field}: {affinity.get(field)!r} != {expected!r}")
+          if affinity.get("disjoint") is not True:
+              raise SystemExit("preflight server/client CPU sets overlap")
+          status = trace.get("status", {})
+          if (status.get("formalEvidenceReady") is not True
+                  or status.get("traceComplete") is not True
+                  or status.get("sourceExitCodeOk") is not True
+                  or status.get("windowCovered") is not True
+                  or status.get("parse", {}).get("ok") is not True
+                  or status.get("drop", {}).get("ok") is not True
+                  or status.get("bundleBalanced") is not True):
+              raise SystemExit(f"protocol trace is not complete: {status!r}")
+          spawn_observations = trace.get("identity", {}).get("spawn", {}).get("observations")
+          if not isinstance(spawn_observations, int):
+              raise SystemExit(f"protocol spawn observations are invalid: {spawn_observations!r}")
+          metadata_observations = trace.get("counts", {}).get("byPacket", {}).get("entity_metadata", 0)
+          if not isinstance(metadata_observations, int) or metadata_observations <= 0:
+              raise SystemExit(
+                  f"preflight observed no entity metadata: {metadata_observations!r}")
+          aggregated_metadata = trace.get("counts", {}).get(
+              "byPacketAggregated", {}).get("entity_metadata", 0)
+          window_aggregated = trace.get("traceCoverage", {}).get(
+              "windowAggregatedEventCount")
+          if (aggregated_metadata != metadata_observations
+                  or window_aggregated != metadata_observations):
+              raise SystemExit(
+                  "preflight aggregate metadata count mismatch: "
+                  f"combined={metadata_observations!r}, "
+                  f"aggregate={aggregated_metadata!r}, window={window_aggregated!r}")
+          if scenario == "dropped-items" and spawn_observations < scene_size:
+              raise SystemExit(
+                  f"dropped-item preflight observed only {spawn_observations} spawns for {scene_size} items")
+          if scenario == "dropped-items" and metadata_observations < 5 * scene_size:
+              raise SystemExit(
+                  "dropped-item preflight observed too little visual metadata: "
+                  f"{metadata_observations} < {5 * scene_size}")
+          if scenario == "dropped-items" and variant == "B" and spawn_observations <= scene_size:
+              raise SystemExit(
+                  "rewritten dropped-item preflight produced no visual spawns beyond source items")
+          if scenario == "block-active":
+              block_fields = (
+                  "furnaceBlocks", "blastFurnaceBlocks", "smokerBlocks",
+                  "beehiveBlocks", "beeNestBlocks",
+              )
+              block_guards = {field: 0 for field in block_fields}
+              for index in range(scene_size):
+                  block_guards[block_fields[index % len(block_fields)]] += 1
+              block_guards["activeFurnaces"] = sum(
+                  block_guards[field] for field in block_fields[:3])
+              for field, expected in block_guards.items():
+                  if metrics.get(field) != expected:
+                      raise SystemExit(
+                          f"block preflight mismatch {field}: {metrics.get(field)!r} != {expected!r}")
+              minimum_visual_spawns = 2 * (
+                  metrics["beehiveBlocks"] + metrics["beeNestBlocks"]
+              )
+              if spawn_observations < minimum_visual_spawns:
+                  raise SystemExit(
+                      f"block-active preflight observed only {spawn_observations} spawns; "
+                      f"expected at least {minimum_visual_spawns} for two TextDisplays per bee block")
+          PY
+          done
+
+      - name: Run one restart-isolated independent sample
+        run: |
+          set -euo pipefail
+          result_root="compare-results/$CAMPAIGN_SCENARIO/$CAMPAIGN_KIND"
+          mkdir -p "$result_root"
+          manifest="$result_root/abba-manifest.csv"
+          printf 'Scenario,Block,Position,Variant,RunId,StackSha256,ArtifactSha256,CaptureMethod,SourcePath\n' \
+            > "$manifest"
+
+          run_number="$CAMPAIGN_RUN_NUMBER"
+          block=$(( (run_number - 1) / 4 + 1 ))
+          position=$(( (run_number - 1) % 4 + 1 ))
+          if (( block % 2 == 1 )); then pattern=ABBA; else pattern=BAAB; fi
+          variant=${pattern:$((position - 1)):1}
+          run_id=$(printf '%s_%s_%02d' "${CAMPAIGN_SCENARIO//-/_}" "$variant" "$run_number")
+          if [[ "$variant" == A ]]; then
+            target=compare-dependencies/upstream.jar
+            expected_artifact_sha="$UPSTREAM_ARTIFACT_SHA256"
+          else
+            target=compare-dependencies/rewrite.jar
+            expected_artifact_sha="$REWRITE_ARTIFACT_SHA256"
+          fi
+
+          COMPARE_PLUGIN_JAR="$target" \
+            COMPARE_DRIVER_JAR=compare-dependencies/runtime-comparison-driver.jar \
+            COMPARE_CONFIG_FILE=compare-dependencies/canonical-config.yml \
+            COMPARE_PAPER_JAR=compare-dependencies/paper.jar \
+            COMPARE_CLIENT_ROOT=compare-dependencies/protocol-client \
+            COMPARE_OUTPUT_ROOT="$result_root" \
+            COMPARE_RUN_ID="$run_id" \
+            COMPARE_SCENARIO="$CAMPAIGN_SCENARIO" \
+            COMPARE_VARIANT="$variant" \
+            COMPARE_RUNTIME_PROFILE="$COMPARE_RUNTIME_PROFILE" \
+            COMPARE_CAMPAIGN_KIND="$CAMPAIGN_KIND" \
+            COMPARE_SCENE_SIZE="$CAMPAIGN_SCENE_SIZE" \
+            COMPARE_WARMUP_SECONDS="$CAMPAIGN_WARMUP_SECONDS" \
+            COMPARE_SETTLE_SECONDS="$CAMPAIGN_SETTLE_SECONDS" \
+            COMPARE_MEASURE_SECONDS="$CAMPAIGN_MEASURE_SECONDS" \
+            COMPARE_PROTOCOL_TRACE_ENABLED=0 \
+          bash tools/perf/run-upstream-runtime-once.sh
+
+          python3 - "$manifest" "$result_root" "$run_id" "$CAMPAIGN_SCENARIO" \
+              "$block" "$position" "$variant" "$CAMPAIGN_SCENE_SIZE" \
+              "$CAMPAIGN_STACK_SHA256" "$expected_artifact_sha" \
+              "$CANONICAL_CONFIG_SHA256" "$DRIVER_SHA256" "$PAPER_SHA256" \
+              "$CLIENT_MANIFEST_SHA256" "$RUNNER_SHA256" "$JVM_ARGUMENTS_SHA256" \
+              "$AVAILABLE_CPU_COUNT" "$SERVER_CPU_SET" "$CLIENT_CPU_SET" \
+              "$COMPARE_RUNTIME_PROFILE" "$CAMPAIGN_KIND" <<'PY'
+          import csv
+          import json
+          from pathlib import Path
+          import sys
+
+          (manifest_text, root_text, run_id, scenario, block, position, variant,
+           scene_size_text, stack_sha, artifact_sha, config_sha, driver_sha,
+           paper_sha, client_sha, runner_sha, jvm_sha, available_cpu_count,
+           server_cpu_set, client_cpu_set, runtime_profile, campaign_kind) = sys.argv[1:]
+          root = Path(root_text)
+          metrics_path = root / run_id / "iv-compare.json"
+          run_manifest_path = root / run_id / "run-manifest.json"
+          metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+          run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+          affinity = json.loads(
+              (root / run_id / "cpu-affinity.json").read_text(encoding="utf-8"))
+          scene_size = int(scene_size_text)
+          expected_server_cpu_set = [int(value) for value in server_cpu_set.split(",")]
+          expected_client_cpu_set = [int(client_cpu_set)]
+          expected_metrics = {
+              "schemaVersion": 1,
+              "label": run_id,
+              "variant": variant,
+              "scenario": scenario,
+              "expectedSceneSize": scene_size,
+              "actualSceneSize": scene_size,
+              "observer": "IVBench",
+              "observerOnline": True,
+              "targetEnabled": True,
+              "targetVersion": "2026.1.2.0",
+              "boundaryTickSamplesDiscarded": 1,
+              "droppedTickSamples": 0,
+          }
+          for field, expected in expected_metrics.items():
+              if metrics.get(field) != expected:
+                  raise SystemExit(f"metrics mismatch {run_id}/{field}: {metrics.get(field)!r} != {expected!r}")
+          expected_requested_flags = {
+              "packetOnlyStatic": True,
+              "eventDrivenBlockUpdates": True,
+          }
+          expected_effective_flags = {
+              "packetOnlyStatic": {
+                  "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+                  "value": None if variant == "A" else True,
+                  "field": "packetOnlyStaticVirtualItems",
+              },
+              "eventDrivenBlockUpdates": {
+                  "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+                  "value": None if variant == "A" else True,
+                  "field": "eventDrivenBlockUpdates",
+              },
+          }
+          if runtime_profile != "optimized-candidate":
+              raise SystemExit(f"unexpected runtime profile: {runtime_profile!r}")
+          if metrics.get("requestedFlags") != expected_requested_flags:
+              raise SystemExit(f"metrics requested flags mismatch for {run_id}")
+          if metrics.get("effectiveFlags") != expected_effective_flags:
+              raise SystemExit(f"metrics effective flags mismatch for {run_id}")
+          expected_manifest = {
+              "runId": run_id,
+              "scenario": scenario,
+              "variant": variant,
+              "sceneSize": scene_size,
+              "artifactSha256": artifact_sha,
+              "driverSha256": driver_sha,
+              "paperSha256": paper_sha,
+              "canonicalConfigSha256": config_sha,
+              "protocolClientManifestSha256": client_sha,
+              "runnerScriptSha256": runner_sha,
+              "jvmArgumentsSha256": jvm_sha,
+              "availableCpuCount": int(available_cpu_count),
+              "serverCpuSet": expected_server_cpu_set,
+              "clientCpuSet": expected_client_cpu_set,
+              "runtimeProfile": runtime_profile,
+              "campaignKind": campaign_kind,
+              "serverHeapGiB": 4,
+              "requestedFlags": expected_requested_flags,
+              "effectiveFlags": expected_effective_flags,
+          }
+          for field, expected in expected_manifest.items():
+              if run_manifest.get(field) != expected:
+                  raise SystemExit(
+                      f"run manifest mismatch {run_id}/{field}: {run_manifest.get(field)!r} != {expected!r}")
+          expected_forced_shutdown = (
+              campaign_kind == "formal" and scenario == "block-active"
+              and variant == "A" and scene_size >= 1024)
+          expected_shutdown = {
+              "stopGraceSeconds": 120,
+              "termGraceSeconds": 10,
+              "forcedAllowed": expected_forced_shutdown,
+          }
+          shutdown = run_manifest.get("serverShutdown")
+          if not isinstance(shutdown, dict):
+              raise SystemExit(f"server shutdown evidence missing for {run_id}")
+          for field, expected in expected_shutdown.items():
+              if shutdown.get(field) != expected:
+                  raise SystemExit(
+                      f"server shutdown mismatch {run_id}/{field}: "
+                      f"{shutdown.get(field)!r} != {expected!r}")
+          if shutdown.get("mode") not in {"clean", "forced-after-stop-timeout"}:
+              raise SystemExit(f"invalid server shutdown mode for {run_id}: {shutdown.get('mode')!r}")
+          if shutdown.get("mode") != "clean" and not expected_forced_shutdown:
+              raise SystemExit(f"unexpected forced server shutdown for {run_id}")
+          expected_affinity = {
+              "availableCpuCount": int(available_cpu_count),
+              "serverCpuSet": expected_server_cpu_set,
+              "clientCpuSet": expected_client_cpu_set,
+              "disjoint": True,
+          }
+          for field, expected in expected_affinity.items():
+              if affinity.get(field) != expected:
+                  raise SystemExit(
+                      f"CPU affinity mismatch {run_id}/{field}: {affinity.get(field)!r} != {expected!r}")
+          if metrics.get("tickSamples", 0) <= 0:
+              raise SystemExit(f"{run_id} has no tick samples")
+          with open(manifest_text, "a", encoding="utf-8", newline="") as stream:
+              csv.writer(stream, lineterminator="\n").writerow([
+                  scenario, block, position, variant, run_id, stack_sha, artifact_sha,
+                  "paper-server-tick-end-event", f"{run_id}/iv-compare.json",
+              ])
+          PY
+
+      - name: Upload independent run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-runtime-run-${{ matrix.scenario }}-${{ env.CAMPAIGN_KIND }}-${{ github.run_id }}-${{ matrix.run_number }}
+          path: |
+            compare-results/${{ matrix.scenario }}
+            compare-dependencies/campaign-provenance.json
+            compare-dependencies/campaign-files.sha256
+            compare-dependencies/upstream-build-163.json
+            compare-dependencies/upstream-plugin.yml
+            compare-dependencies/paper-build-74.json
+            compare-dependencies/canonical-config.yml
+            compare-dependencies/protocol-client/client-build-manifest.json
+            compare-dependencies/protocol-client/client-files.sha256
+            compare-dependencies/protocol-client/node-minecraft-protocol/package-lock.json
+            compare-dependencies/protocol-client/node-minecraft-protocol/production-lock-inventory.json
+          if-no-files-found: warn
+          retention-days: 3
+
+  aggregate-upstream-runtime:
+    name: Aggregate ${{ matrix.scenario }} independent samples
+    needs: [compare-upstream-runtime]
+    if: ${{ needs.compare-upstream-runtime.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [dropped-items, block-active]
+    env:
+      UPSTREAM_BUILD_NUMBER: "163"
+      UPSTREAM_SOURCE_SHA: c7f9dd0457451537653bf4b4c0eb0e4298c51187
+      UPSTREAM_ARTIFACT_SHA256: a7ffc2ba053c74681feabc698e9fdb959ebd4f8252206fedd8801979e3de30c0
+      PAPER_BUILD: "74"
+      PAPER_SHA256: 1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7
+      COMPARE_RUNTIME_PROFILE: optimized-candidate
+      CAMPAIGN_KIND: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && 'formal' || 'smoke' }}
+      CAMPAIGN_RUNS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '12' || '4' }}
+      CAMPAIGN_WARMUP_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '60' || '10' }}
+      CAMPAIGN_SETTLE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '20' || '5' }}
+      CAMPAIGN_MEASURE_SECONDS: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && '120' || '10' }}
+      CAMPAIGN_SCENARIO: ${{ matrix.scenario }}
+      CAMPAIGN_SCENE_SIZE: ${{ matrix.scenario == 'dropped-items' && '512' || '256' }}
+
+    steps:
+      - name: Check out harness source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download all independent run artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: upstream-runtime-run-${{ matrix.scenario }}-${{ env.CAMPAIGN_KIND }}-${{ github.run_id }}-*
+          path: parallel-runs
+
+      - name: Assemble and verify independent campaign
+        run: |
+          set -euo pipefail
+          result_root="compare-results/$CAMPAIGN_SCENARIO/$CAMPAIGN_KIND"
+          mkdir -p "$result_root" compare-dependencies
+          manifest="$result_root/abba-manifest.csv"
+          printf 'Scenario,Block,Position,Variant,RunId,StackSha256,ArtifactSha256,CaptureMethod,SourcePath\n' \
+            > "$manifest"
+
+          mapfile -t manifests < <(find parallel-runs -type f \
+            -path "*/compare-results/$CAMPAIGN_SCENARIO/$CAMPAIGN_KIND/abba-manifest.csv" | sort)
+          [[ "${#manifests[@]}" == "$CAMPAIGN_RUNS" ]]
+          for source_manifest in "${manifests[@]}"; do
+            run_id=$(python3 - "$source_manifest" <<'PY'
+          import csv
+          import sys
+
+          rows = list(csv.DictReader(open(sys.argv[1], encoding="utf-8", newline="")))
+          if len(rows) != 1:
+              raise SystemExit(f"per-run manifest must have one row: {sys.argv[1]}")
+          print(rows[0]["RunId"])
+          PY
+            )
+            source_root=$(dirname "$source_manifest")
+            [[ -d "$source_root/$run_id" ]]
+            [[ ! -e "$result_root/$run_id" ]]
+            cp -a "$source_root/$run_id" "$result_root/$run_id"
+            tail -n +2 "$source_manifest" >> "$manifest"
+          done
+
+          mapfile -t preflight_roots < <(find parallel-runs -type d \
+            -path "*/compare-results/$CAMPAIGN_SCENARIO/preflight" | sort)
+          [[ "${#preflight_roots[@]}" == 1 ]]
+          cp -a "${preflight_roots[0]}" "compare-results/$CAMPAIGN_SCENARIO/preflight"
+
+          while IFS= read -r relative; do
+            mapfile -t sources < <(find parallel-runs -type f \
+              -path "*/compare-dependencies/$relative" | sort)
+            [[ "${#sources[@]}" == "$CAMPAIGN_RUNS" ]]
+            hash_count=$(sha256sum "${sources[@]}" | awk '{print $1}' | sort -u | wc -l)
+            [[ "$hash_count" == 1 ]]
+            destination="compare-dependencies/$relative"
+            mkdir -p "$(dirname "$destination")"
+            cp "${sources[0]}" "$destination"
+          done <<'EOF'
+          campaign-provenance.json
+          campaign-files.sha256
+          upstream-build-163.json
+          upstream-plugin.yml
+          paper-build-74.json
+          canonical-config.yml
+          protocol-client/client-build-manifest.json
+          protocol-client/client-files.sha256
+          protocol-client/node-minecraft-protocol/package-lock.json
+          protocol-client/node-minecraft-protocol/production-lock-inventory.json
+          EOF
+
+          python3 - compare-dependencies/campaign-provenance.json "$GITHUB_ENV" \
+            "$CAMPAIGN_SCENARIO" "$CAMPAIGN_KIND" "$CAMPAIGN_RUNS" <<'PY'
+          import json
+          import sys
+
+          source, output, scenario, kind, runs = sys.argv[1:]
+          data = json.load(open(source, encoding="utf-8"))
+          expected = {
+              "scenario": scenario,
+              "campaignKind": kind,
+              "runs": int(runs),
+              "runtimeProfile": "optimized-candidate",
+              "samplingMode": "independent-runners",
+              "dependencyDistribution": "single-build-artifact",
+              "networkTimeoutSeconds": 300,
+              "protocolClientKeepAliveTimeoutMs": 300000,
+          }
+          for field, value in expected.items():
+              if data.get(field) != value:
+                  raise SystemExit(
+                      f"campaign provenance mismatch {field}: {data.get(field)!r} != {value!r}")
+          cpu = data["cpuIsolation"]
+          values = {
+              "CANDIDATE_SOURCE_SHA": data["variantB"]["sourceSha"],
+              "REWRITE_ARTIFACT_SHA256": data["variantB"]["artifactSha256"],
+              "DRIVER_SHA256": data["driverSha256"],
+              "CANONICAL_CONFIG_SHA256": data["canonicalConfigSha256"],
+              "CLIENT_MANIFEST_SHA256": data["protocolClientManifestSha256"],
+              "RUNNER_SHA256": data["runnerSha256"],
+              "JVM_ARGUMENTS_SHA256": data["jvmArgumentsSha256"],
+              "CAMPAIGN_STACK_SHA256": data["stackSha256"],
+              "AVAILABLE_CPU_COUNT": cpu["availableCpuCount"],
+              "SERVER_CPU_SET": ",".join(map(str, cpu["serverCpuSet"])),
+              "CLIENT_CPU_SET": cpu["clientCpuSet"][0],
+          }
+          with open(output, "a", encoding="utf-8") as stream:
+              for key, value in values.items():
+                  stream.write(f"{key}={value}\n")
+          PY
+
+      - name: Validate campaign and analyze MSPT and TPS
+        run: |
+          set -euo pipefail
+          result_root="compare-results/$CAMPAIGN_SCENARIO/$CAMPAIGN_KIND"
+          manifest="$result_root/abba-manifest.csv"
+          python3 - "$manifest" "$result_root" "$CAMPAIGN_RUNS" \
+            "$CAMPAIGN_SCENARIO" "$CAMPAIGN_SCENE_SIZE" \
+            "$CAMPAIGN_STACK_SHA256" "$UPSTREAM_ARTIFACT_SHA256" \
+            "$REWRITE_ARTIFACT_SHA256" "$CANONICAL_CONFIG_SHA256" \
+            "$AVAILABLE_CPU_COUNT" "$SERVER_CPU_SET" "$CLIENT_CPU_SET" \
+            "$COMPARE_RUNTIME_PROFILE" "$CAMPAIGN_KIND" <<'PY'
+          import csv
+          import json
+          from pathlib import Path
+          import sys
+
+          (manifest_text, root_text, runs_text, scenario, scene_size_text,
+           stack_sha, upstream_sha, rewrite_sha, config_sha, available_cpu_count,
+           server_cpu_set, client_cpu_set, runtime_profile, kind) = sys.argv[1:]
+          expected_runs = int(runs_text)
+          scene_size = int(scene_size_text)
+          root = Path(root_text).resolve()
+          rows = list(csv.DictReader(open(manifest_text, encoding="utf-8", newline="")))
+          if len(rows) != expected_runs:
+              raise SystemExit(f"manifest has {len(rows)} rows, expected {expected_runs}")
+          if len({row["RunId"] for row in rows}) != expected_runs:
+              raise SystemExit("manifest contains duplicate run IDs")
+          if {row["StackSha256"] for row in rows} != {stack_sha}:
+              raise SystemExit("campaign stack SHA drifted")
+          if {row["CaptureMethod"] for row in rows} != {"paper-server-tick-end-event"}:
+              raise SystemExit("campaign capture method drifted")
+          expected_artifacts = {"A": upstream_sha, "B": rewrite_sha}
+          observed_artifacts = {}
+          observed_configs = set()
+          blocks = {}
+          expected_cpu = {
+              "availableCpuCount": int(available_cpu_count),
+              "serverCpuSet": [int(value) for value in server_cpu_set.split(",")],
+              "clientCpuSet": [int(client_cpu_set)],
+          }
+          for row in rows:
+              variant = row["Variant"]
+              if variant not in expected_artifacts:
+                  raise SystemExit(f"invalid variant: {variant!r}")
+              observed_artifacts.setdefault(variant, set()).add(row["ArtifactSha256"])
+              blocks.setdefault(int(row["Block"]), []).append((int(row["Position"]), variant))
+              source = (Path(manifest_text).parent / row["SourcePath"]).resolve()
+              if root not in source.parents:
+                  raise SystemExit(f"metrics path escapes result root: {source}")
+              metrics = json.loads(source.read_text(encoding="utf-8"))
+              run_manifest = json.loads((source.parent / "run-manifest.json").read_text(encoding="utf-8"))
+              observed_configs.add(run_manifest.get("canonicalConfigSha256"))
+              affinity = json.loads(
+                  (source.parent / "cpu-affinity.json").read_text(encoding="utf-8"))
+              for field, expected in expected_cpu.items():
+                  if run_manifest.get(field) != expected:
+                      raise SystemExit(
+                          f"CPU manifest drift {row['RunId']}/{field}: "
+                          f"{run_manifest.get(field)!r} != {expected!r}")
+                  if affinity.get(field) != expected:
+                      raise SystemExit(
+                          f"CPU affinity drift {row['RunId']}/{field}: "
+                          f"{affinity.get(field)!r} != {expected!r}")
+              if affinity.get("disjoint") is not True:
+                  raise SystemExit(f"CPU affinity overlaps in {row['RunId']}")
+              required = {
+                  "label": row["RunId"], "variant": variant, "scenario": scenario,
+                  "expectedSceneSize": scene_size, "actualSceneSize": scene_size,
+                  "observer": "IVBench", "observerOnline": True,
+                  "targetEnabled": True, "targetVersion": "2026.1.2.0",
+                  "boundaryTickSamplesDiscarded": 1,
+                  "droppedTickSamples": 0,
+              }
+              for field, expected in required.items():
+                  if metrics.get(field) != expected:
+                      raise SystemExit(
+                          f"final gate mismatch {row['RunId']}/{field}: {metrics.get(field)!r} != {expected!r}")
+              expected_requested_flags = {
+                  "packetOnlyStatic": True,
+                  "eventDrivenBlockUpdates": True,
+              }
+              expected_effective_flags = {
+                  "packetOnlyStatic": {
+                      "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+                      "value": None if variant == "A" else True,
+                      "field": "packetOnlyStaticVirtualItems",
+                  },
+                  "eventDrivenBlockUpdates": {
+                      "status": "unsupported-legacy" if variant == "A" else "runtime-field",
+                      "value": None if variant == "A" else True,
+                      "field": "eventDrivenBlockUpdates",
+                  },
+              }
+              if runtime_profile != "optimized-candidate":
+                  raise SystemExit(f"unexpected runtime profile: {runtime_profile!r}")
+              for document_name, document in (("metrics", metrics), ("manifest", run_manifest)):
+                  if document.get("requestedFlags") != expected_requested_flags:
+                      raise SystemExit(
+                          f"{document_name} requested flags drifted in {row['RunId']}")
+                  if document.get("effectiveFlags") != expected_effective_flags:
+                      raise SystemExit(
+                          f"{document_name} effective flags drifted in {row['RunId']}")
+              if run_manifest.get("runtimeProfile") != runtime_profile:
+                  raise SystemExit(f"runtime profile drifted in {row['RunId']}")
+              if run_manifest.get("networkTimeoutSeconds") != 300:
+                  raise SystemExit(f"network timeout drifted in {row['RunId']}")
+              if run_manifest.get("serverHeapGiB") != 4:
+                  raise SystemExit(f"server heap drifted in {row['RunId']}")
+              if run_manifest.get("campaignKind") != kind:
+                  raise SystemExit(f"campaign kind drifted in {row['RunId']}")
+              expected_forced_shutdown = (
+                  kind == "formal" and scenario == "block-active" and variant == "A"
+                  and scene_size >= 1024)
+              expected_shutdown = {
+                  "stopGraceSeconds": 120,
+                  "termGraceSeconds": 10,
+                  "forcedAllowed": expected_forced_shutdown,
+              }
+              shutdown = run_manifest.get("serverShutdown")
+              if not isinstance(shutdown, dict):
+                  raise SystemExit(f"server shutdown evidence missing in {row['RunId']}")
+              for field, expected in expected_shutdown.items():
+                  if shutdown.get(field) != expected:
+                      raise SystemExit(
+                          f"server shutdown drift {row['RunId']}/{field}: "
+                          f"{shutdown.get(field)!r} != {expected!r}")
+              if shutdown.get("mode") not in {"clean", "forced-after-stop-timeout"}:
+                  raise SystemExit(
+                      f"invalid server shutdown mode in {row['RunId']}: {shutdown.get('mode')!r}")
+              if shutdown.get("mode") != "clean" and not expected_forced_shutdown:
+                  raise SystemExit(f"unexpected forced server shutdown in {row['RunId']}")
+              if scenario == "block-active":
+                  block_fields = (
+                      "furnaceBlocks", "blastFurnaceBlocks", "smokerBlocks",
+                      "beehiveBlocks", "beeNestBlocks",
+                  )
+                  block_guards = {field: 0 for field in block_fields}
+                  for index in range(scene_size):
+                      block_guards[block_fields[index % len(block_fields)]] += 1
+                  block_guards["activeFurnaces"] = sum(
+                      block_guards[field] for field in block_fields[:3])
+                  for field, expected in block_guards.items():
+                      if metrics.get(field) != expected:
+                          raise SystemExit(
+                              f"block workload mismatch {row['RunId']}/{field}: "
+                              f"{metrics.get(field)!r} != {expected!r}")
+          if observed_artifacts != {"A": {upstream_sha}, "B": {rewrite_sha}}:
+              raise SystemExit(f"artifact provenance drifted: {observed_artifacts!r}")
+          if upstream_sha == rewrite_sha:
+              raise SystemExit("A and B unexpectedly use the same artifact")
+          if observed_configs != {config_sha}:
+              raise SystemExit(f"canonical config SHA drifted: {observed_configs!r}")
+          expected_patterns = {1: "ABBA"} if expected_runs == 4 else {
+              1: "ABBA", 2: "BAAB", 3: "ABBA",
+          }
+          actual_patterns = {
+              block: "".join(variant for _, variant in sorted(entries))
+              for block, entries in blocks.items()
+          }
+          if actual_patterns != expected_patterns:
+              raise SystemExit(f"ABBA pattern mismatch: {actual_patterns!r}")
+          PY
+
+          minimum_seconds=$(( CAMPAIGN_MEASURE_SECONDS - 2 ))
+          incomplete=()
+          if [[ "$CAMPAIGN_RUNS" != 12 ]]; then incomplete=(-AllowIncomplete); fi
+          for metric in msptMean msptP95 msptP99 msptP999; do
+            pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$manifest" \
+              -Scenario "$CAMPAIGN_SCENARIO" -Metric "$metric" \
+              -Direction LowerIsBetter -MinimumSeconds "$minimum_seconds" \
+              -IndependentSamples "${incomplete[@]}" \
+              -OutputJson "$result_root/$metric.analysis.json" -Overwrite
+          done
+          pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$manifest" \
+            -Scenario "$CAMPAIGN_SCENARIO" -Metric observedTps \
+            -Direction HigherIsBetter -MinimumSeconds "$minimum_seconds" \
+            -IndependentSamples "${incomplete[@]}" \
+            -OutputJson "$result_root/observedTps.analysis.json" -Overwrite
+
+      - name: Publish comparison summary
+        if: success()
+        run: |
+          set -euo pipefail
+          result_root="compare-results/$CAMPAIGN_SCENARIO/$CAMPAIGN_KIND"
+          python3 - "$result_root" "$GITHUB_STEP_SUMMARY" "$CAMPAIGN_SCENARIO" \
+            "$CAMPAIGN_SCENE_SIZE" "$CAMPAIGN_KIND" "$CAMPAIGN_RUNS" \
+            "$UPSTREAM_SOURCE_SHA" "$UPSTREAM_ARTIFACT_SHA256" \
+            "$CANDIDATE_SOURCE_SHA" "$REWRITE_ARTIFACT_SHA256" \
+            "$PAPER_SHA256" "$CAMPAIGN_STACK_SHA256" \
+            "$COMPARE_RUNTIME_PROFILE" <<'PY'
+          import csv
+          import json
+          from pathlib import Path
+          import statistics
+          import sys
+
+          (root_text, summary_text, scenario, scene_size, kind, runs,
+           upstream_source, upstream_artifact, candidate_source, candidate_artifact,
+           paper_sha, stack_sha, runtime_profile) = sys.argv[1:]
+          root = Path(root_text)
+          rows = list(csv.DictReader((root / "abba-manifest.csv").open(encoding="utf-8")))
+          metrics_by_variant = {"A": [], "B": []}
+          shutdown_modes_by_variant = {"A": [], "B": []}
+          for row in rows:
+              metrics = json.loads((root / row["SourcePath"]).read_text(encoding="utf-8"))
+              metrics_by_variant[row["Variant"]].append(metrics)
+              run_manifest = json.loads(
+                  (root / row["SourcePath"]).with_name("run-manifest.json").read_text(
+                      encoding="utf-8"))
+              shutdown_modes_by_variant[row["Variant"]].append(
+                  run_manifest["serverShutdown"]["mode"])
+          shutdown_mode_counts = {
+              variant: {
+                  mode: modes.count(mode)
+                  for mode in ("clean", "forced-after-stop-timeout")
+              }
+              for variant, modes in shutdown_modes_by_variant.items()
+          }
+          metric_specs = [
+              ("msptMean", "ms"),
+              ("msptP95", "ms"),
+              ("msptP99", "ms"),
+              ("msptP999", "ms"),
+              ("observedTps", "TPS"),
+          ]
+          analyses = {}
+          for metric, _ in metric_specs:
+              document = json.loads(
+                  (root / f"{metric}.analysis.json").read_text(encoding="utf-8"))
+              results = document.get("results")
+              if not isinstance(results, list) or len(results) != 1:
+                  raise SystemExit(f"{metric} analysis must contain exactly one scenario result")
+              result = results[0]
+              if result.get("scenario") != scenario or result.get("metric") != metric:
+                  raise SystemExit(f"{metric} analysis scenario/metric mismatch")
+              if (result.get("samplingMode") != "independent-runners"
+                      or result.get("pairCount") != 0):
+                  raise SystemExit(f"{metric} analysis did not use independent runners")
+              analyses[metric] = result
+
+          formal = kind == "formal"
+          if formal != (int(runs) == 12):
+              raise SystemExit(f"campaign kind/run count mismatch: {kind}/{runs}")
+          expected_formal_complete = formal
+          if any(result.get("formalComplete") is not expected_formal_complete
+                 for result in analyses.values()):
+              raise SystemExit("analyzer formalComplete state does not match campaign mode")
+
+          mean = analyses["msptMean"]
+          p95 = analyses["msptP95"]
+          p99 = analyses["msptP99"]
+          primary_improvement = (
+              float(mean["medianBRatioToA"]) <= 0.90
+              and float(mean["ratioBootstrap95Ci"][1]) < 1.0
+          )
+          mean_nonregression = float(mean["ratioBootstrap95Ci"][1]) <= 1.05
+          p95_nonregression = float(p95["ratioBootstrap95Ci"][1]) <= 1.05
+          p99_nonregression = float(p99["ratioBootstrap95Ci"][1]) <= 1.10
+          candidate_tps_healthy = all(
+              19.9 <= float(value["observedTps"]) <= 20.5
+              for value in metrics_by_variant["B"]
+          )
+          scenario_passed = formal and all((
+              primary_improvement,
+              mean_nonregression,
+              p95_nonregression,
+              p99_nonregression,
+              candidate_tps_healthy,
+          ))
+          if not formal:
+              conclusion = "exploratory-no-winner"
+          elif scenario_passed:
+              conclusion = "rewrite-improvement-gate-passed"
+          else:
+              conclusion = "rewrite-improvement-gate-failed"
+
+          lines = [
+              f"### Upstream runtime comparison: `{scenario}`",
+              "",
+              f"Mode: `{kind}`; scene size: `{scene_size}`; fully parallel, "
+              f"restart-isolated independent runs: `{runs}`.",
+              f"Runtime profile: `{runtime_profile}`; shared config requests "
+              "`PacketOnlyStatic=true` and `EventDriven=true` for both artifacts.",
+              "Server heap: `4 GiB` for both artifacts; target tick rate remains vanilla `20 TPS`.",
+              "Runtime assertion: A reports both flags as `unsupported-legacy`; "
+              "B exposes both runtime fields as `true`.",
+              ("Server shutdown evidence: "
+               f"A clean `{shutdown_mode_counts['A']['clean']}`, forced "
+               f"`{shutdown_mode_counts['A']['forced-after-stop-timeout']}`; "
+               f"B clean `{shutdown_mode_counts['B']['clean']}`, forced "
+               f"`{shutdown_mode_counts['B']['forced-after-stop-timeout']}`."),
+              "",
+              f"A is official upstream Jenkins #163; B is production candidate "
+              f"`{candidate_source[:7]}`. ",
+              ("Formal evidence is evaluated against the pre-registered gates."
+               if formal else
+               "Smoke evidence is exploratory and never declares a winner."),
+              "",
+              "| Metric | Upstream median | Rewrite median | Median B/A | Ratio 95% CI | Registered use |",
+              "|---|---:|---:|---:|---:|---|",
+          ]
+          if formal and scenario == "block-active" and int(scene_size) >= 1024:
+              lines[5:5] = [
+                  "Load-regime rule: sustained block load may saturate official upstream A "
+                  "when the 120-second window still contains at least 100 tick samples; "
+                  "candidate B must remain in the 19.9-20.5 TPS regime.",
+                  "",
+              ]
+          for metric, unit in metric_specs:
+              analysis = analyses[metric]
+              a_median = statistics.median(float(value[metric]) for value in metrics_by_variant["A"])
+              b_median = statistics.median(float(value[metric]) for value in metrics_by_variant["B"])
+              ratio = float(analysis["medianBRatioToA"])
+              lower, upper = map(float, analysis["ratioBootstrap95Ci"])
+              if not formal:
+                  registered_use = "exploratory"
+              elif metric == "msptMean":
+                  registered_use = "primary pass" if primary_improvement else "primary fail"
+              elif metric == "msptP95":
+                  registered_use = "nonreg pass" if p95_nonregression else "nonreg fail"
+              elif metric == "msptP99":
+                  registered_use = "nonreg pass" if p99_nonregression else "nonreg fail"
+              else:
+                  registered_use = "diagnostic"
+              lines.append(
+                  f"| `{metric}` | {a_median:.6f} {unit} | {b_median:.6f} {unit} | "
+                  f"{ratio:.6f} | [{lower:.6f}, {upper:.6f}] | **{registered_use}** |"
+              )
+          lines.extend([
+              "",
+              "Pre-registered formal gate: mean B/A median <=0.90 with ratio CI upper <1.00; "
+              "mean/P95 CI upper <=1.05 and P99 CI upper <=1.10.",
+              "",
+              f"Scenario conclusion: **{conclusion}**.",
+              "",
+              ("Candidate `observedTps` must stay near 20; saturated upstream throughput is "
+               "reported directly for the sustained block load. MSPT remains the primary "
+               "effect-size evidence."
+               if (formal and scenario == "block-active" and int(scene_size) >= 1024) else
+               "`observedTps` is capped near 20 on a healthy server; MSPT is the primary "
+               "effect-size evidence."),
+              "",
+              f"- Upstream source/artifact: `{upstream_source}` / `{upstream_artifact}`",
+              f"- Candidate source/artifact: `{candidate_source}` / `{candidate_artifact}`",
+              f"- Paper 26.1.2-74 SHA-256: `{paper_sha}`",
+              f"- Shared stack SHA-256: `{stack_sha}`",
+              "- Preflight: independent full-scene protocol trace passed for A and B.",
+              "",
+          ])
+          with open(summary_text, "a", encoding="utf-8", newline="\n") as stream:
+              stream.write("\n".join(lines))
+          (root / "summary.md").write_text("\n".join(lines), encoding="utf-8")
+          verdict = {
+              "schemaVersion": 1,
+              "scenario": scenario,
+              "campaignKind": kind,
+              "runCount": int(runs),
+              "exploratory": not formal,
+              "passed": scenario_passed if formal else None,
+              "conclusion": conclusion,
+              "formalComplete": formal,
+              "samplingMode": "independent-runners",
+              "dependencyDistribution": "single-build-artifact",
+              "registeredGates": {
+                  "primaryMeanImprovement": {
+                      "medianBRatioToAMaximum": 0.90,
+                      "ratioCiUpperExclusiveMaximum": 1.0,
+                      "passed": primary_improvement if formal else None,
+                  },
+                  "meanNonregression": {
+                      "ratioCiUpperMaximum": 1.05,
+                      "passed": mean_nonregression if formal else None,
+                  },
+                  "p95Nonregression": {
+                      "ratioCiUpperMaximum": 1.05,
+                      "passed": p95_nonregression if formal else None,
+                  },
+                  "p99Nonregression": {
+                      "ratioCiUpperMaximum": 1.10,
+                      "passed": p99_nonregression if formal else None,
+                  },
+                  "candidateHealthyTps": {
+                      "minimum": 19.9,
+                      "maximum": 20.5,
+                      "passed": candidate_tps_healthy if formal else None,
+                  },
+              },
+              "loadRegimePolicy": {
+                  "upstreamSaturationAllowed": (
+                      formal and scenario == "block-active" and int(scene_size) >= 1024
+                  ),
+                  "minimumUpstreamTickSamples": (
+                      100 if (formal and scenario == "block-active"
+                              and int(scene_size) >= 1024) else None
+                  ),
+              },
+              "serverShutdown": {
+                  "forcedTerminationAllowedOnlyForFormalBlockActiveStressUpstream": True,
+                  "modeCountsByVariant": shutdown_mode_counts,
+              },
+              "metrics": {
+                  metric: {
+                      "medianBRatioToA": float(result["medianBRatioToA"]),
+                      "ratioBootstrap95Ci": [float(value) for value in result["ratioBootstrap95Ci"]],
+                      "improvementPercent": float(result["improvementPercent"]),
+                  }
+                  for metric, result in analyses.items()
+              },
+              "upstreamSourceSha": upstream_source,
+              "upstreamArtifactSha256": upstream_artifact,
+              "candidateSourceSha": candidate_source,
+              "candidateArtifactSha256": candidate_artifact,
+              "paperSha256": paper_sha,
+              "stackSha256": stack_sha,
+              "runtimeProfile": runtime_profile,
+              "serverHeapGiB": 4,
+              "requestedFlags": {
+                  "packetOnlyStatic": True,
+                  "eventDrivenBlockUpdates": True,
+              },
+          }
+          (root / "scenario-verdict.json").write_text(
+              json.dumps(verdict, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-runtime-${{ matrix.scenario }}-${{ env.CAMPAIGN_KIND }}-${{ github.run_id }}
+          path: |
+            compare-results/${{ matrix.scenario }}
+            compare-dependencies/campaign-provenance.json
+            compare-dependencies/campaign-files.sha256
+            compare-dependencies/upstream-build-163.json
+            compare-dependencies/upstream-plugin.yml
+            compare-dependencies/paper-build-74.json
+            compare-dependencies/canonical-config.yml
+            compare-dependencies/protocol-client/client-build-manifest.json
+            compare-dependencies/protocol-client/client-files.sha256
+            compare-dependencies/protocol-client/node-minecraft-protocol/package-lock.json
+            compare-dependencies/protocol-client/node-minecraft-protocol/production-lock-inventory.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  summarize-upstream-runtime:
+    name: Global upstream runtime verdict
+    needs: [aggregate-upstream-runtime]
+    if: ${{ needs.aggregate-upstream-runtime.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CAMPAIGN_KIND: ${{ (github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && github.event.label.name == 'upstream-runtime-formal')) && 'formal' || 'smoke' }}
+    steps:
+      - name: Download dropped-items evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: upstream-runtime-dropped-items-${{ env.CAMPAIGN_KIND }}-${{ github.run_id }}
+          path: global-input/dropped-items
+
+      - name: Download block-active evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: upstream-runtime-block-active-${{ env.CAMPAIGN_KIND }}-${{ github.run_id }}
+          path: global-input/block-active
+
+      - name: Publish global two-scenario verdict
+        run: |
+          set -euo pipefail
+          mkdir -p global-output
+          python3 - "$CAMPAIGN_KIND" "$GITHUB_STEP_SUMMARY" \
+            global-input/dropped-items/compare-results/dropped-items/$CAMPAIGN_KIND/scenario-verdict.json \
+            global-input/block-active/compare-results/block-active/$CAMPAIGN_KIND/scenario-verdict.json \
+            global-output/global-verdict.json <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          kind, summary_path, dropped_path, block_path, output_path = sys.argv[1:]
+          expected = {
+              "dropped-items": Path(dropped_path),
+              "block-active": Path(block_path),
+          }
+          verdicts = {}
+          for scenario, path in expected.items():
+              document = json.loads(path.read_text(encoding="utf-8"))
+              if document.get("schemaVersion") != 1:
+                  raise SystemExit(f"{scenario} verdict schema mismatch")
+              if document.get("scenario") != scenario:
+                  raise SystemExit(f"{scenario} verdict scenario mismatch")
+              if document.get("campaignKind") != kind:
+                  raise SystemExit(f"{scenario} verdict campaign mismatch")
+              if document.get("formalComplete") is not (kind == "formal"):
+                  raise SystemExit(f"{scenario} formalComplete mismatch")
+              if document.get("exploratory") is not (kind == "smoke"):
+                  raise SystemExit(f"{scenario} exploratory state mismatch")
+              if kind == "formal" and not isinstance(document.get("passed"), bool):
+                  raise SystemExit(f"{scenario} formal verdict lacks a boolean pass state")
+              if kind == "smoke" and document.get("passed") is not None:
+                  raise SystemExit(f"{scenario} smoke verdict must not declare a pass state")
+              if document.get("runtimeProfile") != "optimized-candidate":
+                  raise SystemExit(f"{scenario} runtime profile mismatch")
+              if document.get("samplingMode") != "independent-runners":
+                  raise SystemExit(f"{scenario} sampling mode mismatch")
+              if document.get("dependencyDistribution") != "single-build-artifact":
+                  raise SystemExit(f"{scenario} dependency distribution mismatch")
+              if document.get("requestedFlags") != {
+                  "packetOnlyStatic": True,
+                  "eventDrivenBlockUpdates": True,
+              }:
+                  raise SystemExit(f"{scenario} requested flags mismatch")
+              verdicts[scenario] = document
+
+          if kind == "smoke":
+              global_passed = None
+              conclusion = "exploratory-no-winner"
+          else:
+              global_passed = all(verdict["passed"] for verdict in verdicts.values())
+              conclusion = (
+                  "rewrite-better-across-both-scenarios"
+                  if global_passed else "formal-gate-not-passed"
+              )
+
+          output = {
+              "schemaVersion": 1,
+              "campaignKind": kind,
+              "exploratory": kind == "smoke",
+              "passed": global_passed,
+              "conclusion": conclusion,
+              "requiredScenarios": ["dropped-items", "block-active"],
+              "runtimeProfile": "optimized-candidate",
+              "scenarioVerdicts": {
+                  scenario: {
+                      "passed": verdict["passed"],
+                      "conclusion": verdict["conclusion"],
+                      "stackSha256": verdict["stackSha256"],
+                      "candidateSourceSha": verdict["candidateSourceSha"],
+                  }
+                  for scenario, verdict in verdicts.items()
+              },
+          }
+          Path(output_path).write_text(
+              json.dumps(output, indent=2) + "\n", encoding="utf-8")
+
+          lines = [
+              "## Global upstream runtime verdict",
+              "",
+              f"Mode: `{kind}`.",
+              "",
+              "| Scenario | Scenario conclusion | Registered gate passed |",
+              "|---|---|---:|",
+          ]
+          for scenario in ("dropped-items", "block-active"):
+              verdict = verdicts[scenario]
+              passed = "exploratory" if verdict["passed"] is None else str(verdict["passed"]).lower()
+              lines.append(
+                  f"| `{scenario}` | `{verdict['conclusion']}` | {passed} |"
+              )
+          lines.extend([
+              "",
+              f"Global conclusion: **{conclusion}**.",
+              "",
+              "Smoke runs are exploratory and never declare a winner. "
+              "A formal rewrite-better conclusion requires both scenarios to pass.",
+              "",
+          ])
+          with open(summary_path, "a", encoding="utf-8", newline="\n") as stream:
+              stream.write("\n".join(lines))
+          PY
+
+      - name: Upload global verdict
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-runtime-global-${{ env.CAMPAIGN_KIND }}-${{ github.run_id }}
+          path: global-output/global-verdict.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce registered formal gate
+        if: ${{ env.CAMPAIGN_KIND == 'formal' }}
+        run: |
+          set -euo pipefail
+          python3 - global-output/global-verdict.json <<'PY'
+          import json
+          import sys
+
+          verdict = json.load(open(sys.argv[1], encoding="utf-8"))
+          if verdict.get("campaignKind") != "formal":
+              raise SystemExit("formal enforcement received a non-formal verdict")
+          if verdict.get("passed") is not True:
+              raise SystemExit(
+                  "registered formal runtime gate did not pass across both scenarios"
+              )
+          PY
