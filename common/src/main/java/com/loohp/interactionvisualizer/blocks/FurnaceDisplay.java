@@ -87,11 +87,9 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
     private String noFuelColor = "&c";
     private int progressBarLength = 10;
     private String amountPending = " &7+{Amount}";
-    private final BlockUpdateScheduler<Block> blockUpdates;
 
     public FurnaceDisplay() {
         onReload(new InteractionVisualizerReloadEvent());
-        this.blockUpdates = new BlockUpdateScheduler<>(this::nearbyFurnace, this.checkingPeriod, this.gcPeriod);
     }
 
     @EventHandler
@@ -166,15 +164,9 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return legacyRun();
         }
-        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
-            boolean collecting = PerformanceMetrics.isCollecting();
-            long start = collecting ? System.nanoTime() : 0L;
-            int checks = this.blockUpdates.tick(Bukkit.getCurrentTick(),
-                    InteractionVisualizer.blockUpdateMaxDirtyPerTick, this::updateHybridBlock);
-            if (collecting) {
-                PerformanceMetrics.blockUpdateChecks(checks, System.nanoTime() - start);
-            }
-        }, 0, 1);
+        BlockUpdateCoordinator.register(this, Set.of(Material.FURNACE), this::nearbyFurnace,
+                checkingPeriod, gcPeriod, this::updateHybridBlock, this::removeTrackedDisplay);
+        return null;
     }
 
     private ScheduledTask legacyRun() {
@@ -342,13 +334,14 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
 
     private void markDirty(Block block) {
         if (InteractionVisualizer.eventDrivenBlockUpdates && block != null && isFurnace(block.getType())) {
-            blockUpdates.markDirty(block, (long) Bukkit.getCurrentTick() + 1L);
+            BlockUpdateCoordinator.markDirty(this, block, (long) Bukkit.getCurrentTick() + 1L);
         }
     }
 
     private void markDirtyUnlessActive(Block block) {
         if (InteractionVisualizer.eventDrivenBlockUpdates && block != null && isFurnace(block.getType())) {
-            blockUpdates.markDirtyUnlessActive(block, (long) Bukkit.getCurrentTick() + 1L);
+            BlockUpdateCoordinator.markDirtyUnlessActive(
+                    this, block, (long) Bukkit.getCurrentTick() + 1L);
         }
     }
 
@@ -408,7 +401,7 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
     public void onFurnaceDeactivated(TileEntityDeactivatedEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates
                 && event.getTileEntityType() == TileEntityType.FURNACE) {
-            removeTrackedDisplay(event.getBlock());
+            BlockUpdateCoordinator.remove(this, event.getBlock());
         }
     }
 
@@ -574,11 +567,18 @@ public class FurnaceDisplay extends VisualizerRunnableDisplay implements Listene
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakFurnace(TileEntityRemovedEvent event) {
-        removeTrackedDisplay(event.getBlock());
+        invalidateTrackedDisplay(event.getBlock());
+    }
+
+    private void invalidateTrackedDisplay(Block block) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.remove(this, block);
+        } else {
+            removeTrackedDisplay(block);
+        }
     }
 
     private void removeTrackedDisplay(Block block) {
-        blockUpdates.remove(block);
         Map<String, Object> map = furnaceMap.remove(block);
         if (map == null) {
             return;

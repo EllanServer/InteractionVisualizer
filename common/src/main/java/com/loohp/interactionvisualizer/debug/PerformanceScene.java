@@ -142,6 +142,10 @@ public final class PerformanceScene {
         }
     }
 
+    public static int retainedStateCount() {
+        return scenes.size();
+    }
+
     private static void expire(UUID ownerId, Set<VisualizerEntity> entities) {
         if (scenes.remove(ownerId, entities)) {
             removeEntities(entities);

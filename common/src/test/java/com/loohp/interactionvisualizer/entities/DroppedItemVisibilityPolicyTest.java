@@ -60,7 +60,7 @@ class DroppedItemVisibilityPolicyTest {
     }
 
     @Test
-    void bundledConfigurationKeepsBothControlsDisabled() throws IOException {
+    void bundledConfigurationEnablesControlsForNewInstalls() throws IOException {
         try (InputStream stream = getClass().getClassLoader().getResourceAsStream("config.yml")) {
             assertNotNull(stream);
             String config = new String(stream.readAllBytes(), StandardCharsets.UTF_8)
@@ -71,13 +71,13 @@ class DroppedItemVisibilityPolicyTest {
 
             assertTrue(droppedItemOptions.contains(
                     "      VisibilityCulling:\n"
-                            + "        #Preserves the legacy label lifecycle unless explicitly enabled after validation\n"
-                            + "        Enabled: false\n"
+                            + "        #Independent rollback switch; existing explicit false values are preserved during migration\n"
+                            + "        Enabled: true\n"
                             + "        ViewDistance: 64\n"));
             assertTrue(droppedItemOptions.contains(
                     "      VisibilityRateLimit:\n"
-                            + "        #Independent from Settings.Performance.VisibilityRateLimit and disabled by default\n"
-                            + "        Enabled: false\n"));
+                            + "        #Independent from Settings.Performance.VisibilityRateLimit\n"
+                            + "        Enabled: true\n"));
         }
     }
 }

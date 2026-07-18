@@ -30,6 +30,7 @@ import com.loohp.interactionvisualizer.blocks.BeaconDisplay;
 import com.loohp.interactionvisualizer.blocks.BeeHiveDisplay;
 import com.loohp.interactionvisualizer.blocks.BeeNestDisplay;
 import com.loohp.interactionvisualizer.blocks.BlastFurnaceDisplay;
+import com.loohp.interactionvisualizer.blocks.BlockUpdateCoordinator;
 import com.loohp.interactionvisualizer.blocks.BrewingStandDisplay;
 import com.loohp.interactionvisualizer.blocks.CampfireDisplay;
 import com.loohp.interactionvisualizer.blocks.CartographyTableDisplay;
@@ -59,6 +60,7 @@ import com.loohp.interactionvisualizer.debug.Debug;
 import com.loohp.interactionvisualizer.entities.DroppedItemDisplay;
 import com.loohp.interactionvisualizer.entities.VillagerDisplay;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
+import com.loohp.interactionvisualizer.objectholders.EnchantmentTableAnimation;
 import com.loohp.interactionvisualizer.updater.Updater;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import com.loohp.interactionvisualizer.config.SparrowConfiguration;
@@ -122,6 +124,8 @@ public class TaskManager {
 
     @SuppressWarnings("deprecation")
     public static void setup() {
+        BlockUpdateCoordinator.shutdown();
+        InteractionSessionCoordinator.shutdown();
         pendingInventoryOpenProcesses.clear();
         pendingInventoryRefreshes.clear();
         anvil = false;
@@ -457,9 +461,12 @@ public class TaskManager {
     public static void shutdown() {
         try {
             if (plugin != null) {
+                Scheduler.shutdown(plugin);
                 Bukkit.getScheduler().cancelTasks(plugin);
             }
         } finally {
+            BlockUpdateCoordinator.shutdown();
+            InteractionSessionCoordinator.shutdown();
             clearRuntimeState();
         }
     }
@@ -472,6 +479,16 @@ public class TaskManager {
         }
         processes.clear();
         runnables.clear();
+        EnderchestDisplay.shutdown();
+        EnchantmentTableAnimation.shutdown();
+    }
+
+    /** Number of display registrations or delayed inventory requests retained. */
+    public static int retainedStateCount() {
+        return processes.size() + runnables.size()
+                + pendingInventoryOpenProcesses.size() + pendingInventoryRefreshes.size()
+                + EnderchestDisplay.retainedStateCount()
+                + EnchantmentTableAnimation.retainedStateCount();
     }
 
     public static void processOpenInventory(Player player) {

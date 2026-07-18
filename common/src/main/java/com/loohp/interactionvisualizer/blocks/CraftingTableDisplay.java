@@ -26,6 +26,7 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerInteractDisplay;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
+import com.loohp.interactionvisualizer.managers.InteractionSessionCoordinator;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.objectholders.LightType;
 import com.loohp.interactionvisualizer.utils.InventoryUtils;
@@ -33,7 +34,6 @@ import com.loohp.interactionvisualizer.utils.MaterialUtils;
 import com.loohp.interactionvisualizer.utils.MaterialUtils.MaterialMode;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
 import com.loohp.interactionvisualizer.utils.WorkstationDisplayPositioning;
-import com.loohp.interactionvisualizer.scheduler.ScheduledRunnable;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import org.bukkit.Bukkit;
@@ -58,7 +58,6 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.Vector;
 
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
 
 public class CraftingTableDisplay extends VisualizerInteractDisplay implements Listener {
@@ -75,55 +74,9 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
 
     @Override
     public ScheduledTask run() {
-        return new ScheduledRunnable() {
-            public void run() {
-                Iterator<Block> itr = openedBenches.keySet().iterator();
-                int count = 0;
-                int maxper = (int) Math.ceil((double) openedBenches.size() / (double) 5);
-                int delay = 1;
-                while (itr.hasNext()) {
-                    count++;
-                    if (count > maxper) {
-                        count = 0;
-                        delay++;
-                    }
-                    Block block = itr.next();
-                    new ScheduledRunnable() {
-                        public void run() {
-                            if (!openedBenches.containsKey(block)) {
-                                return;
-                            }
-                            Map<String, Object> map = openedBenches.get(block);
-
-                            Player player = (Player) map.get("Player");
-                            if (!GameMode.SPECTATOR.equals(player.getGameMode())) {
-                                if (player.getOpenInventory() != null) {
-                                    if (player.getOpenInventory().getTopInventory() != null) {
-                                        if (player.getOpenInventory().getTopInventory().getLocation().getBlock().getType() == Material.CRAFTING_TABLE) {
-                                            return;
-                                        }
-                                    }
-                                }
-                            }
-
-                            for (int i = 0; i <= 9; i++) {
-                                if (!(map.get(String.valueOf(i)) instanceof String)) {
-                                    Object entity = map.get(String.valueOf(i));
-                                    if (i == 5) {
-                                        InteractionVisualizer.lightManager.deleteLight(((Item) entity).getLocation());
-                                    }
-                                    if (entity instanceof Item) {
-                                        DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), (Item) entity);
-                                    }
-                                }
-                            }
-                            openedBenches.remove(block);
-                            playermap.remove(player, block);
-                        }
-                    }.runTaskLater(InteractionVisualizer.plugin, delay, block.getLocation());
-                }
-            }
-        }.runTaskTimer(InteractionVisualizer.plugin, 0, 5);
+        InteractionSessionCoordinator.register(this, playermap::keySet,
+                this::isSessionValid, this::cleanupSession);
+        return null;
     }
 
     @Override
@@ -160,12 +113,12 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
             map.putAll(spawnDisplayEntitys(player, block));
             openedBenches.put(block, map);
         }
-
         Map<String, Object> map = openedBenches.get(block);
 
         if (!map.get("Player").equals(player)) {
             return;
         }
+        InteractionSessionCoordinator.touch();
         ItemStack[] items = new ItemStack[] {
                 view.getItem(1),
                 view.getItem(2),
@@ -438,35 +391,48 @@ public class CraftingTableDisplay extends VisualizerInteractDisplay implements L
 
     @EventHandler
     public void onCloseCraftingBench(InventoryCloseEvent event) {
-        Player player = (Player) event.getPlayer();
+        cleanupSession((Player) event.getPlayer());
+    }
+
+    private boolean isSessionValid(Player player) {
+        Block block = playermap.get(player);
+        if (block == null) {
+            return false;
+        }
+        Map<String, Object> map = openedBenches.get(block);
+        if (!player.isOnline() || GameMode.SPECTATOR.equals(player.getGameMode())
+                || map == null || !player.equals(map.get("Player"))
+                || !block.getWorld().equals(player.getWorld())
+                || block.getType() != Material.CRAFTING_TABLE) {
+            return false;
+        }
+        try {
+            Location location = player.getOpenInventory().getTopInventory().getLocation();
+            return location != null && block.equals(location.getBlock());
+        } catch (Exception | AbstractMethodError ignored) {
+            return false;
+        }
+    }
+
+    private void cleanupSession(Player player) {
         Block block = playermap.remove(player);
         if (block == null) {
             return;
         }
-
         Map<String, Object> map = openedBenches.get(block);
-        if (map == null || !map.get("Player").equals(player)) {
+        if (map == null || !player.equals(map.get("Player"))) {
             return;
         }
-
         for (int i = 0; i <= 9; i++) {
-            if (!(map.get(String.valueOf(i)) instanceof String)) {
-                Object entity = map.get(String.valueOf(i));
-                if (entity instanceof Item) {
-                    Item item = (Item) entity;
-                    DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
-                    int finalI = i;
-                    new ScheduledRunnable() {
-                        public void run() {
-                            if (finalI == 5) {
-                                InteractionVisualizer.lightManager.deleteLight(item.getLocation());
-                            }
-                        }
-                    }.runTaskLater(InteractionVisualizer.plugin, 20);
+            Object entity = map.get(Integer.toString(i));
+            if (entity instanceof Item item) {
+                if (i == 5) {
+                    InteractionVisualizer.lightManager.deleteLight(item.getLocation());
                 }
+                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
             }
         }
-        openedBenches.remove(block);
+        openedBenches.remove(block, map);
     }
 
     public Item.RenderMode standMode(Item stand) {

@@ -78,6 +78,23 @@ class DisplayManagerItemAnimationTest {
     }
 
     @Test
+    void packetOnlyAnimatedItemsRequireMotionAndNoAnchorOnlyMetadata() {
+        assertTrue(DisplayManager.qualifiesForPacketOnlyAnimated(
+                true, true, new Vector(), false, false));
+        assertTrue(DisplayManager.qualifiesForPacketOnlyAnimated(
+                true, false, new Vector(0.1D, 0.0D, 0.0D), false, false));
+
+        assertFalse(DisplayManager.qualifiesForPacketOnlyAnimated(
+                false, true, new Vector(), false, false));
+        assertFalse(DisplayManager.qualifiesForPacketOnlyAnimated(
+                true, false, new Vector(), false, false));
+        assertFalse(DisplayManager.qualifiesForPacketOnlyAnimated(
+                true, true, new Vector(), true, false));
+        assertFalse(DisplayManager.qualifiesForPacketOnlyAnimated(
+                true, true, new Vector(), false, true));
+    }
+
+    @Test
     void copiesTheNmsAirMovementOrderAndPrecision() {
         Vector movement = DisplayManager.itemMovementForTick(true, new Vector(0.18, 0.15, 0.05));
         assertEquals(new Vector(0.18, 0.11, 0.05), movement);

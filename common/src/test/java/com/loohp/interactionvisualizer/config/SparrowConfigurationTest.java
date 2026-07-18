@@ -118,4 +118,69 @@ class SparrowConfigurationTest {
 
         assertEquals(0.8D, configuration.getDouble("Entities.Item.Options.LabelYOffset"));
     }
+
+    @Test
+    void newInstallDefaultsEnableThePerformancePaths() throws Exception {
+        Path file = temporaryDirectory.resolve("new-install.yml");
+        Files.writeString(file, "", StandardCharsets.UTF_8);
+        SparrowConfiguration configuration = new SparrowConfiguration(
+                file.toFile(),
+                SparrowConfigurationTest.class.getClassLoader().getResourceAsStream("config.yml"),
+                false);
+
+        assertTrue(configuration.getBoolean(
+                "Settings.Performance.VirtualItems.StaticAnchorDuringAnimation"));
+        assertTrue(configuration.getBoolean(
+                "Settings.Performance.VirtualItems.PacketOnlyStatic"));
+        assertFalse(configuration.getBoolean(
+                "Settings.Performance.VirtualItems.PacketOnlyAnimated"));
+        assertTrue(configuration.getBoolean(
+                "Settings.Performance.VisibilityRateLimit.Enabled"));
+        assertTrue(configuration.getBoolean(
+                "Settings.Performance.BlockUpdates.EventDriven"));
+        assertTrue(configuration.getBoolean(
+                "Entities.Item.Options.VisibilityCulling.Enabled"));
+        assertTrue(configuration.getBoolean(
+                "Entities.Item.Options.VisibilityRateLimit.Enabled"));
+    }
+
+    @Test
+    void explicitLegacyOptOutsAreNotOverwrittenByNewDefaults() throws Exception {
+        Path file = temporaryDirectory.resolve("existing-install.yml");
+        Files.writeString(file,
+                "Settings:\n"
+                        + "  Performance:\n"
+                        + "    VirtualItems:\n"
+                        + "      StaticAnchorDuringAnimation: false\n"
+                        + "      PacketOnlyStatic: false\n"
+                        + "    VisibilityRateLimit:\n"
+                        + "      Enabled: false\n"
+                        + "    BlockUpdates:\n"
+                        + "      EventDriven: false\n"
+                        + "Entities:\n"
+                        + "  Item:\n"
+                        + "    Options:\n"
+                        + "      VisibilityCulling:\n"
+                        + "        Enabled: false\n"
+                        + "      VisibilityRateLimit:\n"
+                        + "        Enabled: false\n",
+                StandardCharsets.UTF_8);
+        SparrowConfiguration configuration = new SparrowConfiguration(
+                file.toFile(),
+                SparrowConfigurationTest.class.getClassLoader().getResourceAsStream("config.yml"),
+                true);
+
+        assertFalse(configuration.getBoolean(
+                "Settings.Performance.VirtualItems.StaticAnchorDuringAnimation"));
+        assertFalse(configuration.getBoolean(
+                "Settings.Performance.VirtualItems.PacketOnlyStatic"));
+        assertFalse(configuration.getBoolean(
+                "Settings.Performance.VisibilityRateLimit.Enabled"));
+        assertFalse(configuration.getBoolean(
+                "Settings.Performance.BlockUpdates.EventDriven"));
+        assertFalse(configuration.getBoolean(
+                "Entities.Item.Options.VisibilityCulling.Enabled"));
+        assertFalse(configuration.getBoolean(
+                "Entities.Item.Options.VisibilityRateLimit.Enabled"));
+    }
 }

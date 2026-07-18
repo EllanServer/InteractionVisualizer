@@ -49,7 +49,6 @@ import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.ItemStack;
 
 import java.util.Collection;
-import java.util.Iterator;
 import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -58,6 +57,7 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
     public static final EntryKey KEY = new EntryKey("note_block");
 
     public ConcurrentHashMap<Block, ConcurrentHashMap<String, Object>> displayingNotes = new ConcurrentHashMap<>();
+    private ScheduledTask expiryTask;
 
     @Override
     public EntryKey key() {
@@ -71,19 +71,7 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
 
     @Override
     public ScheduledTask run() {
-        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
-            Iterator<Entry<Block, ConcurrentHashMap<String, Object>>> itr = displayingNotes.entrySet().iterator();
-            while (itr.hasNext()) {
-                Entry<Block, ConcurrentHashMap<String, Object>> entry = itr.next();
-                long unix = System.currentTimeMillis();
-                long timeout = (long) entry.getValue().get("Timeout");
-                if (unix > timeout) {
-                    DisplayEntity stand = (DisplayEntity) entry.getValue().get("Stand");
-                    Scheduler.runTask(InteractionVisualizer.plugin, () -> DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand));
-                    itr.remove();
-                }
-            }
-        }, 0, 20);
+        return null;
     }
 
     @SuppressWarnings("deprecation")
@@ -122,6 +110,7 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
             map.put("Stand", stand);
             map.put("Timeout", System.currentTimeMillis() + 3000);
             displayingNotes.put(block, map);
+            ensureExpiryTask();
 
             Block topBlock = block.getRelative(BlockFace.UP);
             Collection<ItemStack> topBlockDrops;
@@ -144,6 +133,29 @@ public class NoteBlockDisplay extends VisualizerRunnableDisplay implements Liste
             DisplayManager.spawnDisplay(InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY), stand);
             DisplayManager.updateDisplay(stand);
         }, 1, block.getLocation());
+    }
+
+    private void ensureExpiryTask() {
+        if (expiryTask == null || expiryTask.isCancelled()) {
+            expiryTask = Scheduler.runTaskTimer(InteractionVisualizer.plugin, this::expireNotes, 20, 20);
+        }
+    }
+
+    private void expireNotes() {
+        long now = System.currentTimeMillis();
+        for (Entry<Block, ConcurrentHashMap<String, Object>> entry : displayingNotes.entrySet()) {
+            ConcurrentHashMap<String, Object> state = entry.getValue();
+            if (now > (long) state.get("Timeout") && displayingNotes.remove(entry.getKey(), state)) {
+                DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), (DisplayEntity) state.get("Stand"));
+            }
+        }
+        if (displayingNotes.isEmpty()) {
+            ScheduledTask task = expiryTask;
+            expiryTask = null;
+            if (task != null && !task.isCancelled()) {
+                task.cancel();
+            }
+        }
     }
 
     public void setStand(DisplayEntity stand) {

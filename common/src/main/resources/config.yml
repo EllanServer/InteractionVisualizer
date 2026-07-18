@@ -83,7 +83,7 @@ TileEntityUpdate:
 
 LightUpdate:
   #How often should the plugin update the light level a block that requires it is used
-  #Only used if LightAPI is installed
+  #Only used if CraftEngine is installed; updates are scheduled only while changes are pending
   #Measured in ticks, 20 ticks = 1 second
   #Adjust this if your server is unable to handle fast light updates
   Period: 10
@@ -281,15 +281,15 @@ Entities:
       #This is in ticks (20 ticks = 1 second)
       #Setting this too low might impact performance
       UpdateRate: 20
-      #Experimental server-side distance culling for dropped-item labels
+      #Server-side distance culling for dropped-item labels
       VisibilityCulling:
-        #Preserves the legacy label lifecycle unless explicitly enabled after validation
-        Enabled: false
+        #Independent rollback switch; existing explicit false values are preserved during migration
+        Enabled: true
         ViewDistance: 64
-      #Experimental smoothing for label visibility bursts
+      #Smoothing for dropped-label visibility bursts
       VisibilityRateLimit:
-        #Independent from Settings.Performance.VisibilityRateLimit and disabled by default
-        Enabled: false
+        #Independent from Settings.Performance.VisibilityRateLimit
+        Enabled: true
         BucketSize: 128
         RestorePerTick: 32
       #Paper does not expose its internal per-item despawn rate. This value
@@ -328,27 +328,30 @@ Settings:
   UseHandSwingAnimation: true
   PickupAnimationPlayerYOffset: 0
   DisabledWorlds: []
-  #MIGHT BE RESOURCE INTENSIVE
-  #MIGHT BE RESOURCE INTENSIVE
-  #MIGHT BE RESOURCE INTENSIVE
+  #Optional second-stage wall-occlusion culling for entities in chunks already sent to each viewer.
+  #Requires CraftEngine 26.7+ with both entity culling and ray tracing enabled.
+  #CraftEngine checks distance/occlusion; this is not camera-direction or frustum culling.
   HideIfViewObstructed: false
   Performance:
     VirtualItems:
-      #A/B switch: keeps invisible tracker anchors still during short item animations.
-      #The client-side virtual item remains corrected every tick; turn this on only after profiling your server.
-      StaticAnchorDuringAnimation: false
+      #Rollback switch: keeps invisible tracker anchors still during short item animations.
+      #The client-side virtual item remains corrected every tick.
+      StaticAnchorDuringAnimation: true
       #A/B switch: eligible stationary virtual items without a visible custom name use no Bukkit tracker entity.
-      #Requires separate packet-capture and client compatibility validation before enabling in production.
-      PacketOnlyStatic: false
+      #Eligible stationary items create no Bukkit tracker entity.
+      PacketOnlyStatic: true
+      #A/B switch: safe animated items use per-viewer packet entities and create no Bukkit tracker anchor.
+      #Visible custom names and glowing items retain the Paper-owned fallback representation.
+      PacketOnlyAnimated: false
     VisibilityRateLimit:
-      #A/B switch: hides remain immediate; newly visible entities are restored through a per-player token bucket.
-      Enabled: false
+      #Rollback switch: hides remain immediate; newly visible entities are restored through a per-player token bucket.
+      Enabled: true
       BucketSize: 128
       RestorePerTick: 32
     BlockUpdates:
-      #A/B switch: coalesces event-driven changes and replaces per-block child tasks with fixed-budget loops.
+      #Rollback switch: coalesces event-driven changes and replaces per-block child tasks with fixed-budget loops.
       #Restart the server after changing this option so runnable display tasks are recreated.
-      EventDriven: false
+      EventDriven: true
       #Dirty-update budget per block display type; active rotation and fallback audit have separate bounded work.
       MaxDirtyPerTick: 64
 

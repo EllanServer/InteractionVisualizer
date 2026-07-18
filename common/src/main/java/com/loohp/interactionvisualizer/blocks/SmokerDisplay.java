@@ -88,12 +88,9 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
     private String noFuelColor = "&c";
     private int progressBarLength = 10;
     private String amountPending = " &7+{Amount}";
-    private final BlockUpdateScheduler<Block> blockUpdates;
 
     public SmokerDisplay() {
         onReload(new InteractionVisualizerReloadEvent());
-        this.blockUpdates = new BlockUpdateScheduler<>(this::nearbySmoker,
-                this.checkingPeriod, this.gcPeriod);
     }
 
     @EventHandler
@@ -168,15 +165,9 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return legacyRun();
         }
-        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
-            boolean collecting = PerformanceMetrics.isCollecting();
-            long start = collecting ? System.nanoTime() : 0L;
-            int checks = this.blockUpdates.tick(Bukkit.getCurrentTick(),
-                    InteractionVisualizer.blockUpdateMaxDirtyPerTick, this::updateHybridBlock);
-            if (collecting) {
-                PerformanceMetrics.blockUpdateChecks(checks, System.nanoTime() - start);
-            }
-        }, 0, 1);
+        BlockUpdateCoordinator.register(this, Set.of(Material.SMOKER), this::nearbySmoker,
+                checkingPeriod, gcPeriod, this::updateHybridBlock, this::removeTrackedDisplay);
+        return null;
     }
 
     private ScheduledTask legacyRun() {
@@ -344,13 +335,14 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
 
     private void markDirty(Block block) {
         if (InteractionVisualizer.eventDrivenBlockUpdates && block != null && isSmoker(block.getType())) {
-            blockUpdates.markDirty(block, (long) Bukkit.getCurrentTick() + 1L);
+            BlockUpdateCoordinator.markDirty(this, block, (long) Bukkit.getCurrentTick() + 1L);
         }
     }
 
     private void markDirtyUnlessActive(Block block) {
         if (InteractionVisualizer.eventDrivenBlockUpdates && block != null && isSmoker(block.getType())) {
-            blockUpdates.markDirtyUnlessActive(block, (long) Bukkit.getCurrentTick() + 1L);
+            BlockUpdateCoordinator.markDirtyUnlessActive(
+                    this, block, (long) Bukkit.getCurrentTick() + 1L);
         }
     }
 
@@ -410,7 +402,7 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
     public void onSmokerDeactivated(TileEntityDeactivatedEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates
                 && event.getTileEntityType() == TileEntityType.SMOKER) {
-            removeTrackedDisplay(event.getBlock());
+            BlockUpdateCoordinator.remove(this, event.getBlock());
         }
     }
 
@@ -575,18 +567,25 @@ public class SmokerDisplay extends VisualizerRunnableDisplay implements Listener
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakSmoker(BlockBreakEvent event) {
-        removeTrackedDisplay(event.getBlock());
+        invalidateTrackedDisplay(event.getBlock());
     }
 
     public void onRemoveSmoker(TileEntityRemovedEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates
                 && event.getTileEntityType() == TileEntityType.SMOKER) {
-            removeTrackedDisplay(event.getBlock());
+            BlockUpdateCoordinator.remove(this, event.getBlock());
+        }
+    }
+
+    private void invalidateTrackedDisplay(Block block) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.remove(this, block);
+        } else {
+            removeTrackedDisplay(block);
         }
     }
 
     private void removeTrackedDisplay(Block block) {
-        blockUpdates.remove(block);
         Map<String, Object> map = smokerMap.remove(block);
         if (map == null) {
             return;

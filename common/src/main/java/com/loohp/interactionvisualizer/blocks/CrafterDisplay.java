@@ -85,6 +85,9 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask gc() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return null;
+        }
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = crafterMap.entrySet().iterator();
             int count = 0;
@@ -128,6 +131,15 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask run() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.register(this, Set.of(Material.CRAFTER), this::nearbyCrafter,
+                    checkingPeriod, gcPeriod, this::updateHybridBlock, this::removeTrackedDisplay);
+            return null;
+        }
+        return legacyRun();
+    }
+
+    private ScheduledTask legacyRun() {
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyCrafter();
             for (Block block : list) {
@@ -158,9 +170,28 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
         }, 0, checkingPeriod);
     }
 
+    private boolean updateHybridBlock(Block block) {
+        if (!nearbyCrafter().contains(block)
+                || !block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)
+                || block.getType() != Material.CRAFTER || getCardinalDirection(block) < 0.0F) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isActive(block.getLocation())) {
+            return false;
+        }
+        Map<String, Object> values = crafterMap.get(block);
+        if (values == null) {
+            values = new HashMap<>(spawnDisplayEntitys(block));
+            crafterMap.put(block, values);
+        }
+        handleUpdate(block, values);
+        return false;
+    }
+
     public void handleUpdate(Block block, Map<String, Object> map) {
         if (block.getType() != Material.CRAFTER || crafterMap.get(block) != map
-                || !(block.getState() instanceof Crafter crafter)) {
+                || !(block.getState(false) instanceof Crafter crafter)) {
             return;
         }
         Inventory inventory = crafter.getInventory();
@@ -214,12 +245,16 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
         }
         Block block = event.getBlock();
         if (block.getType().equals(Material.CRAFTER)) {
-            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                Map<String, Object> map = crafterMap.get(block);
-                if (map != null) {
-                    handleUpdate(block, map);
-                }
-            }, 1, block.getLocation());
+            if (InteractionVisualizer.eventDrivenBlockUpdates) {
+                BlockUpdateCoordinator.markDirty(block);
+            } else {
+                Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
+                    Map<String, Object> map = crafterMap.get(block);
+                    if (map != null) {
+                        handleUpdate(block, map);
+                    }
+                }, 1, block.getLocation());
+            }
         }
     }
 
@@ -232,25 +267,28 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
         if (initiatorLocation != null) {
             Block block = initiatorLocation.getBlock();
             if (block.getType().equals(Material.CRAFTER)) {
-                Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                    Map<String, Object> map = crafterMap.get(block);
-                    if (map != null) {
-                        handleUpdate(block, map);
-                    }
-                }, 1, block.getLocation());
+                markCrafterChanged(block);
             }
         }
         Location destinationLocation = event.getDestination().getLocation();
         if (destinationLocation != null) {
             Block block = destinationLocation.getBlock();
             if (block.getType().equals(Material.CRAFTER)) {
-                Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
-                    Map<String, Object> map = crafterMap.get(block);
-                    if (map != null) {
-                        handleUpdate(block, map);
-                    }
-                }, 1, block.getLocation());
+                markCrafterChanged(block);
             }
+        }
+    }
+
+    private void markCrafterChanged(Block block) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.markDirty(block);
+        } else {
+            Scheduler.runTaskLater(InteractionVisualizer.plugin, () -> {
+                Map<String, Object> map = crafterMap.get(block);
+                if (map != null) {
+                    handleUpdate(block, map);
+                }
+            }, 1, block.getLocation());
         }
     }
 
@@ -281,29 +319,38 @@ public class CrafterDisplay extends VisualizerRunnableDisplay implements Listene
         }
 
         if (event.getRawSlot() >= 0 && event.getRawSlot() <= 8) {
+            BlockUpdateCoordinator.markDirty(block);
             DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
         }
-        Map<String, Object> map = crafterMap.get(block);
-        if (map != null) {
-            handleUpdate(block, map);
+        if (!InteractionVisualizer.eventDrivenBlockUpdates) {
+            Map<String, Object> map = crafterMap.get(block);
+            if (map != null) {
+                handleUpdate(block, map);
+            }
         }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakCrafter(TileEntityRemovedEvent event) {
         Block block = event.getBlock();
-        if (!crafterMap.containsKey(block)) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.remove(this, block);
+        } else {
+            removeTrackedDisplay(block);
+        }
+    }
+
+    private void removeTrackedDisplay(Block block) {
+        Map<String, Object> map = crafterMap.remove(block);
+        if (map == null) {
             return;
         }
-
-        Map<String, Object> map = crafterMap.get(block);
         for (int i = 1; i <= 9; i++) {
             if (map.get(String.valueOf(i)) instanceof Item) {
                 Item stand = (Item) map.get(String.valueOf(i));
                 DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), stand);
             }
         }
-        crafterMap.remove(block);
     }
 
     public Set<Block> nearbyCrafter() {

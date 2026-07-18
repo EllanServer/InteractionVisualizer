@@ -69,6 +69,11 @@ public final class CustomContentManager {
         owner = null;
     }
 
+    public static synchronized int retainedStateCount() {
+        return bridges.size() + failedProviders.size() + reportedRuntimeFailures.size()
+                + retryAfter.size() + (owner == null ? 0 : 1);
+    }
+
     public static Set<String> providers() {
         Set<String> providers = new LinkedHashSet<>();
         for (CustomContentBridge bridge : bridges) {

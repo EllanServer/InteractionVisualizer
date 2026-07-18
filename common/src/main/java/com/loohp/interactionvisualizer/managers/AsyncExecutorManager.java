@@ -26,6 +26,8 @@ import org.bukkit.Bukkit;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class AsyncExecutorManager implements AutoCloseable {
@@ -72,6 +74,27 @@ public class AsyncExecutorManager implements AutoCloseable {
             return;
         }
         executor.shutdown();
+        boolean interrupted = false;
+        try {
+            if (!executor.awaitTermination(2L, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+                executor.awaitTermination(2L, TimeUnit.SECONDS);
+            }
+        } catch (InterruptedException exception) {
+            interrupted = true;
+            executor.shutdownNow();
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    public int retainedTaskCount() {
+        if (executor instanceof ThreadPoolExecutor threadPool) {
+            return threadPool.getActiveCount() + threadPool.getQueue().size();
+        }
+        return executor.isTerminated() ? 0 : 1;
     }
 
 }

@@ -38,6 +38,9 @@ measure_seconds="${PHASE2_MEASURE_SECONDS:-180}"
 capture_enabled="${PHASE2_CAPTURE_ENABLED:-0}"
 capture_snaplen="${PHASE2_CAPTURE_SNAPLEN:-128}"
 protocol_trace_enabled="${PHASE2_PROTOCOL_TRACE_ENABLED:-$capture_enabled}"
+protocol_trace_max_events="${PHASE2_PROTOCOL_TRACE_MAX_EVENTS:-500000}"
+protocol_trace_packet_allowlist="${PHASE2_PROTOCOL_TRACE_PACKET_ALLOWLIST-bundle_delimiter,entity_destroy,spawn_entity}"
+protocol_trace_aggregate_packet_allowlist="${PHASE2_PROTOCOL_TRACE_AGGREGATE_PACKET_ALLOWLIST-entity_metadata}"
 spark_profile_mode="${PHASE2_SPARK_PROFILE_MODE:-none}"
 ab_factor="${PHASE2_AB_FACTOR:-scenario-config}"
 
@@ -61,7 +64,7 @@ if [[ "$ab_factor" == legacy-text-component-cache && "$scenario" != block-active
   exit 64
 fi
 for value in "$server_port" "$item_count" "$warmup_seconds" "$settle_seconds" \
-  "$measure_seconds" "$capture_snaplen"; do
+  "$measure_seconds" "$capture_snaplen" "$protocol_trace_max_events"; do
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "Numeric input is invalid: $value" >&2; exit 64; }
 done
 (( server_port >= 1 && server_port <= 65535 )) \
@@ -98,6 +101,12 @@ fi
   || { echo "PHASE2_CAPTURE_ENABLED must be 0 or 1" >&2; exit 64; }
 [[ "$protocol_trace_enabled" == 0 || "$protocol_trace_enabled" == 1 ]] \
   || { echo "PHASE2_PROTOCOL_TRACE_ENABLED must be 0 or 1" >&2; exit 64; }
+(( protocol_trace_max_events >= 1 )) \
+  || { echo "PHASE2_PROTOCOL_TRACE_MAX_EVENTS must be positive" >&2; exit 64; }
+for allowlist in "$protocol_trace_packet_allowlist" "$protocol_trace_aggregate_packet_allowlist"; do
+  [[ -z "$allowlist" || "$allowlist" =~ ^[A-Za-z0-9_-]+(,[A-Za-z0-9_-]+)*$ ]] \
+    || { echo "Protocol trace allowlist is invalid: $allowlist" >&2; exit 64; }
+done
 case "$spark_profile_mode" in
   none|cpu|cpu-all|alloc) ;;
   *) echo "PHASE2_SPARK_PROFILE_MODE must be none, cpu, cpu-all, or alloc" >&2; exit 64 ;;
@@ -185,6 +194,7 @@ unzip -p "$plugin_jar" config.yml > "$run_directory/plugins/InteractionVisualize
 
 python3 - "$run_directory/plugins/InteractionVisualizer/config.yml" "$scenario" "$variant" "$ab_factor" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 path = Path(sys.argv[1])
@@ -200,6 +210,16 @@ def replace_once(old: str, new: str) -> None:
         raise SystemExit(f"Expected one config token {old!r}, found {count}")
     text = text.replace(old, new, 1)
 
+def replace_boolean_once(prefix: str, value: bool) -> None:
+    global text
+    pattern = re.compile(rf"(?m)^{re.escape(prefix)}(?:true|false)$")
+    replacement = f"{prefix}{str(value).lower()}"
+    text, count = pattern.subn(replacement, text, count=1)
+    if count != 1:
+        raise SystemExit(
+            f"Expected one boolean config token with prefix {prefix!r}, found {count}"
+        )
+
 packet_only = scenario == "visibility-return" or (
     scenario in {"static-steady", "static-spawn"} and variant == "B"
 )
@@ -207,13 +227,9 @@ visibility_limit = scenario.startswith("visibility-") and variant == "B"
 event_driven = scenario.startswith("block-") and (
     ab_factor == "legacy-text-component-cache" or variant == "B"
 )
-replace_once("      PacketOnlyStatic: false",
-             f"      PacketOnlyStatic: {str(packet_only).lower()}")
-replace_once("      Enabled: false\n      BucketSize: 128\n      RestorePerTick: 32",
-             f"      Enabled: {str(visibility_limit).lower()}\n"
-             "      BucketSize: 128\n      RestorePerTick: 32")
-replace_once("      EventDriven: false",
-             f"      EventDriven: {str(event_driven).lower()}")
+replace_boolean_once("      PacketOnlyStatic: ", packet_only)
+replace_boolean_once("      Enabled: ", visibility_limit)
+replace_boolean_once("      EventDriven: ", event_driven)
 replace_once("  Updater: true", "  Updater: false")
 replace_once("  DownloadLanguageFiles: true", "  DownloadLanguageFiles: false")
 path.write_text(text, encoding="utf-8", newline="\n")
@@ -635,7 +651,12 @@ fi
 
 protocol_trace_environment=("PHASE2_PROTOCOL_TRACE_FILE=")
 if [[ "$protocol_trace_enabled" == 1 ]]; then
-  protocol_trace_environment=("PHASE2_PROTOCOL_TRACE_FILE=$protocol_trace_path")
+  protocol_trace_environment=(
+    "PHASE2_PROTOCOL_TRACE_FILE=$protocol_trace_path"
+    "PHASE2_PROTOCOL_TRACE_MAX_EVENTS=$protocol_trace_max_events"
+    "PHASE2_PROTOCOL_TRACE_PACKET_ALLOWLIST=$protocol_trace_packet_allowlist"
+    "PHASE2_PROTOCOL_TRACE_AGGREGATE_PACKET_ALLOWLIST=$protocol_trace_aggregate_packet_allowlist"
+  )
 fi
 env \
   "PHASE2_MC_PROTOCOL_MODULE=$client_root/node-minecraft-protocol" \

@@ -79,9 +79,12 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     private final Map<UUID, Item> trackedItems = new HashMap<>();
     private final Map<UUID, TextDisplay> labels = new HashMap<>();
+    private final Map<UUID, CachedItemContent> contentCache = new HashMap<>();
     private final Set<UUID> eligibleViewers = new HashSet<>();
     private final Map<UUID, Player> desiredViewers = new HashMap<>();
     private final Map<UUID, VisibilityState> visibilityStates = new HashMap<>();
+    private final Map<UUID, Set<UUID>> viewersByLabel = new HashMap<>();
+    private final Set<UUID> pendingVisibilityViewers = new HashSet<>();
 
     private String regularFormatting;
     private String singularFormatting;
@@ -95,7 +98,6 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     private int ticksUntilUpdate;
     private int despawnTicks = 6000;
     private DroppedItemVisibilityPolicy visibilityPolicy = DroppedItemVisibilityPolicy.legacyDefaults();
-    private boolean visibilityQueuesPending;
     private boolean stripColorBlacklist;
     private DroppedItemBlacklist blacklist = DroppedItemBlacklist.compile(List.of(), DroppedItemDisplay::warn);
 
@@ -148,6 +150,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         blacklist = DroppedItemBlacklist.compile(
                 InteractionVisualizer.plugin.getConfiguration().getList("Entities.Item.Options.Blacklist.List"),
                 DroppedItemDisplay::warn);
+        contentCache.clear();
     }
 
     private static String configString(String path) {
@@ -223,6 +226,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         if (event.getEntity() instanceof Item item) {
             UUID itemId = item.getUniqueId();
             trackedItems.remove(itemId);
+            contentCache.remove(itemId);
             TextDisplay label = labels.remove(itemId);
             if (label != null) {
                 // EntityRemoveEvent is monitoring-only. Defer entity mutation
@@ -252,6 +256,10 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     private void tickAllInternal() {
         Collection<Player> viewers = reconcileEligibleViewers();
+        if (viewers.isEmpty()) {
+            removeAllLabels();
+            return;
+        }
         List<TrackedItem> validItems = new ArrayList<>(trackedItems.size());
         UUID singleItemWorldId = null;
         int singleWorldItemCount = 0;
@@ -262,6 +270,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             Item item = entry.getValue();
             if (!item.isValid() || item.isDead()) {
                 iterator.remove();
+                contentCache.remove(entry.getKey());
                 removeLabel(entry.getKey());
                 continue;
             }
@@ -280,13 +289,6 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 }
                 itemCountsByWorld.merge(worldId, 1, Integer::sum);
             }
-        }
-
-        if (viewers.isEmpty() && visibilityPolicy.cullingEnabled()) {
-            for (UUID itemId : new HashSet<>(labels.keySet())) {
-                removeLabel(itemId);
-            }
-            return;
         }
 
         DroppedItemSpatialIndex.ViewerIndex viewerIndex = null;
@@ -319,8 +321,23 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             }
             update(tracked, itemIndex, viewerIndex, remainingWorldItems);
         }
+        if (viewerIndex != null) {
+            PerformanceMetrics.droppedViewerDistanceChecks(viewerIndex.candidateChecks());
+        }
         if (visibilityPolicy.controlsPerViewerVisibility()) {
-            reconcileLabelVisibility(viewers, validItems);
+            DroppedItemVisibilityIndex<UUID> visibilityIndex = null;
+            if (visibilityPolicy.cullingEnabled()) {
+                visibilityIndex = new DroppedItemVisibilityIndex<>();
+                for (TrackedItem tracked : validItems) {
+                    TextDisplay label = labels.get(tracked.itemId());
+                    if (label != null && label.isValid()) {
+                        Location location = tracked.location();
+                        visibilityIndex.add(tracked.worldId(), location.getX(), location.getY(),
+                                location.getZ(), tracked.itemId());
+                    }
+                }
+            }
+            reconcileLabelVisibility(viewers, validItems, visibilityIndex);
         }
     }
 
@@ -345,20 +362,21 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         }
 
         ItemStack stack = item.getItemStack();
-        String matchingName = matchingName(stack);
-        NamespacedKey customItemId = blacklist.requiresCustomItemId()
-                ? CustomContentManager.customItemId(stack).orElse(null)
-                : null;
         int ticksLeft = despawnTicks - item.getTicksLived();
-        if (stack.isEmpty() || blacklist.matches(matchingName, stack.getType(), customItemId)
-                || item.getPickupDelay() >= Short.MAX_VALUE || ticksLeft <= 0
+        if (stack.isEmpty() || item.getPickupDelay() >= Short.MAX_VALUE || ticksLeft <= 0
                 || (itemIndex != null && itemIndex.exceedsItemLimit(tracked.worldId(),
                 itemLocation.getX(), itemLocation.getY(), itemLocation.getZ(), cramp))) {
+            contentCache.remove(tracked.itemId());
+            removeLabel(item.getUniqueId());
+            return;
+        }
+        CachedItemContent content = cachedContent(tracked.itemId(), stack);
+        if (content.blacklisted) {
             removeLabel(item.getUniqueId());
             return;
         }
 
-        Component text = format(stack, ticksLeft);
+        Component text = format(content, ticksLeft);
         boolean created = false;
         if (label == null || !label.isValid() || !label.getWorld().equals(item.getWorld())) {
             removeLabel(item.getUniqueId());
@@ -488,7 +506,8 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             state.pending.clear();
         }
         visibilityStates.clear();
-        visibilityQueuesPending = false;
+        viewersByLabel.clear();
+        pendingVisibilityViewers.clear();
     }
 
     private void showToEligibleViewers(TextDisplay label) {
@@ -518,7 +537,8 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         }
     }
 
-    private void reconcileLabelVisibility(Collection<Player> viewers, List<TrackedItem> validItems) {
+    private void reconcileLabelVisibility(Collection<Player> viewers, List<TrackedItem> validItems,
+                                          DroppedItemVisibilityIndex<UUID> visibilityIndex) {
         for (Player player : viewers) {
             UUID playerId = player.getUniqueId();
             VisibilityState state = visibilityStates.computeIfAbsent(playerId,
@@ -531,23 +551,18 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             double range = visibilityPolicy.cullingEnabled()
                     ? visibilityPolicy.effectiveViewDistance(trackingDistance)
                     : 0.0D;
-            double rangeSquared = range * range;
-
-            for (TrackedItem tracked : validItems) {
-                TextDisplay label = labels.get(tracked.itemId());
-                if (label == null || !label.isValid() || !tracked.item().getWorld().equals(player.getWorld())) {
-                    continue;
-                }
-                if (!visibilityPolicy.cullingEnabled()) {
-                    desired.add(tracked.itemId());
-                    continue;
-                }
-                Location location = tracked.location();
-                double deltaX = location.getX() - playerLocation.getX();
-                double deltaY = location.getY() - playerLocation.getY();
-                double deltaZ = location.getZ() - playerLocation.getZ();
-                if (deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <= rangeSquared) {
-                    desired.add(tracked.itemId());
+            if (visibilityIndex != null) {
+                int candidates = visibilityIndex.queryInto(player.getWorld().getUID(),
+                        playerLocation.getX(), playerLocation.getY(), playerLocation.getZ(), range, desired);
+                PerformanceMetrics.droppedSpatialCandidates(candidates);
+            } else {
+                PerformanceMetrics.droppedFullScanCandidates(validItems.size());
+                for (TrackedItem tracked : validItems) {
+                    TextDisplay label = labels.get(tracked.itemId());
+                    if (label != null && label.isValid()
+                            && tracked.item().getWorld().equals(player.getWorld())) {
+                        desired.add(tracked.itemId());
+                    }
                 }
             }
 
@@ -565,29 +580,39 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             for (UUID itemId : state.desired) {
                 if (!desired.contains(itemId)) {
                     state.pending.cancel(itemId);
+                    unlinkLabelViewer(itemId, playerId);
                 }
             }
             state.nextDesired = state.desired;
             state.desired = desired;
             for (UUID itemId : desired) {
+                linkLabelViewer(itemId, playerId);
                 if (!state.shown.contains(itemId)) {
                     state.pending.request(itemId);
-                    visibilityQueuesPending = true;
+                    pendingVisibilityViewers.add(playerId);
                 }
             }
         }
     }
 
     private void drainVisibilityQueues() {
-        if (!visibilityQueuesPending) {
+        if (pendingVisibilityViewers.isEmpty()) {
             return;
         }
-        boolean stillPending = false;
-        for (Map.Entry<UUID, VisibilityState> entry : visibilityStates.entrySet()) {
-            Player player = Bukkit.getPlayer(entry.getKey());
-            VisibilityState state = entry.getValue();
-            if (player == null || !player.isOnline() || !eligibleViewers.contains(entry.getKey())) {
-                state.pending.clear();
+        Iterator<UUID> pendingViewers = pendingVisibilityViewers.iterator();
+        while (pendingViewers.hasNext()) {
+            UUID playerId = pendingViewers.next();
+            Player player = Bukkit.getPlayer(playerId);
+            VisibilityState state = visibilityStates.get(playerId);
+            if (state == null || player == null || !player.isOnline() || !eligibleViewers.contains(playerId)) {
+                if (state != null) {
+                    state.pending.clear();
+                }
+                pendingViewers.remove();
+                continue;
+            }
+            if (!state.pending.hasPending()) {
+                pendingViewers.remove();
                 continue;
             }
             List<UUID> ready = state.ready;
@@ -607,9 +632,10 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 }
             }
             ready.clear();
-            stillPending |= state.pending.hasPending();
+            if (!state.pending.hasPending()) {
+                pendingViewers.remove();
+            }
         }
-        visibilityQueuesPending = stillPending;
     }
 
     private boolean isPendingVisibilityWanted(VisibilityState state, UUID itemId) {
@@ -631,28 +657,59 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                 }
             }
         }
+        for (UUID itemId : state.desired) {
+            unlinkLabelViewer(itemId, playerId);
+        }
+        for (UUID itemId : state.shown) {
+            unlinkLabelViewer(itemId, playerId);
+        }
         state.pending.clear();
+        pendingVisibilityViewers.remove(playerId);
     }
 
-    private Component format(ItemStack stack, int ticksLeft) {
-        int amount = stack.getAmount();
-        String durability = durability(stack);
+    private CachedItemContent cachedContent(UUID itemId, ItemStack stack) {
+        CachedItemContent cached = contentCache.get(itemId);
+        if (cached != null && cached.stack.equals(stack)) {
+            return cached;
+        }
+        String matchingName = matchingName(stack);
+        NamespacedKey customItemId = blacklist.requiresCustomItemId()
+                ? CustomContentManager.customItemId(stack).orElse(null)
+                : null;
+        CachedItemContent replacement = new CachedItemContent(
+                stack.clone(),
+                blacklist.matches(matchingName, stack.getType(), customItemId),
+                durability(stack),
+                ItemNameUtils.getDisplayName(stack));
+        contentCache.put(itemId, replacement);
+        return replacement;
+    }
+
+    private Component format(CachedItemContent content, int ticksLeft) {
         int secondsLeft = Math.max(0, ticksLeft / 20);
+        if (content.lastSeconds == secondsLeft && content.lastFormatted != null) {
+            return content.lastFormatted;
+        }
+        ItemStack stack = content.stack;
+        int amount = stack.getAmount();
         String timerColor = secondsLeft <= 30 ? lowColor : secondsLeft <= 120 ? mediumColor : highColor;
         String timer = timerColor + String.format(java.util.Locale.ROOT, "%02d:%02d", secondsLeft / 60, secondsLeft % 60);
 
         String template;
-        if (ticksLeft >= 600 && durability != null) {
-            template = toolsFormatting.replace("{Durability}", durability);
+        if (ticksLeft >= 600 && content.durability != null) {
+            template = toolsFormatting.replace("{Durability}", content.durability);
         } else {
             template = amount == 1 ? singularFormatting : regularFormatting;
         }
         String rendered = template.replace("{Amount}", Integer.toString(amount)).replace("{Timer}", timer);
         Component component = LegacyTextComponentCache.parse(rendered);
-        return component.replaceText(TextReplacementConfig.builder()
+        Component formatted = component.replaceText(TextReplacementConfig.builder()
                 .matchLiteral("{Item}")
-                .replacement(ItemNameUtils.getDisplayName(stack))
+                .replacement(content.itemName)
                 .build());
+        content.lastSeconds = secondsLeft;
+        content.lastFormatted = formatted;
+        return formatted;
     }
 
     private String durability(ItemStack stack) {
@@ -677,6 +734,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     private void remove(UUID itemId) {
         trackedItems.remove(itemId);
+        contentCache.remove(itemId);
         removeLabel(itemId);
     }
 
@@ -686,16 +744,51 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         removeLabel(label);
     }
 
+    private void removeAllLabels() {
+        Iterator<Map.Entry<UUID, TextDisplay>> iterator = labels.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<UUID, TextDisplay> entry = iterator.next();
+            iterator.remove();
+            forgetLabelVisibility(entry.getKey(), entry.getValue());
+            removeLabel(entry.getValue());
+        }
+    }
+
     private void forgetLabelVisibility(UUID itemId, TextDisplay label) {
-        for (Map.Entry<UUID, VisibilityState> entry : visibilityStates.entrySet()) {
-            VisibilityState state = entry.getValue();
+        Set<UUID> viewers = viewersByLabel.remove(itemId);
+        if (viewers == null) {
+            return;
+        }
+        for (UUID viewer : viewers) {
+            VisibilityState state = visibilityStates.get(viewer);
+            if (state == null) {
+                continue;
+            }
             state.desired.remove(itemId);
+            state.nextDesired.remove(itemId);
             state.pending.cancel(itemId);
             if (state.shown.remove(itemId) && label != null && label.isValid()) {
-                Player player = Bukkit.getPlayer(entry.getKey());
+                Player player = Bukkit.getPlayer(viewer);
                 if (player != null) {
                     setLabelVisible(player, label, false);
                 }
+            }
+            if (!state.pending.hasPending()) {
+                pendingVisibilityViewers.remove(viewer);
+            }
+        }
+    }
+
+    private void linkLabelViewer(UUID itemId, UUID viewer) {
+        viewersByLabel.computeIfAbsent(itemId, ignored -> new HashSet<>()).add(viewer);
+    }
+
+    private void unlinkLabelViewer(UUID itemId, UUID viewer) {
+        Set<UUID> viewers = viewersByLabel.get(itemId);
+        if (viewers != null) {
+            viewers.remove(viewer);
+            if (viewers.isEmpty()) {
+                viewersByLabel.remove(itemId);
             }
         }
     }
@@ -724,6 +817,24 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     }
 
     private record TrackedItem(UUID itemId, Item item, UUID worldId, Location location) {
+    }
+
+    private static final class CachedItemContent {
+
+        private final ItemStack stack;
+        private final boolean blacklisted;
+        private final String durability;
+        private final Component itemName;
+        private int lastSeconds = Integer.MIN_VALUE;
+        private Component lastFormatted;
+
+        private CachedItemContent(ItemStack stack, boolean blacklisted, String durability,
+                                  Component itemName) {
+            this.stack = stack;
+            this.blacklisted = blacklisted;
+            this.durability = durability;
+            this.itemName = itemName;
+        }
     }
 
     private static final class VisibilityState {

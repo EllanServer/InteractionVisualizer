@@ -26,12 +26,6 @@ import org.bukkit.Location;
 public interface ILightManager {
 
     ILightManager DUMMY_INSTANCE = new ILightManager() {
-
-        @Override
-        public ScheduledTask run() {
-            return null;
-        }
-
         @Override
         public void deleteLight(Location location) {
             //do nothing
@@ -47,6 +41,26 @@ public interface ILightManager {
 
     void deleteLight(Location location);
 
-    ScheduledTask run();
+    /**
+     * Kept for compatibility with the original manager lifecycle. Implementations
+     * may schedule work lazily from {@link #createLight(Location, int, LightType)}.
+     */
+    default ScheduledTask run() {
+        return null;
+    }
+
+    default void setUpdatePeriod(long updatePeriod) {
+    }
+
+    default void shutdown() {
+    }
+
+    /**
+     * Number of plugin-owned light bookkeeping entries still reachable from
+     * this manager. Implementations return zero after a complete shutdown.
+     */
+    default int retainedStateCount() {
+        return 0;
+    }
 
 }

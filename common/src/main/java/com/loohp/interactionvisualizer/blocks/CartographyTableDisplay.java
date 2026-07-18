@@ -27,9 +27,9 @@ import com.loohp.interactionvisualizer.api.VisualizerInteractDisplay;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.entityholders.Item.RenderMode;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
+import com.loohp.interactionvisualizer.managers.InteractionSessionCoordinator;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
-import com.loohp.interactionvisualizer.scheduler.ScheduledRunnable;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import org.bukkit.FluidCollisionMode;
 import org.bukkit.GameMode;
@@ -49,7 +49,6 @@ import org.bukkit.inventory.InventoryView;
 import org.bukkit.inventory.ItemStack;
 
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
 
 public class CartographyTableDisplay extends VisualizerInteractDisplay implements Listener {
@@ -66,49 +65,9 @@ public class CartographyTableDisplay extends VisualizerInteractDisplay implement
 
     @Override
     public ScheduledTask run() {
-        return new ScheduledRunnable() {
-            public void run() {
-
-                Iterator<Block> itr = openedCTable.keySet().iterator();
-                int count = 0;
-                int maxper = (int) Math.ceil((double) openedCTable.size() / (double) 5);
-                int delay = 1;
-                while (itr.hasNext()) {
-                    count++;
-                    if (count > maxper) {
-                        count = 0;
-                        delay++;
-                    }
-                    Block block = itr.next();
-                    new ScheduledRunnable() {
-                        public void run() {
-                            if (!openedCTable.containsKey(block)) {
-                                return;
-                            }
-                            Map<String, Object> map = openedCTable.get(block);
-                            if (block.getType().equals(Material.CARTOGRAPHY_TABLE)) {
-                                Player player = (Player) map.get("Player");
-                                if (!GameMode.SPECTATOR.equals(player.getGameMode())) {
-                                    if (player.getOpenInventory() != null) {
-                                        if (player.getOpenInventory().getTopInventory() != null) {
-                                            if (player.getOpenInventory().getTopInventory() instanceof CartographyInventory) {
-                                                return;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (map.get("Item") instanceof Item item) {
-                                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
-                            }
-                            openedCTable.remove(block);
-                            playermap.remove((Player) map.get("Player"), block);
-                        }
-                    }.runTaskLater(InteractionVisualizer.plugin, delay, block.getLocation());
-                }
-            }
-        }.runTaskTimer(InteractionVisualizer.plugin, 0, 6);
+        InteractionSessionCoordinator.register(this, playermap::keySet,
+                this::isSessionValid, this::cleanupSession);
+        return null;
     }
 
     @Override
@@ -146,6 +105,7 @@ public class CartographyTableDisplay extends VisualizerInteractDisplay implement
         if (!map.get("Player").equals(player)) {
             return;
         }
+        InteractionSessionCoordinator.touch();
 
         ItemStack input = view.getItem(0);
         if (input != null) {
@@ -237,21 +197,36 @@ public class CartographyTableDisplay extends VisualizerInteractDisplay implement
 
     @EventHandler
     public void onCloseCartographyTable(InventoryCloseEvent event) {
-        Player player = (Player) event.getPlayer();
+        cleanupSession((Player) event.getPlayer());
+    }
+
+    private boolean isSessionValid(Player player) {
+        Block block = playermap.get(player);
+        if (block == null) {
+            return false;
+        }
+        Map<String, Object> map = openedCTable.get(block);
+        return player.isOnline() && !GameMode.SPECTATOR.equals(player.getGameMode())
+                && map != null && player.equals(map.get("Player"))
+                && block.getWorld().equals(player.getWorld())
+                && block.getType() == Material.CARTOGRAPHY_TABLE
+                && player.getOpenInventory().getTopInventory() instanceof CartographyInventory;
+    }
+
+    private void cleanupSession(Player player) {
         Block block = playermap.remove(player);
         if (block == null) {
             return;
         }
-
         Map<String, Object> map = openedCTable.get(block);
-        if (map == null || !map.get("Player").equals(player)) {
+        if (map == null || !player.equals(map.get("Player"))) {
             return;
         }
 
         if (map.get("Item") instanceof Item item) {
             DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
         }
-        openedCTable.remove(block);
+        openedCTable.remove(block, map);
     }
 
 }

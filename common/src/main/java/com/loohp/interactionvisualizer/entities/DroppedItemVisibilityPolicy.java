@@ -12,9 +12,9 @@
 package com.loohp.interactionvisualizer.entities;
 
 /**
- * Validated configuration for the opt-in dropped-item visibility controls.
- * Disabled culling preserves the legacy server-side label lifecycle;
- * rate limiting is independently opt-in.
+ * Validated configuration for the independently reversible dropped-item
+ * visibility controls. Disabled culling preserves the legacy server-side
+ * label lifecycle; rate limiting has its own rollback switch.
  */
 record DroppedItemVisibilityPolicy(
         int viewDistance,

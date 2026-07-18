@@ -92,6 +92,9 @@ public class BannerDisplay extends VisualizerRunnableDisplay implements Listener
 
     @Override
     public ScheduledTask gc() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return null;
+        }
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = bannerMap.entrySet().iterator();
             int count = 0;
@@ -130,6 +133,16 @@ public class BannerDisplay extends VisualizerRunnableDisplay implements Listener
 
     @Override
     public ScheduledTask run() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.register(this,
+                    BlockUpdateCoordinator.materialsMatching(this::isBanner), this::nearbyBanner,
+                    checkingPeriod, gcPeriod, this::updateHybridBlock, this::removeTrackedDisplay);
+            return null;
+        }
+        return legacyRun();
+    }
+
+    private ScheduledTask legacyRun() {
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyBanner();
             for (Block block : list) {
@@ -200,19 +213,76 @@ public class BannerDisplay extends VisualizerRunnableDisplay implements Listener
         }, 0, checkingPeriod);
     }
 
+    private boolean updateHybridBlock(Block block) {
+        if (!nearbyBanner().contains(block)
+                || !block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)
+                || !isBanner(block.getType())) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isActive(block.getLocation())) {
+            return false;
+        }
+        Map<String, Object> values = bannerMap.get(block);
+        if (values == null) {
+            values = new HashMap<>();
+            values.put("Item", "N/A");
+            values.putAll(spawnDisplayEntitys(block));
+            bannerMap.put(block, values);
+        }
+        updateTrackedBlock(block, values);
+        return false;
+    }
+
+    private void updateTrackedBlock(Block block, Map<String, Object> values) {
+        Component name = ((Banner) block.getState(false)).customName();
+        DisplayEntity line = (DisplayEntity) values.get("1");
+        if (name == null || PlainTextComponentSerializer.plainText().serialize(name).isEmpty()) {
+            if (!PlainTextComponentSerializer.plainText().serialize(line.getCustomName()).isEmpty()
+                    || line.isCustomNameVisible()) {
+                line.setCustomName("");
+                line.setCustomNameVisible(false);
+                DisplayManager.updateDisplay(line);
+            }
+            return;
+        }
+        String matchingName = LegacyComponentSerializer.legacySection().serialize(name);
+        if (stripColorBlacklist) {
+            matchingName = ChatColorUtils.stripColor(matchingName);
+        }
+        if (blacklist.test(matchingName)) {
+            if (!PlainTextComponentSerializer.plainText().serialize(line.getCustomName()).isEmpty()
+                    || line.isCustomNameVisible()) {
+                line.setCustomName("");
+                line.setCustomNameVisible(false);
+                DisplayManager.updateDisplay(line);
+            }
+        } else if (!line.getCustomName().equals(name) || !line.isCustomNameVisible()) {
+            line.setCustomName(name);
+            line.setCustomNameVisible(true);
+            DisplayManager.updateDisplay(line);
+        }
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakBanner(TileEntityRemovedEvent event) {
         Block block = event.getBlock();
-        if (!bannerMap.containsKey(block)) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.remove(this, block);
+        } else {
+            removeTrackedDisplay(block);
+        }
+    }
+
+    private void removeTrackedDisplay(Block block) {
+        Map<String, Object> map = bannerMap.remove(block);
+        if (map == null) {
             return;
         }
-
-        Map<String, Object> map = bannerMap.get(block);
         if (map.get("1") instanceof DisplayEntity) {
             DisplayEntity stand = (DisplayEntity) map.get("1");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        bannerMap.remove(block);
     }
 
     public Set<Block> nearbyBanner() {

@@ -132,6 +132,7 @@ final class DroppedItemSpatialIndex {
                 double[] zCoordinates = viewers.zCoordinates;
                 int viewerCount = viewers.size;
                 for (int index = 0; index < viewerCount; index++) {
+                    viewers.candidateChecks++;
                     double deltaX = xCoordinates[index] - x;
                     double deltaY = yCoordinates[index] - y;
                     double deltaZ = zCoordinates[index] - z;
@@ -195,6 +196,17 @@ final class DroppedItemSpatialIndex {
             return viewers != null && viewers.boundsActive;
         }
 
+        long candidateChecks() {
+            if (viewersByWorld == null) {
+                return singleWorldViewers == null ? 0L : singleWorldViewers.candidateChecks;
+            }
+            long checks = 0L;
+            for (WorldViewerBucket viewers : viewersByWorld.values()) {
+                checks += viewers.candidateChecks;
+            }
+            return checks;
+        }
+
         private static final class WorldViewerBucket {
 
             private static final int INITIAL_CAPACITY = 8;
@@ -225,6 +237,7 @@ final class DroppedItemSpatialIndex {
             private int expensiveQueries;
             private int gridQueriesUntilProbe;
             private int size;
+            private long candidateChecks;
 
             private WorldViewerBucket(int initialCapacity) {
                 if (initialCapacity > 0) {
@@ -333,6 +346,7 @@ final class DroppedItemSpatialIndex {
                 double[] zCoordinates = this.zCoordinates;
                 int viewerCount = size;
                 for (int index = 0; index < viewerCount; index++) {
+                    candidateChecks++;
                     double deltaX = xCoordinates[index] - x;
                     double deltaY = yCoordinates[index] - y;
                     double deltaZ = zCoordinates[index] - z;
@@ -352,6 +366,7 @@ final class DroppedItemSpatialIndex {
                         List<Point> points = viewerGrid.get(new ViewerGridCell(cellX, cellZ));
                         if (points != null) {
                             for (Point point : points) {
+                                candidateChecks++;
                                 double deltaX = point.x() - x;
                                 double deltaY = point.y() - y;
                                 double deltaZ = point.z() - z;

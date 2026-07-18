@@ -26,6 +26,8 @@ import com.loohp.interactionvisualizer.database.Database;
 import com.loohp.interactionvisualizer.debug.PerformanceBlockScene;
 import com.loohp.interactionvisualizer.debug.PerformanceScene;
 import com.loohp.interactionvisualizer.integration.CustomContentManager;
+import com.loohp.interactionvisualizer.integration.ViewerCullingManager;
+import com.loohp.interactionvisualizer.integration.ViewerCullingManagerLoader;
 import com.loohp.interactionvisualizer.managers.AsyncExecutorManager;
 import com.loohp.interactionvisualizer.managers.LangManager;
 import com.loohp.interactionvisualizer.managers.LightManager;
@@ -75,10 +77,15 @@ public class InteractionVisualizer extends JavaPlugin {
     public static final int BSTATS_PLUGIN_ID = 7024;
     public static final String CONFIG_ID = "config";
     public static final Set<String> SUPPORTED_MINECRAFT_VERSIONS = Set.of("26.1.2", "26.2");
+    private static final String PERFORMANCE_MIGRATION_MARKER =
+            ".paper26-performance-defaults-advised";
 
     public static InteractionVisualizer plugin = null;
 
+    /** @deprecated LightAPI is no longer used; retained for binary compatibility. */
+    @Deprecated(forRemoval = false)
     public static Boolean lightapi = false;
+    public static Boolean craftEngineLight = false;
     public static Boolean openinv = false;
 
     public static Set<String> exemptBlocks = new HashSet<>();
@@ -109,20 +116,25 @@ public class InteractionVisualizer extends JavaPlugin {
 
     public static boolean defaultDisabledAll = false;
     /** A/B switch: virtual item remains authoritative while an invisible tracker stays stationary. */
-    public static boolean staticVirtualItemAnchorsDuringAnimation = false;
+    public static boolean staticVirtualItemAnchorsDuringAnimation = true;
     /** A/B switch: eligible stationary virtual items are tracked and rendered entirely by packets. */
-    public static boolean packetOnlyStaticVirtualItems = false;
+    public static boolean packetOnlyStaticVirtualItems = true;
+    /** A/B switch: safe animated virtual items use Typewriter-style per-viewer packet tracking. */
+    public static boolean packetOnlyAnimatedVirtualItems = false;
     /** A/B switch: smooths visibility recovery bursts; hides are always immediate. */
-    public static boolean visibilityRateLimiting = false;
+    public static boolean visibilityRateLimiting = true;
     public static int visibilityRateLimitBucketSize = 128;
     public static int visibilityRateLimitRestorePerTick = 32;
     /** A/B switch: coalesces block changes and updates tracked blocks from fixed-budget loops. */
-    public static boolean eventDrivenBlockUpdates = false;
+    public static boolean eventDrivenBlockUpdates = true;
     public static int blockUpdateMaxDirtyPerTick = 64;
 
     private boolean blockUpdateModeInitialized;
+    private boolean cullingLifecycleInitialized;
+    private boolean cullingProviderWarningLogged;
 
     public static ILightManager lightManager;
+    public static ViewerCullingManager viewerCullingManager = ViewerCullingManager.DISABLED;
     public static PreferenceManager preferenceManager;
     public static AsyncExecutorManager asyncExecutorManager;
 
@@ -160,18 +172,9 @@ public class InteractionVisualizer extends JavaPlugin {
                 new ThreadPoolExecutor.CallerRunsPolicy());
         asyncExecutorManager = new AsyncExecutorManager(threadPool);
 
-        if (isPluginEnabled("LightAPI")) {
-            try {
-                Class.forName("ru.beykerykt.lightapi.utils.Debug");
-                hookMessage("LightAPI");
-                lightapi = true;
-                lightManager = new LightManager(this);
-            } catch (ClassNotFoundException ignored) {
-            }
-        }
-        if (!lightapi) {
-            lightManager = ILightManager.DUMMY_INSTANCE;
-        }
+        lightapi = false;
+        craftEngineLight = false;
+        lightManager = ILightManager.DUMMY_INSTANCE;
         if (isPluginEnabled("OpenInv")) {
             hookMessage("OpenInv");
             openinv = true;
@@ -180,16 +183,32 @@ public class InteractionVisualizer extends JavaPlugin {
         if (!getDataFolder().exists()) {
             getDataFolder().mkdirs();
         }
+        File configFile = new File(getDataFolder(), "config.yml");
+        boolean existingConfiguration = configFile.isFile();
         try {
-            Config.loadConfig(CONFIG_ID, new File(getDataFolder(), "config.yml"), getClass().getClassLoader().getResourceAsStream("config.yml"), getClass().getClassLoader().getResourceAsStream("config.yml"), true);
+            Config.loadConfig(CONFIG_ID, configFile, getClass().getClassLoader().getResourceAsStream("config.yml"), getClass().getClassLoader().getResourceAsStream("config.yml"), true);
         } catch (IOException e) {
             e.printStackTrace();
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
         loadConfig();
+        advisePerformanceMigrationOnce(existingConfiguration);
 
-        if (CustomContentManager.initialize(this).contains("craftengine")) {
+        boolean craftEngineHooked = CustomContentManager.initialize(this).contains("craftengine");
+        if (isPluginEnabled("CraftEngine")) {
+            ILightManager craftEngineManager = LightManager.createCraftEngine(this, lightUpdatePeriod).orElse(null);
+            if (craftEngineManager != null) {
+                lightManager = craftEngineManager;
+                craftEngineLight = true;
+                craftEngineHooked = true;
+            }
+        }
+        if (configureViewerCulling()) {
+            craftEngineHooked = true;
+        }
+        cullingLifecycleInitialized = true;
+        if (craftEngineHooked) {
             hookMessage("CraftEngine");
         }
 
@@ -253,18 +272,41 @@ public class InteractionVisualizer extends JavaPlugin {
     @Override
     public void onDisable() {
         shutdownPerformanceScenes();
-        CustomContentManager.shutdown();
-        if (preferenceManager != null) {
-            preferenceManager.close();
+        int retainedLightState = 0;
+        ILightManager disablingLightManager = lightManager;
+        if (disablingLightManager != null) {
+            disablingLightManager.shutdown();
+            retainedLightState = disablingLightManager.retainedStateCount();
+            lightManager = ILightManager.DUMMY_INSTANCE;
         }
+        ViewerCullingManager disablingCullingManager = viewerCullingManager;
+        disablingCullingManager.shutdown();
+        int retainedCullingRegistrations = disablingCullingManager.retainedRegistrations();
+        viewerCullingManager = ViewerCullingManager.DISABLED;
+        CustomContentManager.shutdown();
+        int retainedPreferenceState = 0;
+        PreferenceManager disablingPreferenceManager = preferenceManager;
+        if (disablingPreferenceManager != null) {
+            disablingPreferenceManager.close();
+            retainedPreferenceState = disablingPreferenceManager.retainedStateCount();
+            preferenceManager = null;
+        }
+        Database.close();
         TaskManager.shutdown();
         DisplayManager.shutdown();
         TileEntityManager.shutdown();
         PlayerLocationManager.clearCache();
+        playerTrackingRange.clear();
         LegacyTextComponentCache.invalidateAll();
-        if (asyncExecutorManager != null) {
-            asyncExecutorManager.close();
+        int retainedAsyncTasks = 0;
+        AsyncExecutorManager disablingAsyncExecutorManager = asyncExecutorManager;
+        if (disablingAsyncExecutorManager != null) {
+            disablingAsyncExecutorManager.close();
+            retainedAsyncTasks = disablingAsyncExecutorManager.retainedTaskCount();
+            asyncExecutorManager = null;
         }
+        PerformanceMetrics.logShutdownState(this, retainedAsyncTasks,
+                retainedPreferenceState, retainedLightState, retainedCullingRegistrations);
         getServer().getConsoleSender().sendMessage(Component.text(
                 "[InteractionVisualizer] Disabled; all display entities removed.", NamedTextColor.RED));
     }
@@ -300,6 +342,43 @@ public class InteractionVisualizer extends JavaPlugin {
         return Config.getConfig(CONFIG_ID).getConfiguration();
     }
 
+    private void advisePerformanceMigrationOnce(boolean existingConfiguration) {
+        File marker = new File(getDataFolder(), PERFORMANCE_MIGRATION_MARKER);
+        if (marker.isFile()) {
+            return;
+        }
+        try {
+            if (!marker.createNewFile()) {
+                return;
+            }
+        } catch (IOException exception) {
+            getLogger().log(Level.WARNING,
+                    "Unable to persist the Paper 26 performance migration notice marker", exception);
+        }
+        if (existingConfiguration && hasPreservedPerformanceOptOut()) {
+            getLogger().warning("Paper 26 performance defaults are enabled for new installations. "
+                    + "Your explicit false values were preserved; review StaticAnchorDuringAnimation, "
+                    + "PacketOnlyStatic, VisibilityRateLimit, BlockUpdates.EventDriven, and dropped-item "
+                    + "VisibilityCulling/VisibilityRateLimit when you are ready to migrate.");
+        }
+    }
+
+    private boolean hasPreservedPerformanceOptOut() {
+        SparrowConfiguration configuration = getConfiguration();
+        return !configuration.getBoolean(
+                "Settings.Performance.VirtualItems.StaticAnchorDuringAnimation")
+                || !configuration.getBoolean(
+                "Settings.Performance.VirtualItems.PacketOnlyStatic")
+                || !configuration.getBoolean(
+                "Settings.Performance.VisibilityRateLimit.Enabled")
+                || !configuration.getBoolean(
+                "Settings.Performance.BlockUpdates.EventDriven")
+                || !configuration.getBoolean(
+                "Entities.Item.Options.VisibilityCulling.Enabled")
+                || !configuration.getBoolean(
+                "Entities.Item.Options.VisibilityRateLimit.Enabled");
+    }
+
     public void loadConfig() {
         Config config = Config.getConfig(CONFIG_ID);
         config.reload();
@@ -326,8 +405,14 @@ public class InteractionVisualizer extends JavaPlugin {
 
         disabledWorlds = new HashSet<>(getConfiguration().getStringList("Settings.DisabledWorlds"));
         hideIfObstructed = getConfiguration().getBoolean("Settings.HideIfViewObstructed");
+        if (cullingLifecycleInitialized) {
+            configureViewerCulling();
+        }
 
         lightUpdatePeriod = getConfiguration().getInt("LightUpdate.Period");
+        if (lightManager != null) {
+            lightManager.setUpdatePeriod(lightUpdatePeriod);
+        }
 
         updaterEnabled = getConfiguration().getBoolean("Options.Updater");
 
@@ -341,6 +426,8 @@ public class InteractionVisualizer extends JavaPlugin {
                 "Settings.Performance.VirtualItems.StaticAnchorDuringAnimation");
         packetOnlyStaticVirtualItems = getConfiguration().getBoolean(
                 "Settings.Performance.VirtualItems.PacketOnlyStatic");
+        packetOnlyAnimatedVirtualItems = getConfiguration().getBoolean(
+                "Settings.Performance.VirtualItems.PacketOnlyAnimated");
         visibilityRateLimiting = getConfiguration().getBoolean(
                 "Settings.Performance.VisibilityRateLimit.Enabled");
         visibilityRateLimitBucketSize = Math.max(1, getConfiguration().getInt(
@@ -360,6 +447,48 @@ public class InteractionVisualizer extends JavaPlugin {
         blockUpdateModeInitialized = true;
 
         getServer().getPluginManager().callEvent(new InteractionVisualizerReloadEvent());
+    }
+
+    private boolean configureViewerCulling() {
+        if (!hideIfObstructed) {
+            boolean backendChanged = viewerCullingManager.enabled();
+            viewerCullingManager.shutdown();
+            viewerCullingManager = ViewerCullingManager.DISABLED;
+            if (backendChanged && cullingLifecycleInitialized) {
+                DisplayManager.onCullingBackendChanged();
+            }
+            return false;
+        }
+        if (viewerCullingManager.enabled()) {
+            return true;
+        }
+        viewerCullingManager.shutdown();
+        viewerCullingManager = ViewerCullingManager.DISABLED;
+        if (!isPluginEnabled("CraftEngine")) {
+            if (!cullingProviderWarningLogged) {
+                cullingProviderWarningLogged = true;
+                getLogger().warning("Settings.HideIfViewObstructed requires CraftEngine 26.7+; "
+                        + "using sent-chunk visibility without occlusion culling.");
+            }
+            return false;
+        }
+        ViewerCullingManager manager = ViewerCullingManagerLoader.createCraftEngine(
+                this, DisplayManager::onCullingVisibility).orElse(ViewerCullingManager.DISABLED);
+        if (!manager.enabled()) {
+            manager.shutdown();
+            if (!cullingProviderWarningLogged) {
+                cullingProviderWarningLogged = true;
+                getLogger().warning("CraftEngine entity culling and ray tracing must both be enabled "
+                        + "for Settings.HideIfViewObstructed; using sent-chunk visibility only.");
+            }
+            return false;
+        }
+        cullingProviderWarningLogged = false;
+        viewerCullingManager = manager;
+        if (cullingLifecycleInitialized) {
+            DisplayManager.onCullingBackendChanged();
+        }
+        return true;
     }
 
 }

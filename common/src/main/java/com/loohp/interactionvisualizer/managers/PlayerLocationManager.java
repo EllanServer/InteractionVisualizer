@@ -85,6 +85,10 @@ public class PlayerLocationManager {
         PLAYER_CHUNKS.clear();
     }
 
+    public static int retainedStateCount() {
+        return PLAYER_CHUNKS.size();
+    }
+
     public static Collection<Player> filterOutOfRange(Collection<Player> players, VisualizerEntity entity) {
         return filterOutOfRange(players, entity.getLocation());
     }

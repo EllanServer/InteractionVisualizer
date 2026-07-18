@@ -34,7 +34,6 @@ dependencies {
     compileOnly("me.clip:placeholderapi:2.11.7")
     compileOnly("net.momirealms:craft-engine-core:$craftEngineVersion")
     compileOnly("net.momirealms:craft-engine-bukkit:$craftEngineVersion")
-    compileOnly(files("common/lib/LightAPI-fork-3.5.2.jar"))
 
     implementation("net.momirealms:sparrow-yaml:1.0.7")
     implementation("net.momirealms:sparrow-heart:$sparrowHeartVersion")
@@ -49,7 +48,6 @@ dependencies {
     paper26_2CompileClasspath("me.clip:placeholderapi:2.11.7")
     paper26_2CompileClasspath("net.momirealms:craft-engine-core:$craftEngineVersion")
     paper26_2CompileClasspath("net.momirealms:craft-engine-bukkit:$craftEngineVersion")
-    paper26_2CompileClasspath(files("common/lib/LightAPI-fork-3.5.2.jar"))
 }
 
 java {
@@ -224,15 +222,32 @@ val verifyCustomContentIsolation = tasks.register("verifyCustomContentIsolation"
         val allowedCraftEngineSource = file(
             "common/src/main/java/com/loohp/interactionvisualizer/integration/craftengine/CraftEngineCustomContentBridge.java",
         ).canonicalFile
+        val allowedCraftEngineLightSource = file(
+            "common/src/main/java/com/loohp/interactionvisualizer/integration/craftengine/CraftEngineLightManager.java",
+        ).canonicalFile
+        val allowedCraftEngineCullingSource = file(
+            "common/src/main/java/com/loohp/interactionvisualizer/integration/craftengine/CraftEngineViewerCullingManager.java",
+        ).canonicalFile
         val managerSource = file(
             "common/src/main/java/com/loohp/interactionvisualizer/integration/CustomContentManager.java",
         ).canonicalFile
+        val lightLoaderSource = file(
+            "common/src/main/java/com/loohp/interactionvisualizer/managers/LightManager.java",
+        ).canonicalFile
+        val cullingLoaderSource = file(
+            "common/src/main/java/com/loohp/interactionvisualizer/integration/ViewerCullingManagerLoader.java",
+        ).canonicalFile
         val stableApiClass = "net.momirealms.craftengine.bukkit.api.CraftEngineItems"
+        val lightSentinelClass = "net.momirealms.craftengine.bukkit.api.BukkitAdaptor"
+        val cullingSentinelClass = "net.momirealms.craftengine.core.entity.culling.Cullable"
         val craftEngineToken = Regex("net\\.momirealms\\.craftengine(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)+")
         val violations = sources.files.flatMap { source ->
             craftEngineToken.findAll(source.readText()).mapNotNull { match ->
                 val allowed = when (source.canonicalFile) {
                     allowedCraftEngineSource, managerSource -> match.value == stableApiClass
+                    lightLoaderSource -> match.value == lightSentinelClass
+                    cullingLoaderSource -> match.value == cullingSentinelClass
+                    allowedCraftEngineLightSource, allowedCraftEngineCullingSource -> true
                     else -> false
                 }
                 if (allowed) null else "${source.relativeTo(rootDir)}: ${match.value}"

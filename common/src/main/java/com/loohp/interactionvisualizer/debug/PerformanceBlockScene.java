@@ -462,6 +462,10 @@ public final class PerformanceBlockScene {
                 restoreFailures, inspectionFailures);
     }
 
+    public static int retainedStateCount() {
+        return scenes.size();
+    }
+
     private static Snapshot mutate(Session session, int requestedOperations, Mode mode) {
         Objects.requireNonNull(mode, "mode");
         int operations = Math.max(0, Math.min(session.entries.size(), requestedOperations));
