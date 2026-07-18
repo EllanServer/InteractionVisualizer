@@ -88,6 +88,9 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
 
     @Override
     public ScheduledTask gc() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return null;
+        }
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = beaconMap.entrySet().iterator();
             int count = 0;
@@ -143,6 +146,15 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
 
     @Override
     public ScheduledTask run() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.register(this, Set.of(Material.BEACON), this::nearbyBeacon,
+                    checkingPeriod, gcPeriod, this::updateHybridBlock, this::removeTrackedDisplay);
+            return null;
+        }
+        return legacyRun();
+    }
+
+    private ScheduledTask legacyRun() {
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyBeacon();
             for (Block block : list) {
@@ -178,7 +190,7 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
                     if (!block.getType().equals(Material.BEACON)) {
                         return;
                     }
-                    org.bukkit.block.Beacon beacon = (org.bukkit.block.Beacon) block.getState();
+                    org.bukkit.block.Beacon beacon = (org.bukkit.block.Beacon) block.getState(false);
                     {
                         String arrow = "\u27f9";
                         String up = "\u25b2";
@@ -277,14 +289,102 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
         }, 0, checkingPeriod);
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
-    public void onBreakBeacon(TileEntityRemovedEvent event) {
-        Block block = event.getBlock();
-        if (!beaconMap.containsKey(block)) {
+    private boolean updateHybridBlock(Block block) {
+        if (!nearbyBeacon().contains(block)
+                || !block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)
+                || block.getType() != Material.BEACON) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isActive(block.getLocation())) {
+            return false;
+        }
+        Map<String, Object> values = beaconMap.get(block);
+        if (values == null) {
+            values = new HashMap<>();
+            values.put("Item", "N/A");
+            values.putAll(spawnDisplayEntitys(block));
+            beaconMap.put(block, values);
+        }
+        updateTrackedBlock(block, values);
+        return false;
+    }
+
+    private void updateTrackedBlock(Block block, Map<String, Object> values) {
+        org.bukkit.block.Beacon beacon = (org.bukkit.block.Beacon) block.getState(false);
+        String arrow = "\u27f9";
+        String up = "\u25b2";
+        NamedTextColor color = getBeaconColor(block);
+        DisplayEntity line1 = (DisplayEntity) values.get("1");
+        DisplayEntity line2 = (DisplayEntity) values.get("2");
+        DisplayEntity line3 = (DisplayEntity) values.get("3");
+
+        Component summary = Component.text(up + beacon.getTier() + " " + arrow + " "
+                + DECIMAL_FORMAT.format(beacon.getEffectRange()) + "m", color);
+        if (beacon.getTier() == 0) {
+            updateLine(line1, null);
+            updateLine(line2, summary);
+            updateLine(line3, null);
             return;
         }
 
-        Map<String, Object> map = beaconMap.get(block);
+        Component primary = null;
+        Component secondary = null;
+        if (beacon.getPrimaryEffect() != null) {
+            TranslatableComponent effect = Component.translatable(
+                    TranslationUtils.getEffect(beacon.getPrimaryEffect().getType())).color(color);
+            Component level = ComponentFont.parseFont(Component.text(" "
+                    + RomanNumberUtils.toRoman(beacon.getPrimaryEffect().getAmplifier() + 1), color));
+            primary = effect.append(level);
+        }
+        if (beacon.getSecondaryEffect() != null) {
+            TranslatableComponent effect = Component.translatable(
+                    TranslationUtils.getEffect(beacon.getSecondaryEffect().getType())).color(color);
+            Component level = ComponentFont.parseFont(Component.text(" "
+                    + RomanNumberUtils.toRoman(beacon.getSecondaryEffect().getAmplifier() + 1), color));
+            secondary = effect.append(level);
+        }
+        if (secondary == null) {
+            updateLine(line1, null);
+            updateLine(line2, summary);
+            updateLine(line3, primary);
+        } else {
+            updateLine(line1, summary);
+            updateLine(line2, primary);
+            updateLine(line3, secondary);
+        }
+    }
+
+    private static void updateLine(DisplayEntity line, Component component) {
+        if (component == null) {
+            if (!PlainTextComponentSerializer.plainText().serialize(line.getCustomName()).isEmpty()
+                    || line.isCustomNameVisible()) {
+                line.setCustomName("");
+                line.setCustomNameVisible(false);
+                DisplayManager.updateDisplay(line);
+            }
+        } else if (!line.getCustomName().equals(component) || !line.isCustomNameVisible()) {
+            line.setCustomName(component);
+            line.setCustomNameVisible(true);
+            DisplayManager.updateDisplay(line);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onBreakBeacon(TileEntityRemovedEvent event) {
+        Block block = event.getBlock();
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.remove(this, block);
+        } else {
+            removeTrackedDisplay(block);
+        }
+    }
+
+    private void removeTrackedDisplay(Block block) {
+        Map<String, Object> map = beaconMap.remove(block);
+        if (map == null) {
+            return;
+        }
         if (map.get("1") instanceof DisplayEntity) {
             DisplayEntity stand = (DisplayEntity) map.get("1");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
@@ -297,7 +397,6 @@ public class BeaconDisplay extends VisualizerRunnableDisplay implements Listener
             DisplayEntity stand = (DisplayEntity) map.get("3");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        beaconMap.remove(block);
     }
 
     public Set<Block> nearbyBeacon() {

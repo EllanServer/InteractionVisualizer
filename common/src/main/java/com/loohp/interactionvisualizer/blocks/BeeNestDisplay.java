@@ -83,12 +83,9 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
     private String filledColor = "&e";
     private String noCampfireColor = "&c";
     private String beeCountText = "&e{Current}&6/{Max}";
-    private final BlockUpdateScheduler<Block> blockUpdates;
 
     public BeeNestDisplay() {
         onReload(new InteractionVisualizerReloadEvent());
-        this.blockUpdates = new BlockUpdateScheduler<>(this::nearbyBeenest,
-                this.checkingPeriod, this.gcPeriod);
     }
 
     @EventHandler
@@ -162,15 +159,9 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return legacyRun();
         }
-        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
-            boolean collecting = PerformanceMetrics.isCollecting();
-            long start = collecting ? System.nanoTime() : 0L;
-            int checks = this.blockUpdates.tick(Bukkit.getCurrentTick(),
-                    InteractionVisualizer.blockUpdateMaxDirtyPerTick, this::updateHybridBlock);
-            if (collecting) {
-                PerformanceMetrics.blockUpdateChecks(checks, System.nanoTime() - start);
-            }
-        }, 0, 1);
+        BlockUpdateCoordinator.register(this, Set.of(Material.BEE_NEST), this::nearbyBeenest,
+                checkingPeriod, gcPeriod, this::updateHybridBlock, this::removeTrackedDisplay);
+        return null;
     }
 
     private ScheduledTask legacyRun() {
@@ -247,7 +238,7 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
     private void markDirty(Block block) {
         if (InteractionVisualizer.eventDrivenBlockUpdates && block != null
                 && block.getType() == Material.BEE_NEST && beenestMap.containsKey(block)) {
-            blockUpdates.markDirty(block, (long) Bukkit.getCurrentTick() + 1L);
+            BlockUpdateCoordinator.markDirty(this, block, (long) Bukkit.getCurrentTick() + 1L);
         }
     }
 
@@ -342,21 +333,23 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
     public void onBeenestAdded(TileEntityAddedEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates
                 && event.getTileEntityType() == TileEntityType.BEE_NEST) {
-            blockUpdates.markDirty(event.getBlock(), (long) Bukkit.getCurrentTick() + 1L);
+            BlockUpdateCoordinator.markDirty(
+                    this, event.getBlock(), (long) Bukkit.getCurrentTick() + 1L);
         }
     }
 
     public void onBeenestActivated(TileEntityActivatedEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates
                 && event.getTileEntityType() == TileEntityType.BEE_NEST) {
-            blockUpdates.markDirty(event.getBlock(), (long) Bukkit.getCurrentTick() + 1L);
+            BlockUpdateCoordinator.markDirty(
+                    this, event.getBlock(), (long) Bukkit.getCurrentTick() + 1L);
         }
     }
 
     public void onBeenestDeactivated(TileEntityDeactivatedEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates
                 && event.getTileEntityType() == TileEntityType.BEE_NEST) {
-            removeTrackedDisplay(event.getBlock());
+            BlockUpdateCoordinator.remove(this, event.getBlock());
         }
     }
 
@@ -401,11 +394,18 @@ public class BeeNestDisplay extends VisualizerRunnableDisplay implements Listene
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakBeenest(TileEntityRemovedEvent event) {
-        removeTrackedDisplay(event.getBlock());
+        invalidateTrackedDisplay(event.getBlock());
+    }
+
+    private void invalidateTrackedDisplay(Block block) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.remove(this, block);
+        } else {
+            removeTrackedDisplay(block);
+        }
     }
 
     private void removeTrackedDisplay(Block block) {
-        blockUpdates.remove(block);
         Map<String, Object> map = beenestMap.remove(block);
         if (map == null) {
             return;

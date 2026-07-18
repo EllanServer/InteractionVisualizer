@@ -23,6 +23,7 @@ package com.loohp.interactionvisualizer.listeners;
 import com.destroystokyo.paper.event.inventory.PrepareResultEvent;
 import com.loohp.interactionvisualizer.InteractionVisualizer;
 import com.loohp.interactionvisualizer.managers.TaskManager;
+import com.loohp.interactionvisualizer.managers.InteractionSessionCoordinator;
 import io.papermc.paper.event.player.PlayerLoomPatternSelectEvent;
 import io.papermc.paper.event.player.PlayerStonecutterRecipeSelectEvent;
 import org.bukkit.World;
@@ -38,6 +39,7 @@ import org.bukkit.event.inventory.InventoryOpenEvent;
 import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.event.inventory.PrepareItemCraftEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.world.WorldLoadEvent;
 import org.bukkit.event.world.WorldUnloadEvent;
 
@@ -88,6 +90,13 @@ public class Events implements Listener {
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
         TaskManager.clearPendingInventoryProcess(event.getPlayer().getUniqueId());
+        InteractionSessionCoordinator.invalidate(event.getPlayer());
+    }
+
+    @EventHandler
+    public void onPlayerChangedWorld(PlayerChangedWorldEvent event) {
+        TaskManager.clearPendingInventoryProcess(event.getPlayer().getUniqueId());
+        InteractionSessionCoordinator.invalidate(event.getPlayer());
     }
 
     private static void queueNativeInventoryRefresh(HumanEntity entity, InventoryType type) {

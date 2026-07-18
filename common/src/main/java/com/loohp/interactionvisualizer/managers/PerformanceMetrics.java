@@ -79,6 +79,9 @@ public final class PerformanceMetrics implements Listener {
     private long droppedItemNanos;
     private long blockUpdateChecks;
     private long blockUpdateNanos;
+    private int blockUpdateCoordinatorLanesMax;
+    private int blockUpdateDirtyQueueMax;
+    private int blockUpdateActiveQueueMax;
 
     private PerformanceMetrics() {
     }
@@ -143,6 +146,9 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.droppedItemNanos = 0;
         INSTANCE.blockUpdateChecks = 0;
         INSTANCE.blockUpdateNanos = 0;
+        INSTANCE.blockUpdateCoordinatorLanesMax = 0;
+        INSTANCE.blockUpdateDirtyQueueMax = 0;
+        INSTANCE.blockUpdateActiveQueueMax = 0;
         INSTANCE.slowestTickTracker.reset();
         LegacyTextComponentCache.startMeasurement();
         INSTANCE.collecting = true;
@@ -305,6 +311,15 @@ public final class PerformanceMetrics implements Listener {
         }
     }
 
+    public static void blockUpdateQueues(int lanes, int dirty, int active) {
+        if (INSTANCE.collecting) {
+            INSTANCE.blockUpdateCoordinatorLanesMax = Math.max(
+                    INSTANCE.blockUpdateCoordinatorLanesMax, lanes);
+            INSTANCE.blockUpdateDirtyQueueMax = Math.max(INSTANCE.blockUpdateDirtyQueueMax, dirty);
+            INSTANCE.blockUpdateActiveQueueMax = Math.max(INSTANCE.blockUpdateActiveQueueMax, active);
+        }
+    }
+
     @EventHandler
     public void onServerTickEnd(ServerTickEndEvent event) {
         if (!collecting) {
@@ -355,6 +370,7 @@ public final class PerformanceMetrics implements Listener {
                 craftEngineCullingShowDecisions, craftEngineCullingHideDecisions,
                 retainedCullingRegistrations,
                 itemAnimationNanos, droppedItemNanos, blockUpdateChecks, blockUpdateNanos,
+                blockUpdateCoordinatorLanesMax, blockUpdateDirtyQueueMax, blockUpdateActiveQueueMax,
                 textCache.requests(), textCache.misses(), textCache.sameRawFastPaths());
     }
 
@@ -434,6 +450,9 @@ public final class PerformanceMetrics implements Listener {
             long droppedItemNanos,
             long blockUpdateChecks,
             long blockUpdateNanos,
+            int blockUpdateCoordinatorLanesMax,
+            int blockUpdateDirtyQueueMax,
+            int blockUpdateActiveQueueMax,
             long legacyTextCacheRequests,
             long legacyTextCacheMisses,
             long legacyTextSameRawFastPaths) {
@@ -508,6 +527,9 @@ public final class PerformanceMetrics implements Listener {
                             "\"craftEngineCullingRetainedRegistrations\":%d," +
                             "\"itemAnimationMs\":%.6f,\"droppedItemMs\":%.6f," +
                             "\"blockUpdateChecks\":%d,\"blockUpdateMs\":%.6f," +
+                            "\"blockUpdateCoordinatorLanesMax\":%d," +
+                            "\"blockUpdateDirtyQueueMax\":%d," +
+                            "\"blockUpdateActiveQueueMax\":%d," +
                             "\"legacyTextCacheRequests\":%d,\"legacyTextCacheMisses\":%d," +
                             "\"legacyTextCacheHits\":%d,\"legacyTextCacheHitRate\":%.6f," +
                             "\"legacyTextSameRawFastPaths\":%d}",
@@ -531,6 +553,7 @@ public final class PerformanceMetrics implements Listener {
                     craftEngineCullingRetainedRegistrations,
                     itemAnimationNanos / 1_000_000.0D, droppedItemNanos / 1_000_000.0D,
                     blockUpdateChecks, blockUpdateNanos / 1_000_000.0D,
+                    blockUpdateCoordinatorLanesMax, blockUpdateDirtyQueueMax, blockUpdateActiveQueueMax,
                     legacyTextCacheRequests, legacyTextCacheMisses, legacyTextCacheHits(),
                     legacyTextCacheHitRate(), legacyTextSameRawFastPaths);
         }

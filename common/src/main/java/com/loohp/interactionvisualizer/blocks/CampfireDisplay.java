@@ -89,6 +89,9 @@ public class CampfireDisplay extends VisualizerRunnableDisplay implements Listen
 
     @Override
     public ScheduledTask gc() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return null;
+        }
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = campfireMap.entrySet().iterator();
             int count = 0;
@@ -152,6 +155,15 @@ public class CampfireDisplay extends VisualizerRunnableDisplay implements Listen
 
     @Override
     public ScheduledTask run() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.register(this, Set.of(Material.CAMPFIRE), this::nearbyCampfire,
+                    checkingPeriod, gcPeriod, this::updateHybridBlock, this::removeTrackedDisplay);
+            return null;
+        }
+        return legacyRun();
+    }
+
+    private ScheduledTask legacyRun() {
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyCampfire();
             for (Block block : list) {
@@ -186,7 +198,7 @@ public class CampfireDisplay extends VisualizerRunnableDisplay implements Listen
                     if (!block.getType().equals(Material.CAMPFIRE)) {
                         return;
                     }
-                    org.bukkit.block.Campfire campfire = (org.bukkit.block.Campfire) block.getState();
+                    org.bukkit.block.Campfire campfire = (org.bukkit.block.Campfire) block.getState(false);
                     boolean isLit = ((Campfire) block.getBlockData()).isLit();
 
                     {
@@ -342,14 +354,41 @@ public class CampfireDisplay extends VisualizerRunnableDisplay implements Listen
         }, 0, checkingPeriod);
     }
 
+    private boolean updateHybridBlock(Block block) {
+        if (!nearbyCampfire().contains(block)
+                || !block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)
+                || block.getType() != Material.CAMPFIRE) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isActive(block.getLocation())) {
+            return false;
+        }
+        Map<String, Object> values = campfireMap.get(block);
+        if (values == null) {
+            values = new HashMap<>(spawnDisplayEntitys(block));
+            campfireMap.put(block, values);
+        }
+        org.bukkit.block.Campfire state = (org.bukkit.block.Campfire) block.getState(false);
+        return CampfireDisplayUpdater.update(state, values, progressBarCharacter,
+                emptyColor, filledColor, progressBarLength);
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakCampfire(TileEntityRemovedEvent event) {
         Block block = event.getBlock();
-        if (!campfireMap.containsKey(block)) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.remove(this, block);
+        } else {
+            removeTrackedDisplay(block);
+        }
+    }
+
+    private void removeTrackedDisplay(Block block) {
+        Map<String, Object> map = campfireMap.remove(block);
+        if (map == null) {
             return;
         }
-
-        Map<String, Object> map = campfireMap.get(block);
         if (map.get("1") instanceof DisplayEntity) {
             DisplayEntity stand = (DisplayEntity) map.get("1");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
@@ -366,7 +405,6 @@ public class CampfireDisplay extends VisualizerRunnableDisplay implements Listen
             DisplayEntity stand = (DisplayEntity) map.get("4");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        campfireMap.remove(block);
     }
 
     public Set<Block> nearbyCampfire() {
@@ -381,7 +419,7 @@ public class CampfireDisplay extends VisualizerRunnableDisplay implements Listen
         Map<String, DisplayEntity> map = new HashMap<>();
 
         Location origin = block.getLocation();
-        BlockData blockData = block.getState().getBlockData();
+        BlockData blockData = block.getBlockData();
         BlockFace facing = ((Directional) blockData).getFacing();
         Location target = block.getRelative(facing).getLocation();
         Vector direction = rotateVectorAroundY(target.toVector().subtract(origin.toVector()).multiply(0.44194173), 135);

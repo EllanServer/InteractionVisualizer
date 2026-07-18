@@ -26,6 +26,7 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerInteractDisplay;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
+import com.loohp.interactionvisualizer.managers.InteractionSessionCoordinator;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.InventoryUtils;
 import com.loohp.interactionvisualizer.utils.LocationUtils;
@@ -56,7 +57,6 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.Vector;
 
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.UUID;
 
@@ -66,6 +66,7 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
 
     public Map<Block, Map<String, Object>> openedLooms = new HashMap<>();
     private final Map<UUID, Block> loomBlocksByPlayer = new HashMap<>();
+    private final Map<UUID, Player> sessionPlayersById = new HashMap<>();
 
     @Override
     public EntryKey key() {
@@ -74,45 +75,9 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
 
     @Override
     public ScheduledTask run() {
-        return new ScheduledRunnable() {
-            public void run() {
-
-                Iterator<Block> itr = openedLooms.keySet().iterator();
-                int count = 0;
-                int maxper = (int) Math.ceil((double) openedLooms.size() / (double) 5);
-                int delay = 1;
-                while (itr.hasNext()) {
-                    count++;
-                    if (count > maxper) {
-                        count = 0;
-                        delay++;
-                    }
-                    Block block = itr.next();
-                    new ScheduledRunnable() {
-                        public void run() {
-                            if (!openedLooms.containsKey(block)) {
-                                return;
-                            }
-                            Map<String, Object> map = openedLooms.get(block);
-                            if (block.getType().equals(Material.LOOM)) {
-                                Player player = (Player) map.get("Player");
-                                if (!GameMode.SPECTATOR.equals(player.getGameMode())) {
-                                    Block openBlock = resolveLoomBlock(player, player.getOpenInventory());
-                                    if (block.equals(openBlock)) {
-                                        return;
-                                    }
-                                }
-                            }
-
-                            if (map.get("Banner") instanceof Item item) {
-                                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
-                            }
-                            openedLooms.remove(block);
-                        }
-                    }.runTaskLater(InteractionVisualizer.plugin, delay, block.getLocation());
-                }
-            }
-        }.runTaskTimer(InteractionVisualizer.plugin, 0, 5);
+        InteractionSessionCoordinator.register(this, sessionPlayersById::values,
+                this::isSessionValid, this::cleanupSession);
+        return null;
     }
 
     @Override
@@ -139,6 +104,8 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
         if (!map.get("Player").equals(player)) {
             return;
         }
+        sessionPlayersById.put(player.getUniqueId(), player);
+        InteractionSessionCoordinator.touch();
 
         ItemStack input = view.getItem(0);
         if (input != null) {
@@ -219,7 +186,7 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
 
     @EventHandler
     public void onLoomPlayerQuit(PlayerQuitEvent event) {
-        loomBlocksByPlayer.remove(event.getPlayer().getUniqueId());
+        cleanupSession(event.getPlayer());
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -359,17 +326,19 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
             return;
         }
         Block block = resolveLoomBlock(player, event.getView());
-        loomBlocksByPlayer.remove(player.getUniqueId());
         if (block == null) {
+            cleanupSession(player);
             return;
         }
 
         if (!openedLooms.containsKey(block)) {
+            cleanupSession(player);
             return;
         }
 
         Map<String, Object> map = openedLooms.get(block);
         if (!map.get("Player").equals(event.getPlayer())) {
+            cleanupSession(player);
             return;
         }
 
@@ -384,10 +353,43 @@ public class LoomDisplay extends VisualizerInteractDisplay implements Listener {
             }
         }
 
+        cleanupSession(player);
+    }
+
+    private boolean isSessionValid(Player player) {
+        Block block = loomBlocksByPlayer.get(player.getUniqueId());
+        if (!player.isOnline() || GameMode.SPECTATOR.equals(player.getGameMode()) || block == null
+                || !block.getWorld().equals(player.getWorld()) || block.getType() != Material.LOOM) {
+            return false;
+        }
+        Map<String, Object> map = openedLooms.get(block);
+        return map != null && player.equals(map.get("Player"))
+                && block.equals(resolveLoomBlock(player, player.getOpenInventory()));
+    }
+
+    private void cleanupSession(Player player) {
+        UUID playerId = player.getUniqueId();
+        sessionPlayersById.remove(playerId);
+        Block block = loomBlocksByPlayer.remove(playerId);
+        if (block == null) {
+            for (Map.Entry<Block, Map<String, Object>> entry : openedLooms.entrySet()) {
+                if (player.equals(entry.getValue().get("Player"))) {
+                    block = entry.getKey();
+                    break;
+                }
+            }
+        }
+        if (block == null) {
+            return;
+        }
+        Map<String, Object> map = openedLooms.get(block);
+        if (map == null || !player.equals(map.get("Player"))) {
+            return;
+        }
         if (map.get("Banner") instanceof Item item) {
             DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
         }
-        openedLooms.remove(block);
+        openedLooms.remove(block, map);
     }
 
     public Map<String, Item> spawnDisplayEntitys(Player player, Block block) {

@@ -93,6 +93,9 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
 
     @Override
     public ScheduledTask gc() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return null;
+        }
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = brewstand.entrySet().iterator();
             int count = 0;
@@ -140,6 +143,16 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
 
     @Override
     public ScheduledTask run() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.register(this, Set.of(Material.BREWING_STAND),
+                    this::nearbyBrewingStand, checkingPeriod, gcPeriod,
+                    this::updateHybridBlock, this::removeTrackedDisplay);
+            return null;
+        }
+        return legacyRun();
+    }
+
+    private ScheduledTask legacyRun() {
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyBrewingStand();
             for (Block block : list) {
@@ -175,7 +188,8 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
                     if (!block.getType().equals(Material.BREWING_STAND)) {
                         return;
                     }
-                    org.bukkit.block.BrewingStand brewingstand = (org.bukkit.block.BrewingStand) block.getState();
+                    org.bukkit.block.BrewingStand brewingstand =
+                            (org.bukkit.block.BrewingStand) block.getState(false);
 
                     {
                         Inventory inv = brewingstand.getInventory();
@@ -266,6 +280,91 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
         }, 0, checkingPeriod);
     }
 
+    private boolean updateHybridBlock(Block block) {
+        if (!nearbyBrewingStand().contains(block)
+                || !block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)
+                || block.getType() != Material.BREWING_STAND) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isActive(block.getLocation())) {
+            return false;
+        }
+        Map<String, Object> values = brewstand.get(block);
+        if (values == null) {
+            values = new HashMap<>();
+            values.put("Item", "N/A");
+            values.putAll(spawnDisplayEntitys(block));
+            brewstand.put(block, values);
+        }
+        org.bukkit.block.BrewingStand state = (org.bukkit.block.BrewingStand) block.getState(false);
+        updateTrackedBlock(state, values);
+        return state.getBrewingTime() > 0;
+    }
+
+    private void updateTrackedBlock(org.bukkit.block.BrewingStand state, Map<String, Object> values) {
+        Inventory inventory = state.getInventory();
+        ItemStack ingredient = inventory.getItem(3);
+        if (ingredient != null && ingredient.getType() == Material.AIR) {
+            ingredient = null;
+        }
+        if (values.get("Item") instanceof String) {
+            if (ingredient != null) {
+                Item item = new Item(state.getLocation().clone().add(0.5, 1.0, 0.5));
+                item.setItemStack(ingredient);
+                item.setVelocity(new Vector());
+                item.setPickupDelay(32767);
+                item.setGravity(false);
+                values.put("Item", item);
+                DisplayManager.sendItemSpawn(
+                        InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+            }
+        } else {
+            Item item = (Item) values.get("Item");
+            if (ingredient == null) {
+                values.put("Item", "N/A");
+                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
+            } else if (!item.getItemStack().equals(ingredient)) {
+                item.setItemStack(ingredient);
+                DisplayManager.updateItem(item);
+            }
+        }
+
+        DisplayEntity stand = (DisplayEntity) values.get("Stand");
+        if (!hasPotion(state)) {
+            if (stand.updateCustomName("", false)) {
+                DisplayManager.updateDisplay(stand);
+            }
+            return;
+        }
+        if (state.getFuelLevel() == 0) {
+            if (stand.updateCustomName(noFuelColor + progressBarCharacter.repeat(
+                    Math.max(0, progressBarLength)), true)) {
+                DisplayManager.updateDisplay(stand);
+            }
+            return;
+        }
+        double scaled = (double) (max - state.getBrewingTime()) / (double) max
+                * (double) progressBarLength;
+        StringBuilder symbol = new StringBuilder(Math.max(16, progressBarLength * 3));
+        double index = 1.0D;
+        for (; index < scaled; index++) {
+            symbol.append(filledColor).append(progressBarCharacter);
+        }
+        index--;
+        if (scaled - index > 0.0D && scaled - index < 0.67D) {
+            symbol.append(emptyColor).append(progressBarCharacter);
+        } else if (scaled - index > 0.0D) {
+            symbol.append(filledColor).append(progressBarCharacter);
+        }
+        for (index = progressBarLength - 1.0D; index >= scaled; index--) {
+            symbol.append(emptyColor).append(progressBarCharacter);
+        }
+        if (stand.updateCustomName(symbol.toString(), true)) {
+            DisplayManager.updateDisplay(stand);
+        }
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onUseBrewingStand(InventoryClickEvent event) {
         if (event.isCancelled()) {
@@ -292,6 +391,7 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
         }
 
         if (event.getRawSlot() >= 0 && event.getRawSlot() <= 4) {
+            BlockUpdateCoordinator.markDirty(event.getView().getTopInventory().getLocation().getBlock());
             DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
         }
     }
@@ -323,6 +423,8 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
 
         for (int slot : event.getRawSlots()) {
             if (slot >= 0 && slot <= 4) {
+                BlockUpdateCoordinator.markDirty(
+                        event.getView().getTopInventory().getLocation().getBlock());
                 DisplayManager.sendHandMovement(InteractionVisualizerAPI.getPlayers(), (Player) event.getWhoClicked());
                 break;
             }
@@ -332,11 +434,18 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakBrewingStand(TileEntityRemovedEvent event) {
         Block block = event.getBlock();
-        if (!brewstand.containsKey(block)) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.remove(this, block);
+        } else {
+            removeTrackedDisplay(block);
+        }
+    }
+
+    private void removeTrackedDisplay(Block block) {
+        Map<String, Object> map = brewstand.remove(block);
+        if (map == null) {
             return;
         }
-
-        Map<String, Object> map = brewstand.get(block);
         if (map.get("Item") instanceof Item) {
             Item item = (Item) map.get("Item");
             DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), item);
@@ -345,7 +454,6 @@ public class BrewingStandDisplay extends VisualizerRunnableDisplay implements Li
             DisplayEntity stand = (DisplayEntity) map.get("Stand");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        brewstand.remove(block);
     }
 
     public boolean hasPotion(org.bukkit.block.BrewingStand brewingstand) {

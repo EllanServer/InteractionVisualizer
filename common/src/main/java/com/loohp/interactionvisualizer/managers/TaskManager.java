@@ -30,6 +30,7 @@ import com.loohp.interactionvisualizer.blocks.BeaconDisplay;
 import com.loohp.interactionvisualizer.blocks.BeeHiveDisplay;
 import com.loohp.interactionvisualizer.blocks.BeeNestDisplay;
 import com.loohp.interactionvisualizer.blocks.BlastFurnaceDisplay;
+import com.loohp.interactionvisualizer.blocks.BlockUpdateCoordinator;
 import com.loohp.interactionvisualizer.blocks.BrewingStandDisplay;
 import com.loohp.interactionvisualizer.blocks.CampfireDisplay;
 import com.loohp.interactionvisualizer.blocks.CartographyTableDisplay;
@@ -122,6 +123,8 @@ public class TaskManager {
 
     @SuppressWarnings("deprecation")
     public static void setup() {
+        BlockUpdateCoordinator.shutdown();
+        InteractionSessionCoordinator.shutdown();
         pendingInventoryOpenProcesses.clear();
         pendingInventoryRefreshes.clear();
         anvil = false;
@@ -461,6 +464,8 @@ public class TaskManager {
                 Bukkit.getScheduler().cancelTasks(plugin);
             }
         } finally {
+            BlockUpdateCoordinator.shutdown();
+            InteractionSessionCoordinator.shutdown();
             clearRuntimeState();
         }
     }

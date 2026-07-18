@@ -87,7 +87,7 @@ class PerformanceMetricsSlowestTickTest {
                 0L, 0L, 0L, 0L, 0L,
                 0L, 0L, 0L, 0L, 0L, 0L,
                 0L, 0L, 0L, 0L, 0L, 0,
-                0L, 0L, 7L, 12_345_678L, 100L, 5L, 200L);
+                0L, 0L, 7L, 12_345_678L, 0, 0, 0, 100L, 5L, 200L);
 
         String json = snapshot.json();
 
@@ -103,6 +103,7 @@ class PerformanceMetricsSlowestTickTest {
         assertTrue(json.contains("\"droppedLabelVisibilityRestorePerTick\":32"));
         assertTrue(json.contains("\"viewerFullReconciles\":0"));
         assertTrue(json.contains("\"craftEngineCullingRetainedRegistrations\":0"));
+        assertTrue(json.contains("\"blockUpdateDirtyQueueMax\":0"));
         assertTrue(json.contains("\"legacyTextCacheHits\":95"));
         assertTrue(json.contains("\"legacyTextCacheHitRate\":0.950000"));
         assertTrue(json.contains("\"legacyTextSameRawFastPaths\":200"));

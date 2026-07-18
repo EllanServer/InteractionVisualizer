@@ -90,6 +90,9 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask gc() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return null;
+        }
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = spawnerMap.entrySet().iterator();
             int count = 0;
@@ -129,6 +132,15 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask run() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.register(this, Set.of(Material.SPAWNER), this::nearbySpawner,
+                    checkingPeriod, gcPeriod, this::updateHybridBlock, this::removeTrackedDisplay);
+            return null;
+        }
+        return legacyRun();
+    }
+
+    private ScheduledTask legacyRun() {
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbySpawner();
             for (Block block : list) {
@@ -163,7 +175,8 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
                     if (!isSpawner(block.getType())) {
                         return;
                     }
-                    org.bukkit.block.CreatureSpawner spawner = (org.bukkit.block.CreatureSpawner) block.getState();
+                    org.bukkit.block.CreatureSpawner spawner =
+                            (org.bukkit.block.CreatureSpawner) block.getState(false);
 
                     {
                         DisplayEntity stand = (DisplayEntity) entry.getValue().get("1");
@@ -207,19 +220,65 @@ public class SpawnerDisplay extends VisualizerRunnableDisplay implements Listene
         }, 0, checkingPeriod);
     }
 
+    private boolean updateHybridBlock(Block block) {
+        if (!nearbySpawner().contains(block)
+                || !block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)
+                || !isSpawner(block.getType())) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isActive(block.getLocation())) {
+            return false;
+        }
+        Map<String, Object> values = spawnerMap.get(block);
+        if (values == null) {
+            values = new HashMap<>(spawnDisplayEntitys(block));
+            spawnerMap.put(block, values);
+        }
+        updateTrackedBlock((org.bukkit.block.CreatureSpawner) block.getState(false), values);
+        return true;
+    }
+
+    private void updateTrackedBlock(org.bukkit.block.CreatureSpawner spawner,
+                                    Map<String, Object> values) {
+        DisplayEntity stand = (DisplayEntity) values.get("1");
+        int activeRange = spawner.getRequiredPlayerRange();
+        boolean running = PlayerLocationManager.hasPlayerNearby(spawner.getLocation(), activeRange,
+                false, player -> !GameMode.SPECTATOR.equals(player.getGameMode()));
+        if (!running) {
+            if (stand.updateCustomName("", false)) {
+                DisplayManager.updateDisplay(stand);
+            }
+            return;
+        }
+        String progress = CampfireDisplayUpdater.progress(
+                spawner.getMaxSpawnDelay() - spawner.getDelay(), spawner.getMaxSpawnDelay(),
+                progressBarCharacter, emptyColor, filledColor, progressBarLength);
+        progress += spawnRange.replace("{SpawnRange}", Integer.toString(spawner.getSpawnRange()));
+        if (stand.updateCustomName(progress, true)) {
+            DisplayManager.updateDisplay(stand);
+        }
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakSpawner(TileEntityRemovedEvent event) {
         Block block = event.getBlock();
-        if (!spawnerMap.containsKey(block)) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.remove(this, block);
+        } else {
+            removeTrackedDisplay(block);
+        }
+    }
+
+    private void removeTrackedDisplay(Block block) {
+        Map<String, Object> map = spawnerMap.remove(block);
+        if (map == null) {
             return;
         }
-
-        Map<String, Object> map = spawnerMap.get(block);
         if (map.get("1") instanceof DisplayEntity) {
             DisplayEntity stand = (DisplayEntity) map.get("1");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        spawnerMap.remove(block);
     }
 
     public Set<Block> nearbySpawner() {

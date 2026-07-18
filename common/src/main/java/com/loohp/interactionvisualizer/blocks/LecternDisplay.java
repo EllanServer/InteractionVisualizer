@@ -86,6 +86,9 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask gc() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return null;
+        }
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = lecternMap.entrySet().iterator();
             int count = 0;
@@ -133,6 +136,15 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask run() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.register(this, Set.of(Material.LECTERN), this::nearbyLectern,
+                    checkingPeriod, gcPeriod, this::updateHybridBlock, this::removeTrackedDisplay);
+            return null;
+        }
+        return legacyRun();
+    }
+
+    private ScheduledTask legacyRun() {
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyLectern();
             for (Block block : list) {
@@ -167,7 +179,7 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
                     if (!block.getType().equals(Material.LECTERN)) {
                         return;
                     }
-                    org.bukkit.block.Lectern lectern = (org.bukkit.block.Lectern) block.getState();
+                    org.bukkit.block.Lectern lectern = (org.bukkit.block.Lectern) block.getState(false);
 
                     {
                         Inventory inv = lectern.getInventory();
@@ -212,14 +224,69 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
         }, 0, checkingPeriod);
     }
 
+    private boolean updateHybridBlock(Block block) {
+        if (!nearbyLectern().contains(block)
+                || !block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)
+                || block.getType() != Material.LECTERN) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isActive(block.getLocation())) {
+            return false;
+        }
+        Map<String, Object> values = lecternMap.get(block);
+        if (values == null) {
+            values = new HashMap<>(spawnDisplayEntitys(block));
+            lecternMap.put(block, values);
+        }
+        updateTrackedBlock((org.bukkit.block.Lectern) block.getState(false), values);
+        return false;
+    }
+
+    private void updateTrackedBlock(org.bukkit.block.Lectern lectern, Map<String, Object> values) {
+        ItemStack itemStack = lectern.getInventory().getItem(0);
+        DisplayEntity line1 = (DisplayEntity) values.get("1");
+        DisplayEntity line2 = (DisplayEntity) values.get("2");
+        if (itemStack != null && itemStack.getType() == Material.WRITTEN_BOOK
+                && itemStack.getItemMeta() instanceof BookMeta meta) {
+            String title = meta.getTitle() == null ? "" : meta.getTitle();
+            String author = meta.getAuthor() == null ? "" : meta.getAuthor();
+            String page = Integer.toString(lectern.getPage());
+            String first = format1.replace("{Title}", title)
+                    .replace("{Author}", author).replace("{Page}", page);
+            String second = format2.replace("{Title}", title)
+                    .replace("{Author}", author).replace("{Page}", page);
+            if (line1.updateCustomName(first, true)) {
+                DisplayManager.updateDisplay(line1);
+            }
+            if (line2.updateCustomName(second, true)) {
+                DisplayManager.updateDisplay(line2);
+            }
+        } else {
+            if (line1.updateCustomName("", false)) {
+                DisplayManager.updateDisplay(line1);
+            }
+            if (line2.updateCustomName("", false)) {
+                DisplayManager.updateDisplay(line2);
+            }
+        }
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakLectern(TileEntityRemovedEvent event) {
         Block block = event.getBlock();
-        if (!lecternMap.containsKey(block)) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.remove(this, block);
+        } else {
+            removeTrackedDisplay(block);
+        }
+    }
+
+    private void removeTrackedDisplay(Block block) {
+        Map<String, Object> map = lecternMap.remove(block);
+        if (map == null) {
             return;
         }
-
-        Map<String, Object> map = lecternMap.get(block);
         if (map.get("1") instanceof DisplayEntity) {
             DisplayEntity stand = (DisplayEntity) map.get("1");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
@@ -228,7 +295,6 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
             DisplayEntity stand = (DisplayEntity) map.get("2");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        lecternMap.remove(block);
     }
 
     public Set<Block> nearbyLectern() {
@@ -243,7 +309,7 @@ public class LecternDisplay extends VisualizerRunnableDisplay implements Listene
         Map<String, DisplayEntity> map = new HashMap<>();
 
         Location origin = block.getLocation();
-        BlockData blockData = block.getState().getBlockData();
+        BlockData blockData = block.getBlockData();
         BlockFace facing = ((Directional) blockData).getFacing();
         Location loc = firstLineLocation(origin, facing);
         DisplayEntity slot1 = new DisplayEntity(loc.clone());

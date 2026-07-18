@@ -26,6 +26,7 @@ import com.loohp.interactionvisualizer.api.InteractionVisualizerAPI.Modules;
 import com.loohp.interactionvisualizer.api.VisualizerInteractDisplay;
 import com.loohp.interactionvisualizer.entityholders.Item;
 import com.loohp.interactionvisualizer.managers.DisplayManager;
+import com.loohp.interactionvisualizer.managers.InteractionSessionCoordinator;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.InventoryUtils;
 import com.loohp.interactionvisualizer.utils.VanishUtils;
@@ -54,7 +55,6 @@ import org.bukkit.inventory.StonecutterInventory;
 import org.bukkit.util.Vector;
 
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
 
 public class StonecutterDisplay extends VisualizerInteractDisplay implements Listener {
@@ -71,50 +71,9 @@ public class StonecutterDisplay extends VisualizerInteractDisplay implements Lis
 
     @Override
     public ScheduledTask run() {
-        return new ScheduledRunnable() {
-            public void run() {
-
-                Iterator<Block> itr = openedStonecutter.keySet().iterator();
-                int count = 0;
-                int maxper = (int) Math.ceil((double) openedStonecutter.size() / (double) 5);
-                int delay = 1;
-                while (itr.hasNext()) {
-                    count++;
-                    if (count > maxper) {
-                        count = 0;
-                        delay++;
-                    }
-                    Block block = itr.next();
-                    new ScheduledRunnable() {
-                        public void run() {
-                            if (!openedStonecutter.containsKey(block)) {
-                                return;
-                            }
-                            Map<String, Object> map = openedStonecutter.get(block);
-                            if (block.getType().equals(Material.STONECUTTER)) {
-                                Player player = (Player) map.get("Player");
-                                if (!GameMode.SPECTATOR.equals(player.getGameMode())) {
-                                    if (player.getOpenInventory() != null) {
-                                        if (player.getOpenInventory().getTopInventory() != null) {
-                                            if (player.getOpenInventory().getTopInventory() instanceof StonecutterInventory) {
-                                                return;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (map.get("Item") instanceof Item) {
-                                Item entity = (Item) map.get("Item");
-                                DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), entity);
-                            }
-                            openedStonecutter.remove(block);
-                            playermap.remove((Player) map.get("Player"), block);
-                        }
-                    }.runTaskLater(InteractionVisualizer.plugin, delay, block.getLocation());
-                }
-            }
-        }.runTaskTimer(InteractionVisualizer.plugin, 0, 5);
+        InteractionSessionCoordinator.register(this, playermap::keySet,
+                this::isSessionValid, this::cleanupSession);
+        return null;
     }
 
     @Override
@@ -152,6 +111,7 @@ public class StonecutterDisplay extends VisualizerInteractDisplay implements Lis
         if (!map.get("Player").equals(player)) {
             return;
         }
+        InteractionSessionCoordinator.touch();
 
         ItemStack input = view.getItem(0);
         if (input != null) {
@@ -339,22 +299,36 @@ public class StonecutterDisplay extends VisualizerInteractDisplay implements Lis
 
     @EventHandler
     public void onCloseStonecutter(InventoryCloseEvent event) {
-        Player player = (Player) event.getPlayer();
+        cleanupSession((Player) event.getPlayer());
+    }
+
+    private boolean isSessionValid(Player player) {
+        Block block = playermap.get(player);
+        if (block == null) {
+            return false;
+        }
+        Map<String, Object> map = openedStonecutter.get(block);
+        return player.isOnline() && !GameMode.SPECTATOR.equals(player.getGameMode())
+                && map != null && player.equals(map.get("Player"))
+                && block.getWorld().equals(player.getWorld())
+                && block.getType() == Material.STONECUTTER
+                && player.getOpenInventory().getTopInventory() instanceof StonecutterInventory;
+    }
+
+    private void cleanupSession(Player player) {
         Block block = playermap.remove(player);
         if (block == null) {
             return;
         }
-
         Map<String, Object> map = openedStonecutter.get(block);
-        if (map == null || !map.get("Player").equals(player)) {
+        if (map == null || !player.equals(map.get("Player"))) {
             return;
         }
 
-        if (map.get("Item") instanceof Item) {
-            Item entity = (Item) map.get("Item");
+        if (map.get("Item") instanceof Item entity) {
             DisplayManager.removeItem(InteractionVisualizerAPI.getPlayers(), entity);
         }
-        openedStonecutter.remove(block);
+        openedStonecutter.remove(block, map);
     }
 
 }

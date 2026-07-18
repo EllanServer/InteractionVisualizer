@@ -87,12 +87,9 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
     private String noFuelColor = "&c";
     private int progressBarLength = 10;
     private String amountPending = " &7+{Amount}";
-    private final BlockUpdateScheduler<Block> blockUpdates;
 
     public BlastFurnaceDisplay() {
         onReload(new InteractionVisualizerReloadEvent());
-        this.blockUpdates = new BlockUpdateScheduler<>(this::nearbyBlastFurnace,
-                this.checkingPeriod, this.gcPeriod);
     }
 
     @EventHandler
@@ -167,15 +164,10 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
         if (!InteractionVisualizer.eventDrivenBlockUpdates) {
             return legacyRun();
         }
-        return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
-            boolean collecting = PerformanceMetrics.isCollecting();
-            long start = collecting ? System.nanoTime() : 0L;
-            int checks = this.blockUpdates.tick(Bukkit.getCurrentTick(),
-                    InteractionVisualizer.blockUpdateMaxDirtyPerTick, this::updateHybridBlock);
-            if (collecting) {
-                PerformanceMetrics.blockUpdateChecks(checks, System.nanoTime() - start);
-            }
-        }, 0, 1);
+        BlockUpdateCoordinator.register(this, Set.of(Material.BLAST_FURNACE),
+                this::nearbyBlastFurnace, checkingPeriod, gcPeriod,
+                this::updateHybridBlock, this::removeTrackedDisplay);
+        return null;
     }
 
     private ScheduledTask legacyRun() {
@@ -343,13 +335,14 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
 
     private void markDirty(Block block) {
         if (InteractionVisualizer.eventDrivenBlockUpdates && block != null && isBlastFurnace(block.getType())) {
-            blockUpdates.markDirty(block, (long) Bukkit.getCurrentTick() + 1L);
+            BlockUpdateCoordinator.markDirty(this, block, (long) Bukkit.getCurrentTick() + 1L);
         }
     }
 
     private void markDirtyUnlessActive(Block block) {
         if (InteractionVisualizer.eventDrivenBlockUpdates && block != null && isBlastFurnace(block.getType())) {
-            blockUpdates.markDirtyUnlessActive(block, (long) Bukkit.getCurrentTick() + 1L);
+            BlockUpdateCoordinator.markDirtyUnlessActive(
+                    this, block, (long) Bukkit.getCurrentTick() + 1L);
         }
     }
 
@@ -409,7 +402,7 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
     public void onBlastFurnaceDeactivated(TileEntityDeactivatedEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates
                 && event.getTileEntityType() == TileEntityType.BLAST_FURNACE) {
-            removeTrackedDisplay(event.getBlock());
+            BlockUpdateCoordinator.remove(this, event.getBlock());
         }
     }
 
@@ -574,11 +567,18 @@ public class BlastFurnaceDisplay extends VisualizerRunnableDisplay implements Li
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakBlastFurnace(TileEntityRemovedEvent event) {
-        removeTrackedDisplay(event.getBlock());
+        invalidateTrackedDisplay(event.getBlock());
+    }
+
+    private void invalidateTrackedDisplay(Block block) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.remove(this, block);
+        } else {
+            removeTrackedDisplay(block);
+        }
     }
 
     private void removeTrackedDisplay(Block block) {
-        blockUpdates.remove(block);
         Map<String, Object> map = blastfurnaceMap.remove(block);
         if (map == null) {
             return;

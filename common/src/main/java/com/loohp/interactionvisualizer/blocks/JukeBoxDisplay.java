@@ -87,6 +87,9 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask gc() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return null;
+        }
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = jukeboxMap.entrySet().iterator();
             int count = 0;
@@ -124,6 +127,15 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask run() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.register(this, Set.of(Material.JUKEBOX), this::nearbyJukeBox,
+                    checkingPeriod, gcPeriod, this::updateHybridBlock, this::removeTrackedDisplay);
+            return null;
+        }
+        return legacyRun();
+    }
+
+    private ScheduledTask legacyRun() {
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyJukeBox();
             for (Block block : list) {
@@ -163,7 +175,7 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
                     if (!block.getType().equals(Material.JUKEBOX)) {
                         return;
                     }
-                    org.bukkit.block.Jukebox jukebox = (org.bukkit.block.Jukebox) block.getState();
+                    org.bukkit.block.Jukebox jukebox = (org.bukkit.block.Jukebox) block.getState(false);
 
                     {
                         ItemStack itemstack = jukebox.getRecord() == null ? null : (jukebox.getRecord().getType().equals(Material.AIR) ? null : jukebox.getRecord().clone());
@@ -203,13 +215,73 @@ public class JukeBoxDisplay extends VisualizerRunnableDisplay implements Listene
         }, 0, checkingPeriod);
     }
 
-    @EventHandler(priority = EventPriority.MONITOR)
-    public void onBreakJukeBox(TileEntityRemovedEvent event) {
-        Block block = event.getBlock();
-        if (!jukeboxMap.containsKey(block)) {
+    private boolean updateHybridBlock(Block block) {
+        if (!nearbyJukeBox().contains(block)
+                || !block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)
+                || block.getType() != Material.JUKEBOX) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isActive(block.getLocation())) {
+            return false;
+        }
+        Map<String, Object> values = jukeboxMap.get(block);
+        if (values == null) {
+            values = new HashMap<>();
+            values.put(ITEM_KEY, EMPTY_VISUAL);
+            values.put(LABEL_KEY, EMPTY_VISUAL);
+            jukeboxMap.put(block, values);
+        }
+        updateTrackedBlock(block, values);
+        return false;
+    }
+
+    private void updateTrackedBlock(Block block, Map<String, Object> values) {
+        org.bukkit.block.Jukebox jukebox = (org.bukkit.block.Jukebox) block.getState(false);
+        ItemStack record = jukebox.getRecord();
+        ItemStack itemStack = record == null || record.getType() == Material.AIR ? null : record.clone();
+        if (itemStack == null) {
+            removeVisuals(values);
             return;
         }
 
+        Item item;
+        if (values.get(ITEM_KEY) instanceof Item existing) {
+            item = existing;
+            boolean changed = suppressNativeName(item);
+            if (!item.getItemStack().equals(itemStack)) {
+                item.setItemStack(itemStack);
+                changed = true;
+            }
+            if (changed) {
+                DisplayManager.updateItem(item);
+            }
+        } else {
+            item = new Item(jukebox.getLocation().clone().add(0.5, 1.0, 0.5));
+            item.setItemStack(itemStack);
+            item.setVelocity(new Vector());
+            item.setPickupDelay(32767);
+            item.setGravity(false);
+            suppressNativeName(item);
+            values.put(ITEM_KEY, item);
+            DisplayManager.sendItemSpawn(
+                    InteractionVisualizerAPI.getPlayerModuleList(Modules.ITEMDROP, KEY), item);
+        }
+        Component text = showDiscName ? discName(itemStack, jukebox.getPlaying().toString()) : null;
+        reconcileLabel(values, item.getLocation(), text);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onBreakJukeBox(TileEntityRemovedEvent event) {
+        Block block = event.getBlock();
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.remove(this, block);
+        } else {
+            removeTrackedDisplay(block);
+        }
+    }
+
+    private void removeTrackedDisplay(Block block) {
         Map<String, Object> values = jukeboxMap.remove(block);
         removeVisuals(values);
     }

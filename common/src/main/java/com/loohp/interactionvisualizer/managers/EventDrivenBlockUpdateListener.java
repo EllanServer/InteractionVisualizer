@@ -18,6 +18,7 @@ import com.loohp.interactionvisualizer.api.events.TileEntityRemovedEvent;
 import com.loohp.interactionvisualizer.blocks.BeeHiveDisplay;
 import com.loohp.interactionvisualizer.blocks.BeeNestDisplay;
 import com.loohp.interactionvisualizer.blocks.BlastFurnaceDisplay;
+import com.loohp.interactionvisualizer.blocks.BlockUpdateCoordinator;
 import com.loohp.interactionvisualizer.blocks.FurnaceDisplay;
 import com.loohp.interactionvisualizer.blocks.SmokerDisplay;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
@@ -96,7 +97,7 @@ public final class EventDrivenBlockUpdateListener implements Listener {
     }
 
     public boolean isEmpty() {
-        return furnace == null && blastFurnace == null && smoker == null && beeHive == null && beeNest == null;
+        return BlockUpdateCoordinator.isEmpty();
     }
 
     /*
@@ -108,6 +109,7 @@ public final class EventDrivenBlockUpdateListener implements Listener {
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFurnaceStartSmelt(FurnaceStartSmeltEvent event) {
+        BlockUpdateCoordinator.markDirtyUnlessActive(event.getBlock());
         switch (furnaceTarget(event.getBlock().getType())) {
             case FURNACE -> {
                 if (furnace != null) {
@@ -131,6 +133,7 @@ public final class EventDrivenBlockUpdateListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFurnaceSmelt(FurnaceSmeltEvent event) {
+        BlockUpdateCoordinator.markDirtyUnlessActive(event.getBlock());
         switch (furnaceTarget(event.getBlock().getType())) {
             case FURNACE -> {
                 if (furnace != null) {
@@ -154,6 +157,7 @@ public final class EventDrivenBlockUpdateListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onFurnaceExtract(FurnaceExtractEvent event) {
+        BlockUpdateCoordinator.markDirty(event.getBlock());
         switch (furnaceTarget(event.getBlock().getType())) {
             case FURNACE -> {
                 if (furnace != null) {
@@ -190,6 +194,7 @@ public final class EventDrivenBlockUpdateListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onTileEntityAdded(TileEntityAddedEvent event) {
+        BlockUpdateCoordinator.markDirty(event.getBlock());
         TileEntityType type = event.getTileEntityType();
         if (type == null) {
             return;
@@ -227,6 +232,7 @@ public final class EventDrivenBlockUpdateListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onTileEntityActivated(TileEntityActivatedEvent event) {
+        BlockUpdateCoordinator.markDirty(event.getBlock());
         TileEntityType type = event.getTileEntityType();
         if (type == null) {
             return;
@@ -264,6 +270,7 @@ public final class EventDrivenBlockUpdateListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onTileEntityDeactivated(TileEntityDeactivatedEvent event) {
+        BlockUpdateCoordinator.remove(event.getBlock());
         TileEntityType type = event.getTileEntityType();
         if (type == null) {
             return;
@@ -301,6 +308,7 @@ public final class EventDrivenBlockUpdateListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onTileEntityRemoved(TileEntityRemovedEvent event) {
+        BlockUpdateCoordinator.remove(event.getBlock());
         if (event.getTileEntityType() == TileEntityType.SMOKER && smoker != null) {
             smoker.onRemoveSmoker(event);
         }
@@ -308,37 +316,47 @@ public final class EventDrivenBlockUpdateListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedBlockPlace(BlockPlaceEvent event) {
+        routeCoordinatorChange(event.getBlockPlaced());
         routeAffectedColumn(event.getBlockPlaced());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedBlockBreak(BlockBreakEvent event) {
+        BlockUpdateCoordinator.remove(event.getBlock());
+        routeCoordinatorStructureChange(event.getBlock());
         routeAffectedColumn(event.getBlock());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedBlockBurn(BlockBurnEvent event) {
+        BlockUpdateCoordinator.remove(event.getBlock());
+        routeCoordinatorStructureChange(event.getBlock());
         routeAffectedColumn(event.getBlock());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedBlockFade(BlockFadeEvent event) {
+        routeCoordinatorChange(event.getBlock());
         routeAffectedColumn(event.getBlock());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedBlockIgnite(BlockIgniteEvent event) {
+        routeCoordinatorChange(event.getBlock());
         routeAffectedColumn(event.getBlock());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedFluidFlow(BlockFromToEvent event) {
+        routeCoordinatorChange(event.getToBlock());
         routeAffectedColumn(event.getToBlock());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedBlockExplode(BlockExplodeEvent event) {
         for (Block block : event.blockList()) {
+            BlockUpdateCoordinator.remove(block);
+            routeCoordinatorStructureChange(block);
             routeAffectedColumn(block);
         }
     }
@@ -346,12 +364,15 @@ public final class EventDrivenBlockUpdateListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedEntityExplode(EntityExplodeEvent event) {
         for (Block block : event.blockList()) {
+            BlockUpdateCoordinator.remove(block);
+            routeCoordinatorStructureChange(block);
             routeAffectedColumn(block);
         }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDispenserHarvest(BlockDispenseEvent event) {
+        BlockUpdateCoordinator.markDirty(event.getBlock());
         Material dispensed = event.getItem().getType();
         if (dispensed != Material.GLASS_BOTTLE && dispensed != Material.SHEARS) {
             return;
@@ -371,10 +392,8 @@ public final class EventDrivenBlockUpdateListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onEntityChangeBlock(EntityChangeBlockEvent event) {
-        if (!hasBeeDisplays()) {
-            return;
-        }
         Block block = event.getBlock();
+        routeCoordinatorChange(block);
         if (event.getEntity() instanceof Bee && beeTarget(block.getType()) != BeeTarget.NONE) {
             routeBeeBlock(block);
             return;
@@ -386,13 +405,11 @@ public final class EventDrivenBlockUpdateListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBeeRelevantInteract(PlayerInteractEvent event) {
-        if (!hasBeeDisplays()) {
-            return;
-        }
         Block block = event.getClickedBlock();
         if (block == null) {
             return;
         }
+        BlockUpdateCoordinator.markDirty(block);
         Material material = block.getType();
         if (beeTarget(material) != BeeTarget.NONE) {
             routeBeeBlock(block);
@@ -403,35 +420,35 @@ public final class EventDrivenBlockUpdateListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedPistonExtend(BlockPistonExtendEvent event) {
-        if (!hasBeeDisplays()) {
-            return;
-        }
-        routeAffectedColumns(pistonAffectedBlocks(event.getBlock(), event.getBlocks(),
-                event.getDirection(), event.getDirection()));
+        Set<Block> affected = pistonAffectedBlocks(event.getBlock(), event.getBlocks(),
+                event.getDirection(), event.getDirection());
+        routeCoordinatorChanges(affected);
+        routeAffectedColumns(affected);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAffectedPistonRetract(BlockPistonRetractEvent event) {
-        if (!hasBeeDisplays()) {
-            return;
-        }
-        routeAffectedColumns(pistonAffectedBlocks(event.getBlock(), event.getBlocks(),
-                event.getDirection(), event.getDirection().getOppositeFace()));
+        Set<Block> affected = pistonAffectedBlocks(event.getBlock(), event.getBlocks(),
+                event.getDirection(), event.getDirection().getOppositeFace());
+        routeCoordinatorChanges(affected);
+        routeAffectedColumns(affected);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onAffectedRedstone(BlockRedstoneEvent event) {
-        if (!hasBeeDisplays() || event.getOldCurrent() == event.getNewCurrent()) {
+        if (event.getOldCurrent() == event.getNewCurrent()) {
             return;
         }
         Set<Block> changedOpenables = null;
         Block source = event.getBlock();
+        BlockUpdateCoordinator.markDirty(source);
         if (isRedstoneOpenable(source.getType())) {
             changedOpenables = new LinkedHashSet<>();
             changedOpenables.add(source);
         }
         for (BlockFace face : REDSTONE_NEIGHBORS) {
             Block neighbor = source.getRelative(face);
+            BlockUpdateCoordinator.markDirty(neighbor);
             if (isRedstoneOpenable(neighbor.getType())) {
                 if (changedOpenables == null) {
                     changedOpenables = new LinkedHashSet<>();
@@ -448,6 +465,7 @@ public final class EventDrivenBlockUpdateListener implements Listener {
         if (block == null) {
             return;
         }
+        BlockUpdateCoordinator.markDirty(block);
         switch (furnaceTarget(block.getType())) {
             case FURNACE -> {
                 if (furnace != null) {
@@ -471,6 +489,50 @@ public final class EventDrivenBlockUpdateListener implements Listener {
 
     private boolean hasBeeDisplays() {
         return beeHive != null || beeNest != null;
+    }
+
+    private void routeCoordinatorChanges(Collection<Block> changedBlocks) {
+        if (changedBlocks == null) {
+            return;
+        }
+        for (Block block : changedBlocks) {
+            routeCoordinatorChange(block);
+        }
+    }
+
+    private void routeCoordinatorChange(Block changedBlock) {
+        BlockUpdateCoordinator.markDirty(changedBlock);
+        routeCoordinatorStructureChange(changedBlock);
+    }
+
+    private void routeCoordinatorStructureChange(Block changedBlock) {
+        if (changedBlock == null) {
+            return;
+        }
+        if (BlockUpdateCoordinator.tracks(Material.BEACON)) {
+            for (int vertical = 1; vertical <= 4; vertical++) {
+                for (int x = -vertical; x <= vertical; x++) {
+                    for (int z = -vertical; z <= vertical; z++) {
+                        Block candidate = changedBlock.getRelative(x, vertical, z);
+                        if (candidate.getType() == Material.BEACON) {
+                            BlockUpdateCoordinator.markDirty(candidate);
+                        }
+                    }
+                }
+            }
+        }
+        if (BlockUpdateCoordinator.tracks(Material.CONDUIT)) {
+            for (int x = -2; x <= 2; x++) {
+                for (int y = -2; y <= 2; y++) {
+                    for (int z = -2; z <= 2; z++) {
+                        Block candidate = changedBlock.getRelative(x, y, z);
+                        if (candidate.getType() == Material.CONDUIT) {
+                            BlockUpdateCoordinator.markDirty(candidate);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private void routeAffectedColumn(Block changedBlock) {

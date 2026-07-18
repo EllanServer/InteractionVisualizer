@@ -86,6 +86,9 @@ public class ConduitDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask gc() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            return null;
+        }
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Iterator<Entry<Block, Map<String, Object>>> itr = conduitMap.entrySet().iterator();
             int count = 0;
@@ -133,6 +136,15 @@ public class ConduitDisplay extends VisualizerRunnableDisplay implements Listene
 
     @Override
     public ScheduledTask run() {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.register(this, Set.of(Material.CONDUIT), this::nearbyConduit,
+                    checkingPeriod, gcPeriod, this::updateHybridBlock, this::removeTrackedDisplay);
+            return null;
+        }
+        return legacyRun();
+    }
+
+    private ScheduledTask legacyRun() {
         return Scheduler.runTaskTimer(InteractionVisualizer.plugin, () -> {
             Set<Block> list = nearbyConduit();
             for (Block block : list) {
@@ -208,6 +220,58 @@ public class ConduitDisplay extends VisualizerRunnableDisplay implements Listene
         }, 0, checkingPeriod);
     }
 
+    private boolean updateHybridBlock(Block block) {
+        if (!nearbyConduit().contains(block)
+                || !block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)
+                || block.getType() != Material.CONDUIT) {
+            removeTrackedDisplay(block);
+            return false;
+        }
+        if (!isActive(block.getLocation())) {
+            return false;
+        }
+        Map<String, Object> values = conduitMap.get(block);
+        if (values == null) {
+            values = new HashMap<>();
+            values.put("Item", "N/A");
+            values.putAll(spawnDisplayEntitys(block));
+            conduitMap.put(block, values);
+        }
+        updateTrackedBlock(block, values);
+        return false;
+    }
+
+    private void updateTrackedBlock(Block block, Map<String, Object> values) {
+        int amount = getFrameAmount(block);
+        int range = getRange(amount);
+        NamedTextColor color = range > 0 ? NamedTextColor.AQUA : NamedTextColor.YELLOW;
+        Component summary = Component.text("\u2b1b" + amount + " \u27f9 " + range + "m", color);
+        DisplayEntity line1 = (DisplayEntity) values.get("1");
+        DisplayEntity line2 = (DisplayEntity) values.get("2");
+        if (!line1.getCustomName().equals(summary) || !line1.isCustomNameVisible()) {
+            line1.setCustomName(summary);
+            line1.setCustomNameVisible(true);
+            DisplayManager.updateDisplay(line1);
+        }
+        if (range < 96) {
+            if (!PlainTextComponentSerializer.plainText().serialize(line2.getCustomName()).isEmpty()
+                    || line2.isCustomNameVisible()) {
+                line2.setCustomName("");
+                line2.setCustomNameVisible(false);
+                DisplayManager.updateDisplay(line2);
+            }
+        } else {
+            Component damage = Component.text("4(", NamedTextColor.AQUA)
+                    .append(Component.text("\u2665\u2665", NamedTextColor.RED))
+                    .append(Component.text(") / 2s", NamedTextColor.AQUA));
+            if (!line2.getCustomName().equals(damage) || !line2.isCustomNameVisible()) {
+                line2.setCustomName(damage);
+                line2.setCustomNameVisible(true);
+                DisplayManager.updateDisplay(line2);
+            }
+        }
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlaceConduit(BlockPlaceEvent event) {
         if (event.isCancelled()) {
@@ -223,16 +287,25 @@ public class ConduitDisplay extends VisualizerRunnableDisplay implements Listene
         }
 
         placemap.put(block, new float[] {event.getPlayer().getLocation().getYaw(), event.getPlayer().getLocation().getPitch()});
+        BlockUpdateCoordinator.markDirty(block);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onBreakConduit(TileEntityRemovedEvent event) {
         Block block = event.getBlock();
-        if (!conduitMap.containsKey(block)) {
+        if (InteractionVisualizer.eventDrivenBlockUpdates) {
+            BlockUpdateCoordinator.remove(this, block);
+        } else {
+            removeTrackedDisplay(block);
+        }
+    }
+
+    private void removeTrackedDisplay(Block block) {
+        Map<String, Object> map = conduitMap.remove(block);
+        placemap.remove(block);
+        if (map == null) {
             return;
         }
-
-        Map<String, Object> map = conduitMap.get(block);
         if (map.get("1") instanceof DisplayEntity) {
             DisplayEntity stand = (DisplayEntity) map.get("1");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
@@ -241,7 +314,6 @@ public class ConduitDisplay extends VisualizerRunnableDisplay implements Listene
             DisplayEntity stand = (DisplayEntity) map.get("2");
             DisplayManager.removeDisplay(InteractionVisualizerAPI.getPlayers(), stand);
         }
-        conduitMap.remove(block);
     }
 
     public Set<Block> nearbyConduit() {
