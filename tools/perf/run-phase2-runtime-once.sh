@@ -185,6 +185,7 @@ unzip -p "$plugin_jar" config.yml > "$run_directory/plugins/InteractionVisualize
 
 python3 - "$run_directory/plugins/InteractionVisualizer/config.yml" "$scenario" "$variant" "$ab_factor" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 path = Path(sys.argv[1])
@@ -200,6 +201,16 @@ def replace_once(old: str, new: str) -> None:
         raise SystemExit(f"Expected one config token {old!r}, found {count}")
     text = text.replace(old, new, 1)
 
+def replace_boolean_once(prefix: str, value: bool) -> None:
+    global text
+    pattern = re.compile(rf"(?m)^{re.escape(prefix)}(?:true|false)$")
+    replacement = f"{prefix}{str(value).lower()}"
+    text, count = pattern.subn(replacement, text, count=1)
+    if count != 1:
+        raise SystemExit(
+            f"Expected one boolean config token with prefix {prefix!r}, found {count}"
+        )
+
 packet_only = scenario == "visibility-return" or (
     scenario in {"static-steady", "static-spawn"} and variant == "B"
 )
@@ -207,13 +218,9 @@ visibility_limit = scenario.startswith("visibility-") and variant == "B"
 event_driven = scenario.startswith("block-") and (
     ab_factor == "legacy-text-component-cache" or variant == "B"
 )
-replace_once("      PacketOnlyStatic: false",
-             f"      PacketOnlyStatic: {str(packet_only).lower()}")
-replace_once("      Enabled: false\n      BucketSize: 128\n      RestorePerTick: 32",
-             f"      Enabled: {str(visibility_limit).lower()}\n"
-             "      BucketSize: 128\n      RestorePerTick: 32")
-replace_once("      EventDriven: false",
-             f"      EventDriven: {str(event_driven).lower()}")
+replace_boolean_once("      PacketOnlyStatic: ", packet_only)
+replace_boolean_once("      Enabled: ", visibility_limit)
+replace_boolean_once("      EventDriven: ", event_driven)
 replace_once("  Updater: true", "  Updater: false")
 replace_once("  DownloadLanguageFiles: true", "  DownloadLanguageFiles: false")
 path.write_text(text, encoding="utf-8", newline="\n")
