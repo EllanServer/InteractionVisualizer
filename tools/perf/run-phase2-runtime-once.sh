@@ -38,6 +38,9 @@ measure_seconds="${PHASE2_MEASURE_SECONDS:-180}"
 capture_enabled="${PHASE2_CAPTURE_ENABLED:-0}"
 capture_snaplen="${PHASE2_CAPTURE_SNAPLEN:-128}"
 protocol_trace_enabled="${PHASE2_PROTOCOL_TRACE_ENABLED:-$capture_enabled}"
+protocol_trace_max_events="${PHASE2_PROTOCOL_TRACE_MAX_EVENTS:-500000}"
+protocol_trace_packet_allowlist="${PHASE2_PROTOCOL_TRACE_PACKET_ALLOWLIST-bundle_delimiter,entity_destroy,spawn_entity}"
+protocol_trace_aggregate_packet_allowlist="${PHASE2_PROTOCOL_TRACE_AGGREGATE_PACKET_ALLOWLIST-entity_metadata}"
 spark_profile_mode="${PHASE2_SPARK_PROFILE_MODE:-none}"
 ab_factor="${PHASE2_AB_FACTOR:-scenario-config}"
 
@@ -61,7 +64,7 @@ if [[ "$ab_factor" == legacy-text-component-cache && "$scenario" != block-active
   exit 64
 fi
 for value in "$server_port" "$item_count" "$warmup_seconds" "$settle_seconds" \
-  "$measure_seconds" "$capture_snaplen"; do
+  "$measure_seconds" "$capture_snaplen" "$protocol_trace_max_events"; do
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "Numeric input is invalid: $value" >&2; exit 64; }
 done
 (( server_port >= 1 && server_port <= 65535 )) \
@@ -98,6 +101,12 @@ fi
   || { echo "PHASE2_CAPTURE_ENABLED must be 0 or 1" >&2; exit 64; }
 [[ "$protocol_trace_enabled" == 0 || "$protocol_trace_enabled" == 1 ]] \
   || { echo "PHASE2_PROTOCOL_TRACE_ENABLED must be 0 or 1" >&2; exit 64; }
+(( protocol_trace_max_events >= 1 )) \
+  || { echo "PHASE2_PROTOCOL_TRACE_MAX_EVENTS must be positive" >&2; exit 64; }
+for allowlist in "$protocol_trace_packet_allowlist" "$protocol_trace_aggregate_packet_allowlist"; do
+  [[ -z "$allowlist" || "$allowlist" =~ ^[A-Za-z0-9_-]+(,[A-Za-z0-9_-]+)*$ ]] \
+    || { echo "Protocol trace allowlist is invalid: $allowlist" >&2; exit 64; }
+done
 case "$spark_profile_mode" in
   none|cpu|cpu-all|alloc) ;;
   *) echo "PHASE2_SPARK_PROFILE_MODE must be none, cpu, cpu-all, or alloc" >&2; exit 64 ;;
@@ -642,7 +651,12 @@ fi
 
 protocol_trace_environment=("PHASE2_PROTOCOL_TRACE_FILE=")
 if [[ "$protocol_trace_enabled" == 1 ]]; then
-  protocol_trace_environment=("PHASE2_PROTOCOL_TRACE_FILE=$protocol_trace_path")
+  protocol_trace_environment=(
+    "PHASE2_PROTOCOL_TRACE_FILE=$protocol_trace_path"
+    "PHASE2_PROTOCOL_TRACE_MAX_EVENTS=$protocol_trace_max_events"
+    "PHASE2_PROTOCOL_TRACE_PACKET_ALLOWLIST=$protocol_trace_packet_allowlist"
+    "PHASE2_PROTOCOL_TRACE_AGGREGATE_PACKET_ALLOWLIST=$protocol_trace_aggregate_packet_allowlist"
+  )
 fi
 env \
   "PHASE2_MC_PROTOCOL_MODULE=$client_root/node-minecraft-protocol" \
