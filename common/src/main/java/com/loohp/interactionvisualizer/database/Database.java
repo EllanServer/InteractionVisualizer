@@ -199,6 +199,12 @@ public final class Database {
         }
     }
 
+    public static int retainedConnectionCount() {
+        synchronized (DATABASE_LOCK) {
+            return connection == null ? 0 : 1;
+        }
+    }
+
     /** Compatibility hook for older internal callers. */
     public static void runExclusive(Runnable operation) {
         synchronized (DATABASE_LOCK) {

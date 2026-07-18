@@ -275,6 +275,20 @@ public final class DisplayManager implements Listener {
         }
     }
 
+    /** Number of roots in every display, viewer and pending-work registry. */
+    public static int retainedStateCount() {
+        return active.size() + playerStatus.size() + renderedRevision.size()
+                + shownViewers.size() + scheduled.size() + forceScheduled.size()
+                + logicalByActualUuid.size() + actualUuidByLogical.size() + logicalById.size()
+                + logicalsByChunk.size() + chunkByLogical.size() + viewerChunks.retainedStateCount()
+                + shownByViewer.size() + itemAnimations.size() + virtualItemIds.size()
+                + renderedItemStacks.size() + renderedItemLocations.size()
+                + packetItemPositions.size() + packetOnlyItems.size() + fixedItemDisplays.size()
+                + virtualTextDisplays.size() + dynamicViewerPositions.size()
+                + dirtyDynamicViewers.size() + visibilityShowQueues.size()
+                + pendingViewersByLogical.size() + pendingVisibilityViewers.size();
+    }
+
     @SafeVarargs
     static Set<VisualizerEntity> shutdownCleanupCandidates(
             Collection<? extends VisualizerEntity>... candidateGroups) {
@@ -2835,6 +2849,10 @@ public final class DisplayManager implements Listener {
         void clear() {
             chunksByViewer.clear();
             viewersByChunk.clear();
+        }
+
+        int retainedStateCount() {
+            return chunksByViewer.size() + viewersByChunk.size();
         }
     }
 

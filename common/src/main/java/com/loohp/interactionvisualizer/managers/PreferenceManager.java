@@ -56,6 +56,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
@@ -149,6 +150,14 @@ public class PreferenceManager implements Listener, AutoCloseable {
             indexSnapshot = ArrayUtils.putToMap(entries, new HashMap<>());
         }
         playerIo.submit(SYSTEM_IO_KEY, () -> Database.setBitIndex(indexSnapshot));
+        synchronized (viewerGroups) {
+            viewerGroups.clear();
+        }
+        synchronized (entries) {
+            entries.clear();
+        }
+        entryIndexes = Map.of();
+        registeredEntries = List.of();
         RuntimeException playerIoFailure = null;
         try {
             playerIo.closeAndWait();
@@ -156,11 +165,47 @@ public class PreferenceManager implements Listener, AutoCloseable {
             playerIoFailure = exception;
         } finally {
             playerIoExecutor.shutdown();
+            awaitExecutorTermination(playerIoExecutor);
             Database.close();
         }
         if (playerIoFailure != null) {
             plugin.getLogger().log(Level.SEVERE,
                     "One or more queued player preference operations failed before shutdown", playerIoFailure);
+        }
+    }
+
+    /** Number of player/session/cache/I/O roots still retained after close. */
+    public int retainedStateCount() {
+        int groupMembers = backingPlayerList.size();
+        for (EnumMap<Modules, ViewerGroup> groups : viewerGroups.values()) {
+            for (ViewerGroup group : groups.values()) {
+                groupMembers += group.size();
+            }
+        }
+        synchronized (entries) {
+            return preferences.size() + groupMembers + viewerGroups.size()
+                    + entries.size() + entryIndexes.size() + registeredEntries.size()
+                    + playerSessions.size() + playerIo.retainedOperationCount();
+        }
+    }
+
+    private static void awaitExecutorTermination(ExecutorService executor) {
+        boolean interrupted = false;
+        try {
+            if (!executor.awaitTermination(2L, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+                if (!executor.awaitTermination(2L, TimeUnit.SECONDS)) {
+                    InteractionVisualizer.plugin.getLogger().warning(
+                            "Preference I/O executor did not terminate cleanly");
+                }
+            }
+        } catch (InterruptedException exception) {
+            interrupted = true;
+            executor.shutdownNow();
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -898,6 +943,10 @@ public class PreferenceManager implements Listener, AutoCloseable {
             sessions.clear();
             return true;
         }
+
+        synchronized int size() {
+            return sessions.size();
+        }
     }
 
     /** One global FIFO matching the single persistent JDBC connection. */
@@ -970,6 +1019,10 @@ public class PreferenceManager implements Listener, AutoCloseable {
             closed = new CompletableFuture<>();
             completeCloseIfIdle();
             return closed;
+        }
+
+        synchronized int retainedOperationCount() {
+            return operations.size() + (running ? 1 : 0);
         }
 
         private void drain() {

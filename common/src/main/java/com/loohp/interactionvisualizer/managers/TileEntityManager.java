@@ -280,6 +280,13 @@ public class TileEntityManager implements Listener {
         drainingWatcherChanges = false;
     }
 
+    /** Number of block, chunk or viewer-index roots retained by this lifecycle. */
+    public synchronized static int retainedStateCount() {
+        return active.size() + byChunk.size() + lastActiveTypes.size()
+                + watchedChunksByPlayer.size() + watcherCounts.size()
+                + dirtyWatcherChunks.size() + unloadingChunks.size();
+    }
+
     static <K, T> boolean reconcileActiveTypeIfCurrent(
             Map<K, Set<T>> index, K key, Set<T> indexedValues,
             T value, TileEntityType currentType, boolean activate,

@@ -62,6 +62,21 @@ The production plugin JAR is written to `build/libs/InteractionVisualizer-<versi
 `check` includes unit tests, the Paper 26.1.2 compilation, and a second compile
 against Paper 26.2.
 
+## Performance rollout and diagnostics
+
+New installations enable the bounded visibility restore, dropped-label spatial
+culling, static packet items, static animation anchors, and coordinated block
+updates. Existing explicit `false` values remain unchanged and produce one
+migration reminder. Every path has its own rollback switch in `config.yml`;
+event-driven block updates require a restart, while the other switches reload.
+
+Use `/iv perf start <label>` and `/iv perf stop` around a stable sample window.
+The resulting `IV_PERF` JSON includes viewer candidates/full reconciles,
+dropped-item spatial and full-scan candidates, block queues, preference I/O and
+SQL operations, packet operations, and anchor entity operations. Every plugin
+disable also emits `IV_PERF_SHUTDOWN`; `totalRetained` should be zero in repeated
+enable/disable leak tests.
+
 ## Optional integrations
 
 - [CraftEngine](https://github.com/Xiao-MoMi/craft-engine) 26.7.2: optional

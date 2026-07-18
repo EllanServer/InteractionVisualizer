@@ -63,6 +63,15 @@ public class EnderchestDisplay implements Listener, VisualizerDisplay {
     public static ConcurrentHashMap<Player, List<Item>> link = new ConcurrentHashMap<>();
     public static ConcurrentHashMap<Player, Block> playermap = new ConcurrentHashMap<>();
 
+    public static void shutdown() {
+        link.clear();
+        playermap.clear();
+    }
+
+    public static int retainedStateCount() {
+        return link.size() + playermap.size();
+    }
+
     @Override
     public EntryKey key() {
         return KEY;

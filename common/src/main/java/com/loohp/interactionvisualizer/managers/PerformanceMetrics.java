@@ -13,6 +13,12 @@ package com.loohp.interactionvisualizer.managers;
 
 import com.destroystokyo.paper.event.server.ServerTickEndEvent;
 import com.loohp.interactionvisualizer.InteractionVisualizer;
+import com.loohp.interactionvisualizer.blocks.BlockUpdateCoordinator;
+import com.loohp.interactionvisualizer.database.Database;
+import com.loohp.interactionvisualizer.debug.PerformanceBlockScene;
+import com.loohp.interactionvisualizer.debug.PerformanceScene;
+import com.loohp.interactionvisualizer.integration.CustomContentManager;
+import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import com.loohp.interactionvisualizer.utils.LegacyTextComponentCache;
 import org.bukkit.Bukkit;
 import org.bukkit.event.EventHandler;
@@ -77,6 +83,9 @@ public final class PerformanceMetrics implements Listener {
     private long craftEngineCullingHideDecisions;
     private long itemAnimationNanos;
     private long droppedItemNanos;
+    private long droppedViewerDistanceChecks;
+    private long droppedSpatialCandidates;
+    private long droppedFullScanCandidates;
     private long blockUpdateChecks;
     private long blockUpdateNanos;
     private int blockUpdateCoordinatorLanesMax;
@@ -149,6 +158,9 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.craftEngineCullingHideDecisions = 0;
         INSTANCE.itemAnimationNanos = 0;
         INSTANCE.droppedItemNanos = 0;
+        INSTANCE.droppedViewerDistanceChecks = 0;
+        INSTANCE.droppedSpatialCandidates = 0;
+        INSTANCE.droppedFullScanCandidates = 0;
         INSTANCE.blockUpdateChecks = 0;
         INSTANCE.blockUpdateNanos = 0;
         INSTANCE.blockUpdateCoordinatorLanesMax = 0;
@@ -313,6 +325,24 @@ public final class PerformanceMetrics implements Listener {
         }
     }
 
+    public static void droppedViewerDistanceChecks(long checks) {
+        if (INSTANCE.collecting) {
+            INSTANCE.droppedViewerDistanceChecks += checks;
+        }
+    }
+
+    public static void droppedSpatialCandidates(long candidates) {
+        if (INSTANCE.collecting) {
+            INSTANCE.droppedSpatialCandidates += candidates;
+        }
+    }
+
+    public static void droppedFullScanCandidates(long candidates) {
+        if (INSTANCE.collecting) {
+            INSTANCE.droppedFullScanCandidates += candidates;
+        }
+    }
+
     public static void blockUpdateChecks(int checks, long nanos) {
         if (INSTANCE.collecting) {
             INSTANCE.blockUpdateChecks += checks;
@@ -371,6 +401,38 @@ public final class PerformanceMetrics implements Listener {
         }
     }
 
+    /**
+     * Emits one machine-readable lifecycle audit after all managers have been
+     * closed. This is intentionally unconditional so repeated enable/disable
+     * leak tests do not need to keep a performance sample running.
+     */
+    public static ShutdownSnapshot logShutdownState(Plugin plugin,
+                                                     int asyncTasks,
+                                                     int preferenceState,
+                                                     int lightState,
+                                                     int cullingRegistrations) {
+        ShutdownSnapshot snapshot = new ShutdownSnapshot(
+                Scheduler.retainedTaskCount(plugin), asyncTasks,
+                TaskManager.retainedStateCount(),
+                BlockUpdateCoordinator.retainedLaneCount(),
+                BlockUpdateCoordinator.pendingDirtyCount(),
+                BlockUpdateCoordinator.activeCount(),
+                InteractionSessionCoordinator.retainedLaneCount(),
+                InteractionSessionCoordinator.retainedSessionCount(),
+                DisplayManager.retainedStateCount(), TileEntityManager.retainedStateCount(),
+                PlayerLocationManager.retainedStateCount(),
+                InteractionVisualizer.playerTrackingRange.size(), preferenceState,
+                Database.retainedConnectionCount(), lightState, cullingRegistrations,
+                CustomContentManager.retainedStateCount(),
+                PerformanceScene.retainedStateCount() + PerformanceBlockScene.retainedStateCount());
+        plugin.getLogger().info("IV_PERF_SHUTDOWN " + snapshot.json());
+        if (!snapshot.clean()) {
+            plugin.getLogger().warning("InteractionVisualizer retained lifecycle state after shutdown: "
+                    + snapshot.summary());
+        }
+        return snapshot;
+    }
+
     @EventHandler
     public void onServerTickEnd(ServerTickEndEvent event) {
         if (!collecting) {
@@ -420,7 +482,9 @@ public final class PerformanceMetrics implements Listener {
                 viewerFullReconciles, viewerCandidates, craftEngineCullingCandidates,
                 craftEngineCullingShowDecisions, craftEngineCullingHideDecisions,
                 retainedCullingRegistrations,
-                itemAnimationNanos, droppedItemNanos, blockUpdateChecks, blockUpdateNanos,
+                itemAnimationNanos, droppedItemNanos, droppedViewerDistanceChecks,
+                droppedSpatialCandidates, droppedFullScanCandidates,
+                blockUpdateChecks, blockUpdateNanos,
                 blockUpdateCoordinatorLanesMax, blockUpdateDirtyQueueMax, blockUpdateActiveQueueMax,
                 preferenceIoOperations, preferenceIoFailures, preferenceIoQueueDepthMax,
                 preferenceSqlStatements, preferenceDatabaseReconnects,
@@ -449,6 +513,73 @@ public final class PerformanceMetrics implements Listener {
             boolean rateLimitEnabled,
             int bucketSize,
             int restorePerTick) {
+    }
+
+    public record ShutdownSnapshot(
+            int schedulerTasks,
+            int asyncTasks,
+            int taskManagerState,
+            int blockUpdateLanes,
+            int blockUpdateDirty,
+            int blockUpdateActive,
+            int interactionSessionLanes,
+            int interactionSessions,
+            int displayState,
+            int tileEntityState,
+            int playerLocationState,
+            int trackingWorlds,
+            int preferenceState,
+            int databaseConnections,
+            int lightState,
+            int cullingRegistrations,
+            int customContentState,
+            int performanceSceneState) {
+
+        public int totalRetained() {
+            return schedulerTasks + asyncTasks + taskManagerState
+                    + blockUpdateLanes + blockUpdateDirty + blockUpdateActive
+                    + interactionSessionLanes + interactionSessions
+                    + displayState + tileEntityState + playerLocationState
+                    + trackingWorlds + preferenceState + databaseConnections
+                    + lightState + cullingRegistrations + customContentState
+                    + performanceSceneState;
+        }
+
+        public boolean clean() {
+            return totalRetained() == 0;
+        }
+
+        public String summary() {
+            return String.format(Locale.ROOT,
+                    "total=%d scheduler=%d async=%d tasks=%d block=%d/%d/%d sessions=%d/%d "
+                            + "display=%d tile=%d playerLocations=%d trackingWorlds=%d "
+                            + "preferences=%d database=%d light=%d culling=%d custom=%d scenes=%d",
+                    totalRetained(), schedulerTasks, asyncTasks, taskManagerState,
+                    blockUpdateLanes, blockUpdateDirty, blockUpdateActive,
+                    interactionSessionLanes, interactionSessions, displayState,
+                    tileEntityState, playerLocationState, trackingWorlds, preferenceState,
+                    databaseConnections, lightState, cullingRegistrations,
+                    customContentState, performanceSceneState);
+        }
+
+        public String json() {
+            return String.format(Locale.ROOT,
+                    "{\"schedulerTasks\":%d,\"asyncTasks\":%d,\"taskManagerState\":%d,"
+                            + "\"blockUpdateLanes\":%d,\"blockUpdateDirty\":%d,"
+                            + "\"blockUpdateActive\":%d,\"interactionSessionLanes\":%d,"
+                            + "\"interactionSessions\":%d,\"displayState\":%d,"
+                            + "\"tileEntityState\":%d,\"playerLocationState\":%d,"
+                            + "\"trackingWorlds\":%d,\"preferenceState\":%d,"
+                            + "\"databaseConnections\":%d,\"lightState\":%d,"
+                            + "\"cullingRegistrations\":%d,\"customContentState\":%d,"
+                            + "\"performanceSceneState\":%d,\"totalRetained\":%d}",
+                    schedulerTasks, asyncTasks, taskManagerState,
+                    blockUpdateLanes, blockUpdateDirty, blockUpdateActive,
+                    interactionSessionLanes, interactionSessions, displayState,
+                    tileEntityState, playerLocationState, trackingWorlds, preferenceState,
+                    databaseConnections, lightState, cullingRegistrations,
+                    customContentState, performanceSceneState, totalRetained());
+        }
     }
 
     public record Snapshot(
@@ -501,6 +632,9 @@ public final class PerformanceMetrics implements Listener {
             int craftEngineCullingRetainedRegistrations,
             long itemAnimationNanos,
             long droppedItemNanos,
+            long droppedViewerDistanceChecks,
+            long droppedSpatialCandidates,
+            long droppedFullScanCandidates,
             long blockUpdateChecks,
             long blockUpdateNanos,
             int blockUpdateCoordinatorLanesMax,
@@ -584,6 +718,9 @@ public final class PerformanceMetrics implements Listener {
                             "\"craftEngineCullingHideDecisions\":%d," +
                             "\"craftEngineCullingRetainedRegistrations\":%d," +
                             "\"itemAnimationMs\":%.6f,\"droppedItemMs\":%.6f," +
+                            "\"droppedViewerDistanceChecks\":%d," +
+                            "\"droppedSpatialCandidates\":%d," +
+                            "\"droppedFullScanCandidates\":%d," +
                             "\"blockUpdateChecks\":%d,\"blockUpdateMs\":%.6f," +
                             "\"blockUpdateCoordinatorLanesMax\":%d," +
                             "\"blockUpdateDirtyQueueMax\":%d," +
@@ -615,6 +752,8 @@ public final class PerformanceMetrics implements Listener {
                     craftEngineCullingShowDecisions, craftEngineCullingHideDecisions,
                     craftEngineCullingRetainedRegistrations,
                     itemAnimationNanos / 1_000_000.0D, droppedItemNanos / 1_000_000.0D,
+                    droppedViewerDistanceChecks, droppedSpatialCandidates,
+                    droppedFullScanCandidates,
                     blockUpdateChecks, blockUpdateNanos / 1_000_000.0D,
                     blockUpdateCoordinatorLanesMax, blockUpdateDirtyQueueMax, blockUpdateActiveQueueMax,
                     preferenceIoOperations, preferenceIoFailures, preferenceIoQueueDepthMax,

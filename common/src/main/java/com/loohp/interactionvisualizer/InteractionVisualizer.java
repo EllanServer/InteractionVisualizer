@@ -77,6 +77,8 @@ public class InteractionVisualizer extends JavaPlugin {
     public static final int BSTATS_PLUGIN_ID = 7024;
     public static final String CONFIG_ID = "config";
     public static final Set<String> SUPPORTED_MINECRAFT_VERSIONS = Set.of("26.1.2", "26.2");
+    private static final String PERFORMANCE_MIGRATION_MARKER =
+            ".paper26-performance-defaults-advised";
 
     public static InteractionVisualizer plugin = null;
 
@@ -114,17 +116,17 @@ public class InteractionVisualizer extends JavaPlugin {
 
     public static boolean defaultDisabledAll = false;
     /** A/B switch: virtual item remains authoritative while an invisible tracker stays stationary. */
-    public static boolean staticVirtualItemAnchorsDuringAnimation = false;
+    public static boolean staticVirtualItemAnchorsDuringAnimation = true;
     /** A/B switch: eligible stationary virtual items are tracked and rendered entirely by packets. */
-    public static boolean packetOnlyStaticVirtualItems = false;
+    public static boolean packetOnlyStaticVirtualItems = true;
     /** A/B switch: safe animated virtual items use Typewriter-style per-viewer packet tracking. */
     public static boolean packetOnlyAnimatedVirtualItems = false;
     /** A/B switch: smooths visibility recovery bursts; hides are always immediate. */
-    public static boolean visibilityRateLimiting = false;
+    public static boolean visibilityRateLimiting = true;
     public static int visibilityRateLimitBucketSize = 128;
     public static int visibilityRateLimitRestorePerTick = 32;
     /** A/B switch: coalesces block changes and updates tracked blocks from fixed-budget loops. */
-    public static boolean eventDrivenBlockUpdates = false;
+    public static boolean eventDrivenBlockUpdates = true;
     public static int blockUpdateMaxDirtyPerTick = 64;
 
     private boolean blockUpdateModeInitialized;
@@ -181,14 +183,17 @@ public class InteractionVisualizer extends JavaPlugin {
         if (!getDataFolder().exists()) {
             getDataFolder().mkdirs();
         }
+        File configFile = new File(getDataFolder(), "config.yml");
+        boolean existingConfiguration = configFile.isFile();
         try {
-            Config.loadConfig(CONFIG_ID, new File(getDataFolder(), "config.yml"), getClass().getClassLoader().getResourceAsStream("config.yml"), getClass().getClassLoader().getResourceAsStream("config.yml"), true);
+            Config.loadConfig(CONFIG_ID, configFile, getClass().getClassLoader().getResourceAsStream("config.yml"), getClass().getClassLoader().getResourceAsStream("config.yml"), true);
         } catch (IOException e) {
             e.printStackTrace();
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
         loadConfig();
+        advisePerformanceMigrationOnce(existingConfiguration);
 
         boolean craftEngineHooked = CustomContentManager.initialize(this).contains("craftengine");
         if (isPluginEnabled("CraftEngine")) {
@@ -267,25 +272,41 @@ public class InteractionVisualizer extends JavaPlugin {
     @Override
     public void onDisable() {
         shutdownPerformanceScenes();
-        if (lightManager != null) {
-            lightManager.shutdown();
+        int retainedLightState = 0;
+        ILightManager disablingLightManager = lightManager;
+        if (disablingLightManager != null) {
+            disablingLightManager.shutdown();
+            retainedLightState = disablingLightManager.retainedStateCount();
             lightManager = ILightManager.DUMMY_INSTANCE;
         }
-        viewerCullingManager.shutdown();
+        ViewerCullingManager disablingCullingManager = viewerCullingManager;
+        disablingCullingManager.shutdown();
+        int retainedCullingRegistrations = disablingCullingManager.retainedRegistrations();
         viewerCullingManager = ViewerCullingManager.DISABLED;
         CustomContentManager.shutdown();
-        if (preferenceManager != null) {
-            preferenceManager.close();
+        int retainedPreferenceState = 0;
+        PreferenceManager disablingPreferenceManager = preferenceManager;
+        if (disablingPreferenceManager != null) {
+            disablingPreferenceManager.close();
+            retainedPreferenceState = disablingPreferenceManager.retainedStateCount();
+            preferenceManager = null;
         }
         Database.close();
         TaskManager.shutdown();
         DisplayManager.shutdown();
         TileEntityManager.shutdown();
         PlayerLocationManager.clearCache();
+        playerTrackingRange.clear();
         LegacyTextComponentCache.invalidateAll();
-        if (asyncExecutorManager != null) {
-            asyncExecutorManager.close();
+        int retainedAsyncTasks = 0;
+        AsyncExecutorManager disablingAsyncExecutorManager = asyncExecutorManager;
+        if (disablingAsyncExecutorManager != null) {
+            disablingAsyncExecutorManager.close();
+            retainedAsyncTasks = disablingAsyncExecutorManager.retainedTaskCount();
+            asyncExecutorManager = null;
         }
+        PerformanceMetrics.logShutdownState(this, retainedAsyncTasks,
+                retainedPreferenceState, retainedLightState, retainedCullingRegistrations);
         getServer().getConsoleSender().sendMessage(Component.text(
                 "[InteractionVisualizer] Disabled; all display entities removed.", NamedTextColor.RED));
     }
@@ -319,6 +340,43 @@ public class InteractionVisualizer extends JavaPlugin {
 
     public SparrowConfiguration getConfiguration() {
         return Config.getConfig(CONFIG_ID).getConfiguration();
+    }
+
+    private void advisePerformanceMigrationOnce(boolean existingConfiguration) {
+        File marker = new File(getDataFolder(), PERFORMANCE_MIGRATION_MARKER);
+        if (marker.isFile()) {
+            return;
+        }
+        try {
+            if (!marker.createNewFile()) {
+                return;
+            }
+        } catch (IOException exception) {
+            getLogger().log(Level.WARNING,
+                    "Unable to persist the Paper 26 performance migration notice marker", exception);
+        }
+        if (existingConfiguration && hasPreservedPerformanceOptOut()) {
+            getLogger().warning("Paper 26 performance defaults are enabled for new installations. "
+                    + "Your explicit false values were preserved; review StaticAnchorDuringAnimation, "
+                    + "PacketOnlyStatic, VisibilityRateLimit, BlockUpdates.EventDriven, and dropped-item "
+                    + "VisibilityCulling/VisibilityRateLimit when you are ready to migrate.");
+        }
+    }
+
+    private boolean hasPreservedPerformanceOptOut() {
+        SparrowConfiguration configuration = getConfiguration();
+        return !configuration.getBoolean(
+                "Settings.Performance.VirtualItems.StaticAnchorDuringAnimation")
+                || !configuration.getBoolean(
+                "Settings.Performance.VirtualItems.PacketOnlyStatic")
+                || !configuration.getBoolean(
+                "Settings.Performance.VisibilityRateLimit.Enabled")
+                || !configuration.getBoolean(
+                "Settings.Performance.BlockUpdates.EventDriven")
+                || !configuration.getBoolean(
+                "Entities.Item.Options.VisibilityCulling.Enabled")
+                || !configuration.getBoolean(
+                "Entities.Item.Options.VisibilityRateLimit.Enabled");
     }
 
     public void loadConfig() {

@@ -55,4 +55,12 @@ public interface ILightManager {
     default void shutdown() {
     }
 
+    /**
+     * Number of plugin-owned light bookkeeping entries still reachable from
+     * this manager. Implementations return zero after a complete shutdown.
+     */
+    default int retainedStateCount() {
+        return 0;
+    }
+
 }

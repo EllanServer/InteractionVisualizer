@@ -60,6 +60,7 @@ import com.loohp.interactionvisualizer.debug.Debug;
 import com.loohp.interactionvisualizer.entities.DroppedItemDisplay;
 import com.loohp.interactionvisualizer.entities.VillagerDisplay;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
+import com.loohp.interactionvisualizer.objectholders.EnchantmentTableAnimation;
 import com.loohp.interactionvisualizer.updater.Updater;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import com.loohp.interactionvisualizer.config.SparrowConfiguration;
@@ -478,6 +479,16 @@ public class TaskManager {
         }
         processes.clear();
         runnables.clear();
+        EnderchestDisplay.shutdown();
+        EnchantmentTableAnimation.shutdown();
+    }
+
+    /** Number of display registrations or delayed inventory requests retained. */
+    public static int retainedStateCount() {
+        return processes.size() + runnables.size()
+                + pendingInventoryOpenProcesses.size() + pendingInventoryRefreshes.size()
+                + EnderchestDisplay.retainedStateCount()
+                + EnchantmentTableAnimation.retainedStateCount();
     }
 
     public static void processOpenInventory(Player player) {

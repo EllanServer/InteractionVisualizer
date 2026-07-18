@@ -321,6 +321,9 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             }
             update(tracked, itemIndex, viewerIndex, remainingWorldItems);
         }
+        if (viewerIndex != null) {
+            PerformanceMetrics.droppedViewerDistanceChecks(viewerIndex.candidateChecks());
+        }
         if (visibilityPolicy.controlsPerViewerVisibility()) {
             DroppedItemVisibilityIndex<UUID> visibilityIndex = null;
             if (visibilityPolicy.cullingEnabled()) {
@@ -549,9 +552,11 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
                     ? visibilityPolicy.effectiveViewDistance(trackingDistance)
                     : 0.0D;
             if (visibilityIndex != null) {
-                visibilityIndex.queryInto(player.getWorld().getUID(),
+                int candidates = visibilityIndex.queryInto(player.getWorld().getUID(),
                         playerLocation.getX(), playerLocation.getY(), playerLocation.getZ(), range, desired);
+                PerformanceMetrics.droppedSpatialCandidates(candidates);
             } else {
+                PerformanceMetrics.droppedFullScanCandidates(validItems.size());
                 for (TrackedItem tracked : validItems) {
                     TextDisplay label = labels.get(tracked.itemId());
                     if (label != null && label.isValid()

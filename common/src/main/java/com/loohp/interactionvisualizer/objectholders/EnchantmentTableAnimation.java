@@ -71,6 +71,14 @@ public class EnchantmentTableAnimation {
 
     private static final Map<Block, EnchantmentTableAnimation> tables = new ConcurrentHashMap<>();
 
+    public static void shutdown() {
+        tables.clear();
+    }
+
+    public static int retainedStateCount() {
+        return tables.size();
+    }
+
     public static EnchantmentTableAnimation getTableAnimation(Block block, Player player) {
         EnchantmentTableAnimation animation = tables.get(block);
         if (animation == null) {

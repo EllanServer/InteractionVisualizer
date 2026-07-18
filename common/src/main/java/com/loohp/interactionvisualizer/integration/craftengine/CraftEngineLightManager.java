@@ -433,6 +433,15 @@ public final class CraftEngineLightManager implements ILightManager, Listener {
         }
     }
 
+    @Override
+    public int retainedStateCount() {
+        synchronized (lock) {
+            return desired.size() + applied.size() + externalBaseline.size()
+                    + dirty.size() + waitingForChunk.size() + restoreOnLoad.size()
+                    + trackedByChunk.size() + (flushTask == null ? 0 : 1);
+        }
+    }
+
     private void disableAfterLinkageFailure(LinkageError error) {
         synchronized (lock) {
             closed = true;
