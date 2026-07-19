@@ -5,12 +5,6 @@ on:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
-      paper_version:
-        description: "Paper runtime under test (26.2 currently uses the BETA channel)"
-        required: true
-        default: "26.1.2"
-        type: choice
-        options: ["26.1.2", "26.2"]
       ab_factor:
         description: "Independent A/B factor with an isolated matching workload"
         required: true
@@ -70,7 +64,7 @@ jobs:
     timeout-minutes: 130
     env:
       CAMPAIGN_AB_FACTOR: ${{ github.event_name == 'workflow_dispatch' && inputs.ab_factor || 'scenario-config' }}
-      CAMPAIGN_PAPER_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.paper_version || '26.1.2' }}
+      CAMPAIGN_PAPER_VERSION: "26.1.2"
       CAMPAIGN_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario || 'static-steady' }}
       CAMPAIGN_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || github.event.action == 'labeled' && '12' || '4' }}
       CAMPAIGN_ITEMS: ${{ github.event_name == 'workflow_dispatch' && inputs.items || github.event.action == 'labeled' && '4096' || '1024' }}

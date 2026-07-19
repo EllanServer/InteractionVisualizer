@@ -7,7 +7,7 @@ set -euo pipefail
 
 plugin_enabled_log_marker() {
   case "${1:-}" in
-    26.1.2|26.2)
+    26.1.2)
       printf '[InteractionVisualizer] Enabled for Paper %s!' "$1"
       ;;
     *)
@@ -19,13 +19,11 @@ plugin_enabled_log_marker() {
 if [[ "${1:-}" == --self-test ]]; then
   [[ "$(plugin_enabled_log_marker 26.1.2)" == \
       '[InteractionVisualizer] Enabled for Paper 26.1.2!' ]]
-  [[ "$(plugin_enabled_log_marker 26.2)" == \
-      '[InteractionVisualizer] Enabled for Paper 26.2!' ]]
-  if plugin_enabled_log_marker 26.3 >/dev/null 2>&1; then
-    echo 'runtime harness accepted an unsupported Paper version' >&2
+  if plugin_enabled_log_marker 26.2 >/dev/null 2>&1; then
+    echo 'runtime harness accepted a non-canonical Paper version' >&2
     exit 1
   fi
-  printf '{"passed":true,"paperEnableMarkers":["26.1.2","26.2"]}\n'
+  printf '{"passed":true,"canonicalPaperVersion":"26.1.2","paperEnableMarkers":["26.1.2"]}\n'
   exit 0
 fi
 
@@ -79,8 +77,8 @@ case "$variant" in
   *) echo "PHASE2_VARIANT must be A or B" >&2; exit 64 ;;
 esac
 case "$paper_version" in
-  26.1.2|26.2) ;;
-  *) echo "PHASE2_PAPER_VERSION must be 26.1.2 or 26.2" >&2; exit 64 ;;
+  26.1.2) ;;
+  *) echo "PHASE2_PAPER_VERSION must be the canonical benchmark version 26.1.2" >&2; exit 64 ;;
 esac
 case "$paper_channel" in
   STABLE|BETA|UNKNOWN) ;;
