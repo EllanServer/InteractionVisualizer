@@ -22,12 +22,10 @@ import com.loohp.interactionvisualizer.managers.PerformanceMetrics;
 import com.loohp.interactionvisualizer.objectholders.EntryKey;
 import com.loohp.interactionvisualizer.utils.ChatColorUtils;
 import com.loohp.interactionvisualizer.utils.ItemNameUtils;
-import com.loohp.interactionvisualizer.utils.LegacyTextComponentCache;
 import com.loohp.interactionvisualizer.scheduler.ScheduledRunnable;
 import com.loohp.interactionvisualizer.scheduler.ScheduledTask;
 import com.loohp.interactionvisualizer.scheduler.Scheduler;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.TextReplacementConfig;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
@@ -93,12 +91,10 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     private final DroppedItemSpatialIndex crampIndex = new DroppedItemSpatialIndex();
     private final NamespacedKey visualEntityKey;
 
-    private String regularFormatting;
-    private String singularFormatting;
-    private String toolsFormatting;
     private String highColor = "";
     private String mediumColor = "";
     private String lowColor = "";
+    private DroppedItemLabelFormatter labelFormatter;
     private int cramp = 6;
     private double labelYOffset = 0.8D;
     private int updateRate = 20;
@@ -119,12 +115,15 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     @EventHandler
     public void onReload(InteractionVisualizerReloadEvent event) {
         DroppedItemVisibilityPolicy previousVisibilityPolicy = visibilityPolicy;
-        regularFormatting = configString("Entities.Item.Options.RegularFormat");
-        singularFormatting = configString("Entities.Item.Options.SingularFormat");
-        toolsFormatting = configString("Entities.Item.Options.ToolsFormat");
+        String regularFormatting = configString("Entities.Item.Options.RegularFormat");
+        String singularFormatting = configString("Entities.Item.Options.SingularFormat");
+        String toolsFormatting = configString("Entities.Item.Options.ToolsFormat");
         highColor = configString("Entities.Item.Options.Color.High");
         mediumColor = configString("Entities.Item.Options.Color.Medium");
         lowColor = configString("Entities.Item.Options.Color.Low");
+        labelFormatter = new DroppedItemLabelFormatter(
+                regularFormatting, singularFormatting, toolsFormatting,
+                highColor, mediumColor, lowColor);
         cramp = InteractionVisualizer.plugin.getConfiguration().getInt("Entities.Item.Options.Cramping");
         double configuredLabelYOffset = InteractionVisualizer.plugin.getConfiguration()
                 .getDouble("Entities.Item.Options.LabelYOffset");
@@ -577,7 +576,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             return;
         }
 
-        Component text = format(content, ticksLeft);
+        Component text = labelFormatter.format(content.formatState, ticksLeft);
         boolean created = false;
         if (label == null || !label.isValid() || !label.getWorld().equals(item.getWorld())) {
             removeLabel(itemId);
@@ -585,8 +584,14 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             labels.put(itemId, label);
             created = true;
         }
-        if (!text.equals(label.text())) {
+        // The formatter returns the same immutable component instance while
+        // the rendered state is unchanged. Avoid a CraftTextDisplay read on
+        // every refresh; it serializes the NMS component back through Paper.
+        int labelId = label.getEntityId();
+        if (content.appliedLabelId != labelId || content.appliedText != text) {
             label.text(text);
+            content.appliedLabelId = labelId;
+            content.appliedText = text;
         }
         float targetViewRange = labelViewRange();
         if (Math.abs(label.getViewRange() - targetViewRange) > 1.0E-4F) {
@@ -912,40 +917,14 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         NamespacedKey customItemId = blacklist.requiresCustomItemId()
                 ? CustomContentManager.customItemId(stack).orElse(null)
                 : null;
+        String durability = durability(stack);
+        Component itemName = ItemNameUtils.getDisplayName(stack);
         CachedItemContent replacement = new CachedItemContent(
                 stack.clone(),
                 blacklist.matches(matchingName, stack.getType(), customItemId),
-                durability(stack),
-                ItemNameUtils.getDisplayName(stack));
+                labelFormatter.state(stack.getAmount(), durability, itemName));
         contentCache.put(itemId, replacement);
         return replacement;
-    }
-
-    private Component format(CachedItemContent content, int ticksLeft) {
-        int secondsLeft = Math.max(0, ticksLeft / 20);
-        if (content.lastSeconds == secondsLeft && content.lastFormatted != null) {
-            return content.lastFormatted;
-        }
-        ItemStack stack = content.stack;
-        int amount = stack.getAmount();
-        String timerColor = secondsLeft <= 30 ? lowColor : secondsLeft <= 120 ? mediumColor : highColor;
-        String timer = timerColor + String.format(java.util.Locale.ROOT, "%02d:%02d", secondsLeft / 60, secondsLeft % 60);
-
-        String template;
-        if (ticksLeft >= 600 && content.durability != null) {
-            template = toolsFormatting.replace("{Durability}", content.durability);
-        } else {
-            template = amount == 1 ? singularFormatting : regularFormatting;
-        }
-        String rendered = template.replace("{Amount}", Integer.toString(amount)).replace("{Timer}", timer);
-        Component component = LegacyTextComponentCache.parse(rendered);
-        Component formatted = component.replaceText(TextReplacementConfig.builder()
-                .matchLiteral("{Item}")
-                .replacement(content.itemName)
-                .build());
-        content.lastSeconds = secondsLeft;
-        content.lastFormatted = formatted;
-        return formatted;
     }
 
     private String durability(ItemStack stack) {
@@ -1055,17 +1034,15 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
         private final ItemStack stack;
         private final boolean blacklisted;
-        private final String durability;
-        private final Component itemName;
-        private int lastSeconds = Integer.MIN_VALUE;
-        private Component lastFormatted;
+        private final DroppedItemLabelFormatter.State formatState;
+        private int appliedLabelId = Integer.MIN_VALUE;
+        private Component appliedText;
 
-        private CachedItemContent(ItemStack stack, boolean blacklisted, String durability,
-                                  Component itemName) {
+        private CachedItemContent(ItemStack stack, boolean blacklisted,
+                                  DroppedItemLabelFormatter.State formatState) {
             this.stack = stack;
             this.blacklisted = blacklisted;
-            this.durability = durability;
-            this.itemName = itemName;
+            this.formatState = formatState;
         }
     }
 
