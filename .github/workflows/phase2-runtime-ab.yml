@@ -104,6 +104,7 @@ jobs:
         run: |
           bash -n tools/perf/prepare-phase2-protocol-client.sh
           bash -n tools/perf/run-phase2-runtime-once.sh
+          bash tools/perf/run-phase2-runtime-once.sh --self-test
           node --check tools/perf/phase2-protocol-client.js
           pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 -SelfTest
           pwsh -NoProfile -File tools/perf/analyze-phase2-pcap.ps1 -SelfTest

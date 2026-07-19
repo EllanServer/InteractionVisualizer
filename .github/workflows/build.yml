@@ -80,6 +80,7 @@ jobs:
         run: |
           bash -n tools/perf/prepare-phase2-protocol-client.sh
           bash -n tools/perf/run-phase2-runtime-once.sh
+          bash tools/perf/run-phase2-runtime-once.sh --self-test
           node --check tools/perf/phase2-protocol-client.js
 
       - name: Run checks and build production jar

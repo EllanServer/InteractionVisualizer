@@ -5,6 +5,30 @@ set -euo pipefail
 # invoke this script sequentially in the desired ABBA order; it deliberately
 # owns only one JVM/run so cleanup failures cannot leak state into the next one.
 
+plugin_enabled_log_marker() {
+  case "${1:-}" in
+    26.1.2|26.2)
+      printf '[InteractionVisualizer] Enabled for Paper %s!' "$1"
+      ;;
+    *)
+      return 64
+      ;;
+  esac
+}
+
+if [[ "${1:-}" == --self-test ]]; then
+  [[ "$(plugin_enabled_log_marker 26.1.2)" == \
+      '[InteractionVisualizer] Enabled for Paper 26.1.2!' ]]
+  [[ "$(plugin_enabled_log_marker 26.2)" == \
+      '[InteractionVisualizer] Enabled for Paper 26.2!' ]]
+  if plugin_enabled_log_marker 26.3 >/dev/null 2>&1; then
+    echo 'runtime harness accepted an unsupported Paper version' >&2
+    exit 1
+  fi
+  printf '{"passed":true,"paperEnableMarkers":["26.1.2","26.2"]}\n'
+  exit 0
+fi
+
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 protocol_client_source="$script_directory/phase2-protocol-client.js"
 protocol_trace_analyzer_source="$script_directory/analyze-phase2-protocol-trace.js"
@@ -590,7 +614,7 @@ fi
 ) > "$server_log" 2>&1 &
 server_pid=$!
 
-wait_for_log "[InteractionVisualizer] Enabled for Paper 26.1.2!" 240
+wait_for_log "$(plugin_enabled_log_marker "$paper_version")" 240
 wait_for_log "Done (" 240
 
 python3 - "/proc/$server_pid/cmdline" "$jvm_command_line_metadata" "$server_pid" \
