@@ -21,6 +21,7 @@ import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.Vector;
@@ -40,6 +41,7 @@ public final class PerformanceScene {
     private static final int MAX_ITEMS = 8_192;
     private static final long MAX_LIFETIME_TICKS = 12_000L;
     private static final Map<UUID, Set<VisualizerEntity>> scenes = new HashMap<>();
+    private static final Map<UUID, Set<org.bukkit.entity.Item>> droppedScenes = new HashMap<>();
 
     private PerformanceScene() {
     }
@@ -121,6 +123,44 @@ public final class PerformanceScene {
         return count;
     }
 
+    /** Creates real Paper Item entities for the dropped-label runtime factor. */
+    public static int spawnDroppedItems(Player owner, int requestedCount,
+                                        long requestedLifetimeTicks) {
+        int count = Math.max(1, Math.min(MAX_ITEMS, requestedCount));
+        long lifetimeTicks = Math.max(1L, Math.min(MAX_LIFETIME_TICKS, requestedLifetimeTicks));
+        clear(owner);
+
+        World world = owner.getWorld();
+        Location center = owner.getLocation().add(0.0D, 1.5D, 0.0D);
+        int width = (int) Math.ceil(Math.sqrt(count));
+        double spacing = 1.25D;
+        double offset = (width - 1) * spacing / 2.0D;
+        Set<org.bukkit.entity.Item> items = new HashSet<>(count);
+        for (int index = 0; index < count; index++) {
+            double x = center.getX() + index % width * spacing - offset;
+            double z = center.getZ() + index / width * spacing - offset;
+            Location location = new Location(world, x, center.getY(), z);
+            location.getChunk().load();
+            ItemStack stack = new ItemStack(Material.STONE, index % 64 + 1);
+            int ordinal = index;
+            stack.editMeta(meta -> meta.customName(Component.text("iv-dropped-benchmark-" + ordinal)));
+            org.bukkit.entity.Item item = world.dropItem(location, stack, entity -> {
+                entity.setGravity(false);
+                entity.setVelocity(new Vector());
+                entity.setPickupDelay(Short.MAX_VALUE - 1);
+                entity.setUnlimitedLifetime(true);
+                entity.setPersistent(false);
+            });
+            items.add(item);
+        }
+
+        UUID ownerId = owner.getUniqueId();
+        droppedScenes.put(ownerId, items);
+        Scheduler.runTaskLater(InteractionVisualizer.plugin,
+                () -> expireDropped(ownerId, items), lifetimeTicks, owner.getLocation());
+        return count;
+    }
+
     public static void clear(Player owner) {
         clear(owner.getUniqueId());
     }
@@ -131,6 +171,10 @@ public final class PerformanceScene {
         if (previous != null) {
             removeEntities(previous);
         }
+        Set<org.bukkit.entity.Item> dropped = droppedScenes.remove(ownerId);
+        if (dropped != null) {
+            removeDroppedItems(dropped);
+        }
     }
 
     /** Deterministically removes every disposable benchmark scene. */
@@ -140,15 +184,26 @@ public final class PerformanceScene {
         for (Set<VisualizerEntity> entities : remaining) {
             removeEntities(entities);
         }
+        List<Set<org.bukkit.entity.Item>> remainingDropped = new ArrayList<>(droppedScenes.values());
+        droppedScenes.clear();
+        for (Set<org.bukkit.entity.Item> items : remainingDropped) {
+            removeDroppedItems(items);
+        }
     }
 
     public static int retainedStateCount() {
-        return scenes.size();
+        return scenes.size() + droppedScenes.size();
     }
 
     private static void expire(UUID ownerId, Set<VisualizerEntity> entities) {
         if (scenes.remove(ownerId, entities)) {
             removeEntities(entities);
+        }
+    }
+
+    private static void expireDropped(UUID ownerId, Set<org.bukkit.entity.Item> items) {
+        if (droppedScenes.remove(ownerId, items)) {
+            removeDroppedItems(items);
         }
     }
 
@@ -158,6 +213,14 @@ public final class PerformanceScene {
                 DisplayManager.removeItem(null, item, true, false);
             } else if (entity instanceof DisplayEntity display) {
                 DisplayManager.removeDisplay(null, display, true, false);
+            }
+        }
+    }
+
+    private static void removeDroppedItems(Set<org.bukkit.entity.Item> items) {
+        for (org.bukkit.entity.Item item : items) {
+            if (item.isValid()) {
+                item.remove();
             }
         }
     }

@@ -55,6 +55,8 @@ public final class PerformanceMetrics implements Listener {
     private DroppedLabelVisibilityConfig droppedLabelVisibilityConfig =
             new DroppedLabelVisibilityConfig(false, 64, false, 128, 32);
     private DroppedLabelVisibilityConfig configDroppedLabelVisibility = droppedLabelVisibilityConfig;
+    private boolean droppedSourceOwnedSectionCandidates;
+    private boolean configDroppedSourceOwnedSectionCandidates;
     private boolean configEventDrivenBlockUpdates;
     private int configBlockUpdateMaxDirtyPerTick;
     private long startedNanos;
@@ -86,6 +88,8 @@ public final class PerformanceMetrics implements Listener {
     private long droppedViewerDistanceChecks;
     private long droppedSpatialCandidates;
     private long droppedFullScanCandidates;
+    private int droppedTrackedItemsMax;
+    private int droppedLabelsMax;
     private long blockUpdateChecks;
     private long blockUpdateNanos;
     private int blockUpdateCoordinatorLanesMax;
@@ -117,6 +121,10 @@ public final class PerformanceMetrics implements Listener {
                 cullingEnabled, viewDistance, rateLimitEnabled, bucketSize, restorePerTick);
     }
 
+    public static void droppedLabelCandidateSource(boolean sourceOwnedSectionCandidates) {
+        INSTANCE.droppedSourceOwnedSectionCandidates = sourceOwnedSectionCandidates;
+    }
+
     public static boolean start(String requestedLabel) {
         if (INSTANCE.collecting) {
             return false;
@@ -130,6 +138,8 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.configVisibilityBucketSize = InteractionVisualizer.visibilityRateLimitBucketSize;
         INSTANCE.configVisibilityRestorePerTick = InteractionVisualizer.visibilityRateLimitRestorePerTick;
         INSTANCE.configDroppedLabelVisibility = INSTANCE.droppedLabelVisibilityConfig;
+        INSTANCE.configDroppedSourceOwnedSectionCandidates =
+                INSTANCE.droppedSourceOwnedSectionCandidates;
         INSTANCE.configEventDrivenBlockUpdates = InteractionVisualizer.eventDrivenBlockUpdates;
         INSTANCE.configBlockUpdateMaxDirtyPerTick = InteractionVisualizer.blockUpdateMaxDirtyPerTick;
         INSTANCE.startedNanos = System.nanoTime();
@@ -161,6 +171,8 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.droppedViewerDistanceChecks = 0;
         INSTANCE.droppedSpatialCandidates = 0;
         INSTANCE.droppedFullScanCandidates = 0;
+        INSTANCE.droppedTrackedItemsMax = 0;
+        INSTANCE.droppedLabelsMax = 0;
         INSTANCE.blockUpdateChecks = 0;
         INSTANCE.blockUpdateNanos = 0;
         INSTANCE.blockUpdateCoordinatorLanesMax = 0;
@@ -343,6 +355,13 @@ public final class PerformanceMetrics implements Listener {
         }
     }
 
+    public static void droppedItemState(int trackedItems, int labels) {
+        if (INSTANCE.collecting) {
+            INSTANCE.droppedTrackedItemsMax = Math.max(INSTANCE.droppedTrackedItemsMax, trackedItems);
+            INSTANCE.droppedLabelsMax = Math.max(INSTANCE.droppedLabelsMax, labels);
+        }
+    }
+
     public static void blockUpdateChecks(int checks, long nanos) {
         if (INSTANCE.collecting) {
             INSTANCE.blockUpdateChecks += checks;
@@ -467,6 +486,7 @@ public final class PerformanceMetrics implements Listener {
         return new Snapshot(label, configStaticAnchor, configPacketOnlyStatic, configHideIfViewObstructed,
                 configVisibilityRateLimit,
                 configVisibilityBucketSize, configVisibilityRestorePerTick, configDroppedLabelVisibility,
+                configDroppedSourceOwnedSectionCandidates,
                 configEventDrivenBlockUpdates,
                 configBlockUpdateMaxDirtyPerTick, LegacyTextComponentCache.isEnabled(),
                 elapsedNanos, samples, tickSamplesDropped,
@@ -484,6 +504,7 @@ public final class PerformanceMetrics implements Listener {
                 retainedCullingRegistrations,
                 itemAnimationNanos, droppedItemNanos, droppedViewerDistanceChecks,
                 droppedSpatialCandidates, droppedFullScanCandidates,
+                droppedTrackedItemsMax, droppedLabelsMax,
                 blockUpdateChecks, blockUpdateNanos,
                 blockUpdateCoordinatorLanesMax, blockUpdateDirtyQueueMax, blockUpdateActiveQueueMax,
                 preferenceIoOperations, preferenceIoFailures, preferenceIoQueueDepthMax,
@@ -591,6 +612,7 @@ public final class PerformanceMetrics implements Listener {
             int visibilityBucketSize,
             int visibilityRestorePerTick,
             DroppedLabelVisibilityConfig droppedLabelVisibility,
+            boolean droppedSourceOwnedSectionCandidates,
             boolean eventDrivenBlockUpdates,
             int blockUpdateMaxDirtyPerTick,
             boolean legacyTextComponentCache,
@@ -635,6 +657,8 @@ public final class PerformanceMetrics implements Listener {
             long droppedViewerDistanceChecks,
             long droppedSpatialCandidates,
             long droppedFullScanCandidates,
+            int droppedTrackedItemsMax,
+            int droppedLabelsMax,
             long blockUpdateChecks,
             long blockUpdateNanos,
             int blockUpdateCoordinatorLanesMax,
@@ -695,6 +719,7 @@ public final class PerformanceMetrics implements Listener {
                             "\"droppedLabelVisibilityRateLimit\":%b," +
                             "\"droppedLabelVisibilityBucketSize\":%d," +
                             "\"droppedLabelVisibilityRestorePerTick\":%d," +
+                            "\"droppedSourceOwnedSectionCandidates\":%b," +
                             "\"eventDrivenBlockUpdates\":%b,\"blockUpdateMaxDirtyPerTick\":%d," +
                             "\"legacyTextComponentCache\":%b," +
                             "\"seconds\":%.3f,\"tickSamples\":%d,\"observedTps\":%.6f," +
@@ -721,6 +746,8 @@ public final class PerformanceMetrics implements Listener {
                             "\"droppedViewerDistanceChecks\":%d," +
                             "\"droppedSpatialCandidates\":%d," +
                             "\"droppedFullScanCandidates\":%d," +
+                            "\"droppedTrackedItemsMax\":%d," +
+                            "\"droppedLabelsMax\":%d," +
                             "\"blockUpdateChecks\":%d,\"blockUpdateMs\":%.6f," +
                             "\"blockUpdateCoordinatorLanesMax\":%d," +
                             "\"blockUpdateDirtyQueueMax\":%d," +
@@ -738,7 +765,8 @@ public final class PerformanceMetrics implements Listener {
                     visibilityBucketSize, visibilityRestorePerTick,
                     droppedLabelVisibility.cullingEnabled(), droppedLabelVisibility.viewDistance(),
                     droppedLabelVisibility.rateLimitEnabled(), droppedLabelVisibility.bucketSize(),
-                    droppedLabelVisibility.restorePerTick(), eventDrivenBlockUpdates,
+                    droppedLabelVisibility.restorePerTick(), droppedSourceOwnedSectionCandidates,
+                    eventDrivenBlockUpdates,
                     blockUpdateMaxDirtyPerTick, legacyTextComponentCache,
                     seconds(), tickSamples, observedTps(), droppedTickSamples,
                     msptP50, msptP95, msptP99,
@@ -753,7 +781,7 @@ public final class PerformanceMetrics implements Listener {
                     craftEngineCullingRetainedRegistrations,
                     itemAnimationNanos / 1_000_000.0D, droppedItemNanos / 1_000_000.0D,
                     droppedViewerDistanceChecks, droppedSpatialCandidates,
-                    droppedFullScanCandidates,
+                    droppedFullScanCandidates, droppedTrackedItemsMax, droppedLabelsMax,
                     blockUpdateChecks, blockUpdateNanos / 1_000_000.0D,
                     blockUpdateCoordinatorLanesMax, blockUpdateDirtyQueueMax, blockUpdateActiveQueueMax,
                     preferenceIoOperations, preferenceIoFailures, preferenceIoQueueDepthMax,

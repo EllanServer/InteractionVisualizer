@@ -78,7 +78,7 @@ class PerformanceMetricsSlowestTickTest {
         PerformanceMetrics.Snapshot snapshot = new PerformanceMetrics.Snapshot(
                 "diagnostic", false, false, false, false, 128, 32,
                 new PerformanceMetrics.DroppedLabelVisibilityConfig(true, 64, true, 128, 32),
-                true, 64, true,
+                true, true, 64, true,
                 1_000_000_000L, 20, 0L,
                 1.0D, 2.0D, 3.0D, 4.0D, 50.25D,
                 4242, 1_783_951_200_123L, 7L, 12_345_678L,
@@ -87,7 +87,7 @@ class PerformanceMetricsSlowestTickTest {
                 0L, 0L, 0L, 0L, 0L,
                 0L, 0L, 0L, 0L, 0L, 0L,
                 0L, 0L, 0L, 0L, 0L, 0,
-                0L, 0L, 0L, 0L, 0L, 7L, 12_345_678L, 0, 0, 0,
+                0L, 0L, 0L, 0L, 0L, 2048, 2048, 7L, 12_345_678L, 0, 0, 0,
                 0L, 0L, 0, 0L, 0L, 100L, 5L, 200L);
 
         String json = snapshot.json();
@@ -99,12 +99,15 @@ class PerformanceMetricsSlowestTickTest {
         assertTrue(json.contains("\"msptMaxBlockUpdateMs\":12.345678"));
         assertTrue(json.contains("\"droppedLabelVisibilityCulling\":true"));
         assertTrue(json.contains("\"droppedLabelViewDistance\":64"));
+        assertTrue(json.contains("\"droppedSourceOwnedSectionCandidates\":true"));
         assertTrue(json.contains("\"droppedLabelVisibilityRateLimit\":true"));
         assertTrue(json.contains("\"droppedLabelVisibilityBucketSize\":128"));
         assertTrue(json.contains("\"droppedLabelVisibilityRestorePerTick\":32"));
         assertTrue(json.contains("\"viewerFullReconciles\":0"));
         assertTrue(json.contains("\"craftEngineCullingRetainedRegistrations\":0"));
         assertTrue(json.contains("\"droppedSpatialCandidates\":0"));
+        assertTrue(json.contains("\"droppedTrackedItemsMax\":2048"));
+        assertTrue(json.contains("\"droppedLabelsMax\":2048"));
         assertTrue(json.contains("\"blockUpdateDirtyQueueMax\":0"));
         assertTrue(json.contains("\"preferenceSqlStatements\":0"));
         assertTrue(json.contains("\"legacyTextCacheHits\":95"));

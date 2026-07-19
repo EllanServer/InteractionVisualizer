@@ -286,6 +286,8 @@ Entities:
         #Independent rollback switch; existing explicit false values are preserved during migration
         Enabled: true
         ViewDistance: 64
+        #Use Paper's movement-maintained entity sections instead of rebuilding a global IV candidate pass
+        SourceOwnedSectionCandidates: false
       #Smoothing for dropped-label visibility bursts
       VisibilityRateLimit:
         #Independent from Settings.Performance.VisibilityRateLimit

@@ -49,10 +49,12 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Queue;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -140,6 +142,7 @@ public class PreferenceManager implements Listener, AutoCloseable {
         preferences.clear();
         backingPlayerList.clear();
         for (EnumMap<Modules, ViewerGroup> groups : viewerGroups.values()) {
+            groups.values().forEach(ViewerGroup::clearChangeListeners);
             groups.values().forEach(ViewerGroup::clear);
         }
         for (Entry<UUID, Map<Modules, BitSet>> entry : snapshots.entrySet()) {
@@ -177,13 +180,15 @@ public class PreferenceManager implements Listener, AutoCloseable {
     /** Number of player/session/cache/I/O roots still retained after close. */
     public int retainedStateCount() {
         int groupMembers = backingPlayerList.size();
+        int groupListeners = 0;
         for (EnumMap<Modules, ViewerGroup> groups : viewerGroups.values()) {
             for (ViewerGroup group : groups.values()) {
                 groupMembers += group.size();
+                groupListeners += group.changeListenerCount();
             }
         }
         synchronized (entries) {
-            return preferences.size() + groupMembers + viewerGroups.size()
+            return preferences.size() + groupMembers + groupListeners + viewerGroups.size()
                     + entries.size() + entryIndexes.size() + registeredEntries.size()
                     + playerSessions.size() + playerIo.retainedOperationCount();
         }
@@ -628,6 +633,23 @@ public class PreferenceManager implements Listener, AutoCloseable {
         return backingPlayerList.view();
     }
 
+    /** Registers an internal wake-up callback for one cached viewer group. */
+    public Runnable addViewerGroupChangeListener(Modules module, EntryKey entry, Runnable listener) {
+        Objects.requireNonNull(module, "module");
+        Objects.requireNonNull(entry, "entry");
+        Objects.requireNonNull(listener, "listener");
+        ViewerGroup group;
+        synchronized (viewerGroups) {
+            EnumMap<Modules, ViewerGroup> groups = viewerGroups.get(entry);
+            group = groups == null ? null : groups.get(module);
+            if (group == null) {
+                return null;
+            }
+            group.addChangeListener(listener);
+        }
+        return () -> group.removeChangeListener(listener);
+    }
+
     private int entryCount() {
         synchronized (entries) {
             return entries.size();
@@ -748,6 +770,7 @@ public class PreferenceManager implements Listener, AutoCloseable {
     static final class ViewerGroup extends AbstractCollection<Player> implements ViewerMembership {
 
         private final ConcurrentHashMap<UUID, Player> players = new ConcurrentHashMap<>();
+        private final Set<Runnable> changeListeners = new CopyOnWriteArraySet<>();
         private final Collection<Player> readOnly = Collections.unmodifiableCollection(this);
         private final Collection<Player> serverView;
 
@@ -762,7 +785,11 @@ public class PreferenceManager implements Listener, AutoCloseable {
         @Override
         public boolean add(Player player) {
             Objects.requireNonNull(player, "player");
-            return players.put(player.getUniqueId(), player) != player;
+            boolean changed = players.put(player.getUniqueId(), player) != player;
+            if (changed) {
+                notifyChanged();
+            }
+            return changed;
         }
 
         @Override
@@ -770,11 +797,19 @@ public class PreferenceManager implements Listener, AutoCloseable {
             if (!(value instanceof Player player)) {
                 return false;
             }
-            return players.remove(player.getUniqueId(), player);
+            boolean changed = players.remove(player.getUniqueId(), player);
+            if (changed) {
+                notifyChanged();
+            }
+            return changed;
         }
 
         boolean remove(UUID uuid) {
-            return players.remove(uuid) != null;
+            boolean changed = players.remove(uuid) != null;
+            if (changed) {
+                notifyChanged();
+            }
+            return changed;
         }
 
         Player get(UUID uuid) {
@@ -820,7 +855,32 @@ public class PreferenceManager implements Listener, AutoCloseable {
 
         @Override
         public void clear() {
-            players.clear();
+            if (!players.isEmpty()) {
+                players.clear();
+                notifyChanged();
+            }
+        }
+
+        void addChangeListener(Runnable listener) {
+            changeListeners.add(listener);
+        }
+
+        void removeChangeListener(Runnable listener) {
+            changeListeners.remove(listener);
+        }
+
+        void clearChangeListeners() {
+            changeListeners.clear();
+        }
+
+        int changeListenerCount() {
+            return changeListeners.size();
+        }
+
+        private void notifyChanged() {
+            for (Runnable listener : changeListeners) {
+                listener.run();
+            }
         }
 
         private static final class ServerSettingView extends AbstractCollection<Player>

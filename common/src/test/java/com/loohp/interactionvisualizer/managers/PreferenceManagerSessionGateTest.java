@@ -189,6 +189,27 @@ class PreferenceManagerSessionGateTest {
     }
 
     @Test
+    void viewerGroupNotifiesOnlyRealMembershipChangesAndReleasesListeners() {
+        PreferenceManager.ViewerGroup group = new PreferenceManager.ViewerGroup();
+        UUID uuid = UUID.randomUUID();
+        Player player = player(uuid, "viewer");
+        java.util.concurrent.atomic.AtomicInteger changes = new java.util.concurrent.atomic.AtomicInteger();
+        group.addChangeListener(changes::incrementAndGet);
+
+        assertTrue(group.add(player));
+        assertFalse(group.add(player));
+        assertFalse(group.remove(player(UUID.randomUUID(), "other")));
+        assertTrue(group.remove(player));
+        assertEquals(2, changes.get());
+        assertEquals(1, group.changeListenerCount());
+
+        group.clearChangeListeners();
+        group.add(player);
+        assertEquals(2, changes.get());
+        assertEquals(0, group.changeListenerCount());
+    }
+
+    @Test
     void cachedServerViewTracksReloadedModuleSettingsWithoutRebuildingTheGroup() {
         boolean previousEnabled = InteractionVisualizer.hologramsEnabled;
         var previousDisabled = InteractionVisualizer.hologramsDisabled;

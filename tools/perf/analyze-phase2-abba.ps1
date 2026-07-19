@@ -430,8 +430,10 @@ function Convert-ManifestRows {
         $legacyTextComponentCacheEnabled = $null
         if ($hasExtendedProvenance) {
             $abFactor = (Get-CellValue -Row $row -Column $provenanceColumns["AbFactor"]).Trim().ToLowerInvariant()
-            if ($abFactor -ne "scenario-config" -and $abFactor -ne "legacy-text-component-cache") {
-                throw "Manifest row $rowNumber AbFactor must be scenario-config or legacy-text-component-cache, but was '$abFactor'."
+            if ($abFactor -ne "scenario-config" -and
+                    $abFactor -ne "legacy-text-component-cache" -and
+                    $abFactor -ne "dropped-item-section-candidates") {
+                throw "Manifest row $rowNumber has unsupported AbFactor '$abFactor'."
             }
             $configSha256 = (Get-CellValue -Row $row -Column $provenanceColumns["ConfigSha256"]).Trim().ToLowerInvariant()
             $jvmArgumentsSha256 = (Get-CellValue -Row $row -Column $provenanceColumns["JvmArgumentsSha256"]).Trim().ToLowerInvariant()
@@ -532,7 +534,8 @@ function Get-ScenarioResult {
     if ($hasExtendedProvenance) {
         foreach ($run in $Runs) {
             if ($run.AbFactor -ne "scenario-config" -and
-                    $run.AbFactor -ne "legacy-text-component-cache") {
+                    $run.AbFactor -ne "legacy-text-component-cache" -and
+                    $run.AbFactor -ne "dropped-item-section-candidates") {
                 throw "Scenario '$ScenarioName' run '$($run.RunId)' has invalid AbFactor '$($run.AbFactor)'."
             }
             foreach ($hash in @(
@@ -578,24 +581,25 @@ function Get-ScenarioResult {
                 ForEach-Object LegacyTextComponentCacheEnabled | Sort-Object -Unique)
         }
 
-        if ($abFactor -eq "scenario-config") {
+        if ($abFactor -eq "scenario-config" -or
+                $abFactor -eq "dropped-item-section-candidates") {
             $allJvmArgumentHashes = @($Runs.JvmArgumentsSha256 | Sort-Object -Unique)
             if ($allJvmArgumentHashes.Count -ne 1) {
-                throw "Scenario '$ScenarioName' scenario-config factor must keep JvmArgumentsSha256 identical across all runs."
+                throw "Scenario '$ScenarioName' config-based factor '$abFactor' must keep JvmArgumentsSha256 identical across all runs."
             }
             foreach ($variant in @("A", "B")) {
                 if ($configHashesByVariant[$variant].Count -ne 1) {
-                    throw "Scenario '$ScenarioName' scenario-config variant $variant must use exactly one ConfigSha256."
+                    throw "Scenario '$ScenarioName' config-based factor '$abFactor' variant $variant must use exactly one ConfigSha256."
                 }
                 $disableValues = $legacyTextComponentCacheTreatment.byVariant[$variant].disableProperty
                 $enabledValues = $legacyTextComponentCacheTreatment.byVariant[$variant].enabled
                 if ($disableValues.Count -ne 1 -or $enabledValues.Count -ne 1 -or
                         [bool]$disableValues[0] -ne $false -or [bool]$enabledValues[0] -ne $true) {
-                    throw "Scenario '$ScenarioName' scenario-config variant $variant must keep the legacy text cache enabled."
+                    throw "Scenario '$ScenarioName' config-based factor '$abFactor' variant $variant must keep the legacy text cache enabled."
                 }
             }
             if ($configHashesByVariant.A[0] -eq $configHashesByVariant.B[0]) {
-                throw "Scenario '$ScenarioName' scenario-config variants A and B must use different ConfigSha256 values."
+                throw "Scenario '$ScenarioName' config-based factor '$abFactor' variants A and B must use different ConfigSha256 values."
             }
         } else {
             if ($configHashes.Count -ne 1) {
@@ -805,7 +809,7 @@ function New-SelfTestPreparedRuns {
     param(
         [Parameter(Mandatory = $true)][string]$ScenarioName,
         [switch]$Extended,
-        [ValidateSet("scenario-config", "legacy-text-component-cache")]
+        [ValidateSet("scenario-config", "legacy-text-component-cache", "dropped-item-section-candidates")]
         [string]$AbFactor = "legacy-text-component-cache"
     )
 
@@ -831,7 +835,7 @@ function New-SelfTestPreparedRuns {
             if ($Extended) {
                 $run["HasExtendedProvenance"] = $true
                 $run["AbFactor"] = $AbFactor
-                $run["ConfigSha256"] = if ($AbFactor -eq "scenario-config" -and $variant -eq "B") {
+                $run["ConfigSha256"] = if ($AbFactor -ne "legacy-text-component-cache" -and $variant -eq "B") {
                     ('4' * 64)
                 } else {
                     ('3' * 64)
@@ -1000,6 +1004,18 @@ function Invoke-AnalyzerSelfTest {
         throw "Self-test failed to accept and preserve scenario-config provenance."
     }
 
+    $droppedCandidateRuns = @(New-SelfTestPreparedRuns -ScenarioName "DROPPED_CANDIDATES" `
+        -Extended -AbFactor "dropped-item-section-candidates")
+    $droppedCandidateResult = Get-ScenarioResult -Runs $droppedCandidateRuns `
+        -ScenarioName "DROPPED_CANDIDATES" -MetricPath "metric" `
+        -MetricDirection "LowerIsBetter" -PermitIncomplete $false `
+        -Iterations 1000 -RandomSeed 33 -Prepared
+    if ($droppedCandidateResult.abFactor -ne "dropped-item-section-candidates" -or
+            $droppedCandidateResult.configSha256ByVariant.A[0] -eq
+                $droppedCandidateResult.configSha256ByVariant.B[0]) {
+        throw "Self-test failed to accept dropped-item candidate-source provenance."
+    }
+
     $badScenarioConfigDrift = @(New-SelfTestPreparedRuns -ScenarioName "BAD_SCENARIO_DRIFT" `
         -Extended -AbFactor "scenario-config")
     $badScenarioConfigDrift[0].ConfigSha256 = ('8' * 64)
@@ -1067,6 +1083,7 @@ function Invoke-AnalyzerSelfTest {
         acceptsLegacyNineColumnManifest = $true
         acceptsCacheFactorProvenance = $true
         acceptsScenarioConfigProvenance = $true
+        acceptsDroppedCandidateProvenance = $true
         rejectsPartialProvenanceColumns = $true
         enforcesConfigAndJvmProvenance = $true
         enforcesNormalizedJvmArguments = $true
