@@ -26,6 +26,8 @@ done
 plugin_jar="$(realpath "$PHASE2_PLUGIN_JAR")"
 paper_jar="$(realpath "$PHASE2_PAPER_JAR")"
 paper_version="${PHASE2_PAPER_VERSION:-26.1.2}"
+paper_channel="${PHASE2_PAPER_CHANNEL:-UNKNOWN}"
+paper_build_id="${PHASE2_PAPER_BUILD_ID:-0}"
 client_root="$(realpath "$PHASE2_CLIENT_ROOT")"
 output_root="$(realpath -m "$PHASE2_OUTPUT_ROOT")"
 run_id="$PHASE2_RUN_ID"
@@ -56,6 +58,12 @@ case "$paper_version" in
   26.1.2|26.2) ;;
   *) echo "PHASE2_PAPER_VERSION must be 26.1.2 or 26.2" >&2; exit 64 ;;
 esac
+case "$paper_channel" in
+  STABLE|BETA|UNKNOWN) ;;
+  *) echo "PHASE2_PAPER_CHANNEL must be STABLE, BETA, or UNKNOWN" >&2; exit 64 ;;
+esac
+[[ "$paper_build_id" =~ ^[0-9]+$ ]] \
+  || { echo "PHASE2_PAPER_BUILD_ID must be numeric" >&2; exit 64; }
 case "$scenario" in
   static-steady|static-spawn|visibility-return|visibility-itemdisplay-return|visibility-textdisplay-return|dropped-items|block-idle|block-active|block-direct-write) ;;
   *) echo "Unsupported PHASE2_SCENARIO: $scenario" >&2; exit 64 ;;
@@ -1721,6 +1729,8 @@ cat > "$run_directory/run-manifest.json" <<EOF
   "runId": "$run_id",
   "scenario": "$scenario",
   "paperVersion": "$paper_version",
+  "paperChannel": "$paper_channel",
+  "paperBuildId": $paper_build_id,
   "variant": "$variant",
   "abFactor": "$ab_factor",
   "droppedSourceOwnedSectionCandidates": $dropped_source_owned_candidates,

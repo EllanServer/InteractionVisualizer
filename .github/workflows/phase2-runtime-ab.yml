@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       paper_version:
-        description: "Stable Paper runtime under test"
+        description: "Paper runtime under test (26.2 currently uses the BETA channel)"
         required: true
         default: "26.1.2"
         type: choice
@@ -111,20 +111,32 @@ jobs:
       - name: Build and test the production plugin
         run: ./gradlew clean check shadowJar --no-daemon --no-build-cache --rerun-tasks
 
-      - name: Download selected stable Paper runtime
+      - name: Download selected Paper runtime
         env:
           PAPER_USER_AGENT: InteractionVisualizer-Phase2/1.0 (https://github.com/EllanServer/InteractionVisualizer)
           PAPER_VERSION: ${{ env.CAMPAIGN_PAPER_VERSION }}
         run: |
           mkdir -p phase2-dependencies
+          case "$PAPER_VERSION" in
+            26.1.2) PAPER_CHANNEL=STABLE ;;
+            26.2) PAPER_CHANNEL=BETA ;;
+            *) echo "Unsupported Paper version: $PAPER_VERSION" >&2; exit 64 ;;
+          esac
           BUILDS=$(curl --fail --silent --show-error \
             -H "User-Agent: $PAPER_USER_AGENT" \
             "https://fill.papermc.io/v3/projects/paper/versions/$PAPER_VERSION/builds")
-          PAPER_URL=$(echo "$BUILDS" | jq -r 'first(.[] | select(.channel == "STABLE") | .downloads."server:default".url) // empty')
-          test -n "$PAPER_URL"
+          PAPER_RECORD=$(echo "$BUILDS" | jq -c --arg channel "$PAPER_CHANNEL" \
+            'first(.[] | select(.channel == $channel)) // empty')
+          test -n "$PAPER_RECORD"
+          PAPER_URL=$(echo "$PAPER_RECORD" | jq -r '.downloads."server:default".url')
+          PAPER_SHA256=$(echo "$PAPER_RECORD" | jq -r '.downloads."server:default".checksums.sha256')
+          PAPER_BUILD_ID=$(echo "$PAPER_RECORD" | jq -r '.id')
           curl --fail --location --show-error \
             -H "User-Agent: $PAPER_USER_AGENT" \
             --output phase2-dependencies/paper.jar "$PAPER_URL"
+          echo "$PAPER_SHA256  phase2-dependencies/paper.jar" | sha256sum --check
+          echo "SELECTED_PAPER_CHANNEL=$PAPER_CHANNEL" >> "$GITHUB_ENV"
+          echo "SELECTED_PAPER_BUILD_ID=$PAPER_BUILD_ID" >> "$GITHUB_ENV"
 
       - name: Prepare immutable protocol client artifact
         run: bash tools/perf/prepare-phase2-protocol-client.sh phase2-dependencies/protocol-client
@@ -133,6 +145,8 @@ jobs:
         env:
           AB_FACTOR: ${{ env.CAMPAIGN_AB_FACTOR }}
           PAPER_VERSION: ${{ env.CAMPAIGN_PAPER_VERSION }}
+          PAPER_CHANNEL: ${{ env.SELECTED_PAPER_CHANNEL }}
+          PAPER_BUILD_ID: ${{ env.SELECTED_PAPER_BUILD_ID }}
           SCENARIO: ${{ env.CAMPAIGN_SCENARIO }}
           RUNS: ${{ env.CAMPAIGN_RUNS }}
           ITEMS: ${{ env.CAMPAIGN_ITEMS }}
@@ -269,6 +283,8 @@ jobs:
             PHASE2_PLUGIN_JAR="$PLUGIN_JAR" \
             PHASE2_PAPER_JAR=phase2-dependencies/paper.jar \
             PHASE2_PAPER_VERSION="$PAPER_VERSION" \
+            PHASE2_PAPER_CHANNEL="$PAPER_CHANNEL" \
+            PHASE2_PAPER_BUILD_ID="$PAPER_BUILD_ID" \
             PHASE2_CLIENT_ROOT=phase2-dependencies/protocol-client \
             PHASE2_OUTPUT_ROOT="$EVIDENCE_ROOT" \
             PHASE2_RUN_ID="$run_id" \
