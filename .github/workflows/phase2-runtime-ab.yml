@@ -68,6 +68,7 @@ jobs:
       CAMPAIGN_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario || 'static-steady' }}
       CAMPAIGN_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || github.event.action == 'labeled' && '12' || '4' }}
       CAMPAIGN_ITEMS: ${{ github.event_name == 'workflow_dispatch' && inputs.items || github.event.action == 'labeled' && '4096' || '1024' }}
+      CAMPAIGN_DROPPED_NEARBY_ITEMS: "128"
       CAMPAIGN_WARMUP_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.warmup_seconds || github.event.action == 'labeled' && '120' || '10' }}
       CAMPAIGN_SETTLE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.settle_seconds || github.event.action == 'labeled' && '20' || '5' }}
       CAMPAIGN_MEASURE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_seconds || github.event.action == 'labeled' && '180' || '10' }}
@@ -99,6 +100,7 @@ jobs:
           bash -n tools/perf/prepare-phase2-protocol-client.sh
           bash -n tools/perf/run-phase2-runtime-once.sh
           bash tools/perf/run-phase2-runtime-once.sh --self-test
+          python3 tools/perf/evaluate-dropped-item-gate.py --self-test
           node --check tools/perf/phase2-protocol-client.js
           pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 -SelfTest
           pwsh -NoProfile -File tools/perf/analyze-phase2-pcap.ps1 -SelfTest
@@ -145,6 +147,7 @@ jobs:
           SCENARIO: ${{ env.CAMPAIGN_SCENARIO }}
           RUNS: ${{ env.CAMPAIGN_RUNS }}
           ITEMS: ${{ env.CAMPAIGN_ITEMS }}
+          DROPPED_NEARBY_ITEMS: ${{ env.CAMPAIGN_DROPPED_NEARBY_ITEMS }}
           WARMUP_SECONDS: ${{ env.CAMPAIGN_WARMUP_SECONDS }}
           SETTLE_SECONDS: ${{ env.CAMPAIGN_SETTLE_SECONDS }}
           MEASURE_SECONDS: ${{ env.CAMPAIGN_MEASURE_SECONDS }}
@@ -160,6 +163,7 @@ jobs:
              "$SCENARIO" == dropped-items ]]
           [[ "$RUNS" =~ ^(4|8|12)$ ]]
           [[ "$ITEMS" =~ ^[0-9]+$ ]]
+          [[ "$DROPPED_NEARBY_ITEMS" =~ ^[0-9]+$ ]]
           if [[ "$SCENARIO" == block-* ]]; then
             # TileEntityUpdate.CheckingRange=1 covers the centered 32x32
             # block footprint completely; larger command scenes are valid but
@@ -207,6 +211,10 @@ jobs:
               echo "dropped-item-section-candidates A/B requires exactly 2048 dropped items" >&2
               exit 64
             fi
+            if (( DROPPED_NEARBY_ITEMS != 128 )); then
+              echo "dropped-item-section-candidates A/B requires exactly 128 nearby labels" >&2
+              exit 64
+            fi
           elif [[ "$SCENARIO" == dropped-items ]]; then
             echo "dropped-items is reserved for dropped-item-section-candidates A/B" >&2
             exit 64
@@ -252,9 +260,11 @@ jobs:
               sha256sum phase2-dependencies/paper.jar
               sha256sum phase2-dependencies/protocol-client/client-build-manifest.json
               sha256sum tools/perf/run-phase2-runtime-once.sh
+              sha256sum tools/perf/evaluate-dropped-item-gate.py
               java -version 2>&1
               printf '%s\n' \
-                "abFactor=$AB_FACTOR" "scenario=$SCENARIO" "sparkProfile=$SPARK_PROFILE_MODE"
+                "abFactor=$AB_FACTOR" "scenario=$SCENARIO" \
+                "droppedNearbyItems=$DROPPED_NEARBY_ITEMS" "sparkProfile=$SPARK_PROFILE_MODE"
             } | sha256sum | awk '{print $1}'
           )
 
@@ -287,6 +297,7 @@ jobs:
             PHASE2_VARIANT="$variant" \
             PHASE2_AB_FACTOR="$AB_FACTOR" \
             PHASE2_ITEM_COUNT="$ITEMS" \
+            PHASE2_DROPPED_NEARBY_ITEM_COUNT="$DROPPED_NEARBY_ITEMS" \
             PHASE2_WARMUP_SECONDS="$WARMUP_SECONDS" \
             PHASE2_SETTLE_SECONDS="$SETTLE_SECONDS" \
             PHASE2_MEASURE_SECONDS="$MEASURE_SECONDS" \
@@ -413,107 +424,9 @@ jobs:
               -MinimumSeconds "$minimum_seconds" "${incomplete[@]}" \
               -OutputJson "$EVIDENCE_ROOT/droppedItemMs.analysis.json" -Overwrite
 
-            python3 - "$MANIFEST" "$EVIDENCE_ROOT" <<'PY'
-          import csv
-          import json
-          import os
-          from pathlib import Path
-          import sys
-
-          manifest_path = Path(sys.argv[1])
-          evidence_root = Path(sys.argv[2])
-
-          def load_analysis(name):
-              return json.loads((evidence_root / f"{name}.analysis.json").read_text(encoding="utf-8"))
-
-          dropped = load_analysis("droppedItemMs")
-          p95 = load_analysis("msptP95")
-          p99 = load_analysis("msptP99")
-          checks = {
-              "droppedItemMedianRatioAtMost0_50": dropped["medianBRatioToA"] <= 0.50,
-              "droppedItemCiExcludesRegression": dropped["ratioBootstrap95Ci"][1] < 1.0,
-              "msptP95CiUpperAtMost1_02": p95["ratioBootstrap95Ci"][1] <= 1.02,
-              "msptP99CiUpperAtMost1_05": p99["ratioBootstrap95Ci"][1] <= 1.05,
-          }
-
-          candidate_runs = []
-          with manifest_path.open(encoding="utf-8", newline="") as stream:
-              for row in csv.DictReader(stream):
-                  metrics_path = manifest_path.parent / row["SourcePath"]
-                  metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-                  candidate_runs.append({
-                      "runId": row["RunId"],
-                      "variant": row["Variant"],
-                      "sourceOwned": metrics["droppedSourceOwnedSectionCandidates"],
-                      "trackedItemsMax": metrics["droppedTrackedItemsMax"],
-                      "labelsMax": metrics["droppedLabelsMax"],
-                      "fullScanCandidates": metrics["droppedFullScanCandidates"],
-                      "spatialCandidates": metrics["droppedSpatialCandidates"],
-                      "viewerDistanceChecks": metrics["droppedViewerDistanceChecks"],
-                  })
-          checks["allRunsTracked2048Labels"] = all(
-              run["trackedItemsMax"] == 2048 and run["labelsMax"] == 2048
-              for run in candidate_runs
-          )
-          checks["candidateHasZeroFullScans"] = all(
-              run["fullScanCandidates"] == 0
-              for run in candidate_runs if run["variant"] == "B"
-          )
-          checks["baselineExercisedFullScans"] = all(
-              run["fullScanCandidates"] > 0
-              for run in candidate_runs if run["variant"] == "A"
-          )
-          checks["candidateTreatmentIsolated"] = all(
-              run["sourceOwned"] is (run["variant"] == "B")
-              for run in candidate_runs
-          )
-          passed = all(checks.values())
-          gate = {
-              "schemaVersion": 1,
-              "scenario": "dropped-items",
-              "abFactor": "dropped-item-section-candidates",
-              "formalComplete": dropped.get("formalComplete") is True,
-              "serverRuntimeGatePassed": passed,
-              "checks": checks,
-              "ratios": {
-                  "droppedItemMs": {
-                      "medianBRatioToA": dropped["medianBRatioToA"],
-                      "ratioBootstrap95Ci": dropped["ratioBootstrap95Ci"],
-                  },
-                  "msptP95": {
-                      "medianBRatioToA": p95["medianBRatioToA"],
-                      "ratioBootstrap95Ci": p95["ratioBootstrap95Ci"],
-                  },
-                  "msptP99": {
-                      "medianBRatioToA": p99["medianBRatioToA"],
-                      "ratioBootstrap95Ci": p99["ratioBootstrap95Ci"],
-                  },
-              },
-              "runs": candidate_runs,
-              "scope": "Server runtime gate only; allocation and native-client frame gates remain separate.",
-          }
-          (evidence_root / "dropped-item-section-candidates.gate.json").write_text(
-              json.dumps(gate, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-          )
-          summary = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary:
-              with open(summary, "a", encoding="utf-8", newline="\n") as stream:
-                  stream.write("### Dropped-item section-candidate server gate\n\n")
-                  stream.write(f"Result: `{'pass' if passed else 'fail'}`.\n\n")
-                  stream.write(
-                      f"droppedItemMs B/A: `{dropped['medianBRatioToA']}` "
-                      f"(95% CI `{dropped['ratioBootstrap95Ci']}`).\n\n"
-                  )
-                  stream.write(
-                      f"MSPT p95 CI upper: `{p95['ratioBootstrap95Ci'][1]}`; "
-                      f"p99 CI upper: `{p99['ratioBootstrap95Ci'][1]}`.\n"
-                  )
-          if not gate["formalComplete"]:
-              raise SystemExit("dropped-item gate is not a complete 12-run campaign")
-          if not passed:
-              failed = ", ".join(name for name, value in checks.items() if not value)
-              raise SystemExit(f"dropped-item server gate failed: {failed}")
-          PY
+            python3 tools/perf/evaluate-dropped-item-gate.py \
+              "$MANIFEST" "$EVIDENCE_ROOT" "$ITEMS" "$DROPPED_NEARBY_ITEMS" \
+              "$EVIDENCE_ROOT/dropped-item-section-candidates.gate.json"
           fi
 
           if [[ "$SCENARIO" == block-* ]]; then

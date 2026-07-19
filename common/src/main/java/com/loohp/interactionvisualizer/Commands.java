@@ -308,7 +308,7 @@ public class Commands implements CommandExecutor, TabCompleter {
                 if (args.length < 4) {
                     sender.sendMessage(Component.text(
                             "Usage: /iv perf scene <static|motion|itemdisplay|textdisplay|dropped> " +
-                                    "<count> [lifetimeTicks] [player]"));
+                                    "<count> [lifetimeTicks] [player] [nearbyCount]"));
                     return true;
                 }
                 boolean moving = args[2].equalsIgnoreCase("motion");
@@ -319,6 +319,11 @@ public class Commands implements CommandExecutor, TabCompleter {
                 if (!moving && !staticItem && !itemDisplay && !textDisplay && !dropped) {
                     sender.sendMessage(Component.text(
                             "[InteractionVisualizer] Scene type must be static, motion, itemdisplay, textdisplay, or dropped."));
+                    return true;
+                }
+                if (args.length > 7 || args.length == 7 && !dropped) {
+                    sender.sendMessage(Component.text(
+                            "[InteractionVisualizer] nearbyCount is only valid for dropped scenes."));
                     return true;
                 }
                 long defaultLifetime = moving ? 80L : 200L;
@@ -344,8 +349,23 @@ public class Commands implements CommandExecutor, TabCompleter {
                     return true;
                 }
                 int count = parseInteger(args[3], 1);
+                int requestedNearbyCount = count;
+                if (args.length == 7) {
+                    try {
+                        requestedNearbyCount = Integer.parseInt(args[6]);
+                    } catch (NumberFormatException ignored) {
+                        sender.sendMessage(Component.text(
+                                "[InteractionVisualizer] nearbyCount must be an integer."));
+                        return true;
+                    }
+                    if (requestedNearbyCount < 1) {
+                        sender.sendMessage(Component.text(
+                                "[InteractionVisualizer] nearbyCount must be positive."));
+                        return true;
+                    }
+                }
                 int spawned = dropped
-                        ? PerformanceScene.spawnDroppedItems(player, count, lifetime)
+                        ? PerformanceScene.spawnDroppedItems(player, count, requestedNearbyCount, lifetime)
                         : itemDisplay || textDisplay
                         ? PerformanceScene.spawnDisplay(player, textDisplay, count, lifetime)
                         : PerformanceScene.spawn(player, moving, count, lifetime);
@@ -353,8 +373,10 @@ public class Commands implements CommandExecutor, TabCompleter {
                         : itemDisplay ? "itemdisplay" : textDisplay ? "textdisplay" : "dropped";
                 String entityLabel = staticItem || moving || dropped
                         ? " benchmark items" : " benchmark entities";
+                String nearbyLabel = dropped && requestedNearbyCount != spawned
+                        ? " (" + Math.min(spawned, requestedNearbyCount) + " nearby)" : "";
                 sender.sendMessage(Component.text("[InteractionVisualizer] Spawned " + spawned + " "
-                        + sceneName + entityLabel + " for " + lifetime + " ticks."));
+                        + sceneName + entityLabel + nearbyLabel + " for " + lifetime + " ticks."));
             }
             case "clear" -> {
                 String requestedOwner = args.length >= 3 ? args[2] : null;

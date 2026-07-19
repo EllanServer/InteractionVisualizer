@@ -57,6 +57,7 @@ scenario="$PHASE2_SCENARIO"
 variant="$PHASE2_VARIANT"
 server_port="${PHASE2_SERVER_PORT:-25566}"
 item_count="${PHASE2_ITEM_COUNT:-4096}"
+dropped_nearby_item_count="${PHASE2_DROPPED_NEARBY_ITEM_COUNT:-128}"
 warmup_seconds="${PHASE2_WARMUP_SECONDS:-120}"
 settle_seconds="${PHASE2_SETTLE_SECONDS:-20}"
 measure_seconds="${PHASE2_MEASURE_SECONDS:-180}"
@@ -98,7 +99,8 @@ if [[ "$ab_factor" == legacy-text-component-cache && "$scenario" != block-active
   echo "legacy-text-component-cache A/B is isolated to block-active" >&2
   exit 64
 fi
-for value in "$server_port" "$item_count" "$warmup_seconds" "$settle_seconds" \
+for value in "$server_port" "$item_count" "$dropped_nearby_item_count" \
+  "$warmup_seconds" "$settle_seconds" \
   "$measure_seconds" "$capture_snaplen" "$protocol_trace_max_events"; do
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "Numeric input is invalid: $value" >&2; exit 64; }
 done
@@ -110,6 +112,11 @@ if [[ "$scenario" == block-* ]]; then
 fi
 (( item_count >= 1 && item_count <= maximum_item_count )) \
   || { echo "PHASE2_ITEM_COUNT is outside 1..$maximum_item_count for $scenario" >&2; exit 64; }
+if [[ "$scenario" == dropped-items ]] && \
+    (( dropped_nearby_item_count < 1 || dropped_nearby_item_count > item_count )); then
+  echo "PHASE2_DROPPED_NEARBY_ITEM_COUNT is outside 1..$item_count" >&2
+  exit 64
+fi
 if [[ "$ab_factor" == legacy-text-component-cache ]] && (( item_count < 100 )); then
   echo "legacy-text-component-cache A/B requires at least 100 workload blocks" >&2
   exit 64
@@ -788,7 +795,11 @@ else
   esac
   scene_spawn_log="Spawned $item_count $scene_type benchmark $scene_entity_label"
 
-  send_console "iv perf scene $scene_type $item_count $lifetime_ticks IVBench"
+  if [[ "$scenario" == dropped-items ]]; then
+    send_console "iv perf scene $scene_type $item_count $lifetime_ticks IVBench $dropped_nearby_item_count"
+  else
+    send_console "iv perf scene $scene_type $item_count $lifetime_ticks IVBench"
+  fi
   wait_for_log "$scene_spawn_log" 60
 fi
 sleep "$warmup_seconds"
@@ -990,7 +1001,7 @@ PY
 fi
 
 python3 - "$server_log" "$run_id" "$run_directory/iv-perf.json" "$scenario" "$variant" \
-  "$item_count" "$ab_factor" "$legacy_text_cache_disable_property" \
+  "$item_count" "$dropped_nearby_item_count" "$ab_factor" "$legacy_text_cache_disable_property" \
   "$legacy_text_cache_enabled" "$jvm_arguments_sha256" \
   "$jvm_arguments_normalized_sha256" <<'PY'
 import json
@@ -1003,6 +1014,7 @@ import sys
     scenario,
     variant,
     item_count_text,
+    dropped_nearby_item_count_text,
     ab_factor,
     disable_property_text,
     expected_cache_enabled_text,
@@ -1010,6 +1022,7 @@ import sys
     jvm_arguments_normalized_sha256,
 ) = sys.argv[1:]
 item_count = int(item_count_text)
+dropped_nearby_item_count = int(dropped_nearby_item_count_text)
 disable_property = disable_property_text == "true"
 expected_cache_enabled = expected_cache_enabled_text == "true"
 matches = []
@@ -1160,10 +1173,11 @@ if scenario == "dropped-items":
             raise SystemExit(f"invalid {field}={value!r}")
     if distance_checks <= 0 or spatial_candidates <= 0:
         raise SystemExit("dropped-item workload performed no candidate checks")
-    if tracked_max != item_count or labels_max != item_count:
+    if tracked_max != item_count or labels_max != dropped_nearby_item_count:
         raise SystemExit(
-            "dropped-item workload did not retain every requested label: "
-            f"tracked={tracked_max} labels={labels_max} expected={item_count}"
+            "dropped-item workload did not retain its global/local split: "
+            f"tracked={tracked_max}/{item_count} "
+            f"labels={labels_max}/{dropped_nearby_item_count}"
         )
     if variant == "A" and full_scan_candidates <= 0:
         raise SystemExit("legacy dropped-item path performed no full candidate scans")
@@ -1745,9 +1759,14 @@ print(json.dumps({
 PY
 )"
 
+dropped_nearby_manifest=null
+if [[ "$scenario" == dropped-items ]]; then
+  dropped_nearby_manifest="$dropped_nearby_item_count"
+fi
+
 cat > "$run_directory/run-manifest.json" <<EOF
 {
-  "schemaVersion": 6,
+  "schemaVersion": 7,
   "runId": "$run_id",
   "scenario": "$scenario",
   "paperVersion": "$paper_version",
@@ -1761,6 +1780,7 @@ cat > "$run_directory/run-manifest.json" <<EOF
   "captureSnaplen": $capture_snaplen,
   "serverPort": $server_port,
   "itemCount": $item_count,
+  "droppedNearbyItemCount": $dropped_nearby_manifest,
   "workloadCount": $item_count,
   "warmupSeconds": $warmup_seconds,
   "settleSeconds": $settle_seconds,
