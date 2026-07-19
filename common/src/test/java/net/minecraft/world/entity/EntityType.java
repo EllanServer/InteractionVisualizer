@@ -12,6 +12,4 @@
 package net.minecraft.world.entity;
 
 public record EntityType<T>(String key) {
-
-    public static final EntityType<Object> TEXT_DISPLAY = new EntityType<>("text_display");
 }

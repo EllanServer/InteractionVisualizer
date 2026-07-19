@@ -20,7 +20,6 @@ import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
-import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.phys.Vec3;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -94,7 +93,7 @@ class ClientTextDisplayBridgeTest {
         assertEquals(12.0F, add.xRot());
         assertEquals(90.0F, add.yRot());
         assertEquals(90.0, add.yHeadRot());
-        assertSame(EntityType.TEXT_DISPLAY, add.type());
+        assertEquals("text_display", add.type().key());
         assertSame(Vec3.ZERO, add.movement());
 
         ClientboundSetEntityDataPacket metadata = assertInstanceOf(

@@ -16,6 +16,7 @@ import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import net.momirealms.sparrow.heart.util.SelfIncreaseEntityID;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
 
 import java.lang.reflect.Constructor;
@@ -241,7 +242,14 @@ public final class ClientTextDisplayBridge {
 
             Class<?> entityTypeClass = Class.forName(
                     "net.minecraft.world.entity.EntityType", false, serverLoader);
-            Object textDisplayEntityType = entityTypeClass.getField("TEXT_DISPLAY").get(null);
+            Class<?> craftEntityTypeClass = Class.forName(
+                    "org.bukkit.craftbukkit.entity.CraftEntityType", false, serverLoader);
+            Method bukkitToMinecraft = craftEntityTypeClass.getMethod(
+                    "bukkitToMinecraft", EntityType.class);
+            Object textDisplayEntityType = bukkitToMinecraft.invoke(null, EntityType.TEXT_DISPLAY);
+            if (!entityTypeClass.isInstance(textDisplayEntityType)) {
+                throw new IllegalStateException("CraftEntityType returned an invalid text-display entity type");
+            }
             Class<?> vec3Class = Class.forName(
                     "net.minecraft.world.phys.Vec3", false, serverLoader);
             Constructor<?> vec3Constructor = vec3Class.getConstructor(
