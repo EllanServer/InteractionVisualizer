@@ -63,7 +63,8 @@ public final class CraftEngineLightManager implements ILightManager, Listener {
     private final Map<LightKey, RequestedLightLevels> desired = new HashMap<>();
     private final Map<LightKey, Integer> applied = new HashMap<>();
     private final Map<LightKey, Integer> externalBaseline = new HashMap<>();
-    private final Set<LightKey> dirty = new HashSet<>();
+    private Set<LightKey> dirty = new HashSet<>();
+    private Set<LightKey> flushBatch = new HashSet<>();
     private final Set<LightKey> waitingForChunk = new HashSet<>();
     private final Set<LightKey> restoreOnLoad = new HashSet<>();
     private final Map<ChunkKey, Set<LightKey>> trackedByChunk = new HashMap<>();
@@ -158,25 +159,30 @@ public final class CraftEngineLightManager implements ILightManager, Listener {
             if (closed) {
                 return;
             }
-            batch = Set.copyOf(dirty);
-            dirty.clear();
+            Set<LightKey> spare = flushBatch;
+            flushBatch = dirty;
+            dirty = spare;
+            batch = flushBatch;
         }
 
-        for (LightKey key : batch) {
-            try {
-                apply(key);
-            } catch (LinkageError error) {
-                disableAfterLinkageFailure(error);
-                return;
-            } catch (RuntimeException exception) {
-                plugin.getLogger().log(Level.WARNING,
-                        "Could not update a CraftEngine light at " + key, exception);
+        try {
+            for (LightKey key : batch) {
+                try {
+                    apply(key);
+                } catch (LinkageError error) {
+                    disableAfterLinkageFailure(error);
+                    return;
+                } catch (RuntimeException exception) {
+                    plugin.getLogger().log(Level.WARNING,
+                            "Could not update a CraftEngine light at " + key, exception);
+                }
             }
-        }
-
-        synchronized (lock) {
-            if (!dirty.isEmpty()) {
-                scheduleLocked();
+        } finally {
+            synchronized (lock) {
+                flushBatch.clear();
+                if (!closed && !dirty.isEmpty()) {
+                    scheduleLocked();
+                }
             }
         }
     }
@@ -427,6 +433,7 @@ public final class CraftEngineLightManager implements ILightManager, Listener {
             applied.clear();
             externalBaseline.clear();
             dirty.clear();
+            flushBatch.clear();
             waitingForChunk.clear();
             restoreOnLoad.clear();
             trackedByChunk.clear();
@@ -437,7 +444,7 @@ public final class CraftEngineLightManager implements ILightManager, Listener {
     public int retainedStateCount() {
         synchronized (lock) {
             return desired.size() + applied.size() + externalBaseline.size()
-                    + dirty.size() + waitingForChunk.size() + restoreOnLoad.size()
+                    + dirty.size() + flushBatch.size() + waitingForChunk.size() + restoreOnLoad.size()
                     + trackedByChunk.size() + (flushTask == null ? 0 : 1);
         }
     }
@@ -449,6 +456,7 @@ public final class CraftEngineLightManager implements ILightManager, Listener {
             applied.clear();
             externalBaseline.clear();
             dirty.clear();
+            flushBatch.clear();
             waitingForChunk.clear();
             restoreOnLoad.clear();
             trackedByChunk.clear();

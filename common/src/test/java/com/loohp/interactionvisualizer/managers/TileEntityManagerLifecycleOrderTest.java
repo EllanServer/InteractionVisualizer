@@ -11,9 +11,12 @@
 
 package com.loohp.interactionvisualizer.managers;
 
+import com.loohp.interactionvisualizer.objectholders.ChunkPosition;
 import com.loohp.interactionvisualizer.objectholders.TileEntity.TileEntityType;
+import org.bukkit.World;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
@@ -22,6 +25,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -284,6 +288,33 @@ class TileEntityManagerLifecycleOrderTest {
     }
 
     @Test
+    void adjacentWatcherShiftMatchesAFullWindowReplacement() {
+        World world = world(UUID.randomUUID());
+        Set<ChunkPosition> previous = chunkWindow(world, 10, -4, 1);
+        Map<String, Set<ChunkPosition>> watched = new HashMap<>();
+        watched.put("player", new LinkedHashSet<>(previous));
+        Map<ChunkPosition, Integer> counts = new HashMap<>();
+        previous.forEach(chunk -> counts.put(chunk, 1));
+        Set<ChunkPosition> dirty = new LinkedHashSet<>();
+
+        int candidates = TileEntityManager.shiftWatchedWindow(
+                watched, counts, dirty, "player", world,
+                10, -4, 11, -3, 1);
+
+        Set<ChunkPosition> expected = chunkWindow(world, 11, -3, 1);
+        Set<ChunkPosition> changed = new HashSet<>(previous);
+        changed.removeAll(expected);
+        Set<ChunkPosition> entered = new HashSet<>(expected);
+        entered.removeAll(previous);
+        changed.addAll(entered);
+        assertEquals(expected, watched.get("player"));
+        assertEquals(expected, counts.keySet());
+        assertTrue(counts.values().stream().allMatch(count -> count == 1));
+        assertEquals(changed, dirty);
+        assertEquals(5, candidates);
+    }
+
+    @Test
     void nestedSameChunkScanCannotBeOverwrittenByOuterStaleType() {
         Map<String, Set<String>> index = new HashMap<>();
         Set<String> initial = new LinkedHashSet<>(Set.of("block"));
@@ -370,5 +401,29 @@ class TileEntityManagerLifecycleOrderTest {
             active.put(type, new HashSet<>());
         }
         return active;
+    }
+
+    private static Set<ChunkPosition> chunkWindow(World world, int centerX, int centerZ, int range) {
+        Set<ChunkPosition> chunks = new LinkedHashSet<>();
+        for (int z = centerZ - range; z <= centerZ + range; z++) {
+            for (int x = centerX - range; x <= centerX + range; x++) {
+                chunks.add(new ChunkPosition(world, x, z));
+            }
+        }
+        return chunks;
+    }
+
+    private static World world(UUID id) {
+        return (World) Proxy.newProxyInstance(
+                World.class.getClassLoader(), new Class<?>[]{World.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("getUID")) {
+                        return id;
+                    }
+                    if (method.getName().equals("toString")) {
+                        return "World[" + id + "]";
+                    }
+                    throw new UnsupportedOperationException(method.toString());
+                });
     }
 }

@@ -89,6 +89,7 @@ public class TileEntityManager implements Listener {
     private static final Map<ChunkPosition, Set<Block>> byChunk = new HashMap<>();
     private static final Map<Block, TileEntityType> lastActiveTypes = new HashMap<>();
     private static final Map<UUID, Set<ChunkPosition>> watchedChunksByPlayer = new HashMap<>();
+    private static final Map<UUID, WatchedChunkCenter> watchedChunkCentersByPlayer = new HashMap<>();
     private static final Map<ChunkPosition, Integer> watcherCounts = new HashMap<>();
     private static final Set<ChunkPosition> dirtyWatcherChunks = new LinkedHashSet<>();
     private static final Set<ChunkPosition> unloadingChunks = new LinkedHashSet<>();
@@ -106,16 +107,20 @@ public class TileEntityManager implements Listener {
         }
         Scheduler.runTaskTimer(plugin, () -> {
             if (InteractionVisualizer.eventDrivenBlockUpdates) {
-                Set<UUID> online = new LinkedHashSet<>();
                 for (Player player : Bukkit.getOnlinePlayers()) {
-                    online.add(player.getUniqueId());
-                    updateWatchedChunks(player.getUniqueId(), getAllChunks(player.getLocation()));
+                    updateWatchedChunks(player.getUniqueId(), player.getLocation());
                 }
-                for (UUID playerId : new LinkedHashSet<>(watchedChunksByPlayer.keySet())) {
-                    if (!online.contains(playerId)) {
-                        clearWatchedChunks(playerId);
+                Iterator<Map.Entry<UUID, Set<ChunkPosition>>> iterator = watchedChunksByPlayer.entrySet().iterator();
+                while (iterator.hasNext()) {
+                    Map.Entry<UUID, Set<ChunkPosition>> entry = iterator.next();
+                    Player player = Bukkit.getPlayer(entry.getKey());
+                    if (player == null || !player.isOnline()) {
+                        iterator.remove();
+                        watchedChunkCentersByPlayer.remove(entry.getKey());
+                        removeWatcherCounts(entry.getValue());
                     }
                 }
+                drainWatcherChanges();
                 return;
             }
             for (TileEntityType type : tileEntityTypes) {
@@ -125,7 +130,7 @@ public class TileEntityManager implements Listener {
         }, 0, InteractionVisualizerAPI.getGCPeriod());
         for (Player player : Bukkit.getOnlinePlayers()) {
             if (InteractionVisualizer.eventDrivenBlockUpdates) {
-                updateWatchedChunks(player.getUniqueId(), getAllChunks(player.getLocation()));
+                updateWatchedChunks(player.getUniqueId(), player.getLocation());
             } else {
                 addTileEntities(getAllChunks(player.getLocation()));
             }
@@ -274,6 +279,7 @@ public class TileEntityManager implements Listener {
         byChunk.clear();
         lastActiveTypes.clear();
         watchedChunksByPlayer.clear();
+        watchedChunkCentersByPlayer.clear();
         watcherCounts.clear();
         dirtyWatcherChunks.clear();
         unloadingChunks.clear();
@@ -283,7 +289,7 @@ public class TileEntityManager implements Listener {
     /** Number of block, chunk or viewer-index roots retained by this lifecycle. */
     public synchronized static int retainedStateCount() {
         return active.size() + byChunk.size() + lastActiveTypes.size()
-                + watchedChunksByPlayer.size() + watcherCounts.size()
+                + watchedChunksByPlayer.size() + watchedChunkCentersByPlayer.size() + watcherCounts.size()
                 + dirtyWatcherChunks.size() + unloadingChunks.size();
     }
 
@@ -430,18 +436,162 @@ public class TileEntityManager implements Listener {
         }
     }
 
-    private synchronized static void updateWatchedChunks(UUID playerId, Set<ChunkPosition> nextChunks) {
+    private synchronized static void updateWatchedChunks(UUID playerId, Location location) {
+        World world = location.getWorld();
+        if (world == null) {
+            clearWatchedChunks(playerId);
+            return;
+        }
+        int chunkX = location.getBlockX() >> 4;
+        int chunkZ = location.getBlockZ() >> 4;
+        WatchedChunkCenter previous = watchedChunkCentersByPlayer.get(playerId);
+        int range = InteractionVisualizer.tileEntityCheckingRange;
+        if (previous != null && previous.matches(world, chunkX, chunkZ, range)) {
+            return;
+        }
+
+        Set<ChunkPosition> watched = watchedChunksByPlayer.get(playerId);
+        if (previous != null && watched != null && range >= 0 && previous.range() == range
+                && previous.worldId().equals(world.getUID())
+                && Math.abs(chunkX - previous.chunkX()) <= 1
+                && Math.abs(chunkZ - previous.chunkZ()) <= 1) {
+            shiftWatchedWindow(watchedChunksByPlayer, watcherCounts, dirtyWatcherChunks,
+                    playerId, world, previous.chunkX(), previous.chunkZ(), chunkX, chunkZ, range);
+            watchedChunkCentersByPlayer.put(playerId,
+                    new WatchedChunkCenter(world.getUID(), chunkX, chunkZ, range));
+            drainWatcherChanges();
+            return;
+        }
+
+        watchedChunkCentersByPlayer.put(playerId,
+                new WatchedChunkCenter(world.getUID(), chunkX, chunkZ, range));
+        replaceWatchedChunks(playerId, getAllChunks(location));
+    }
+
+    private synchronized static void replaceWatchedChunks(UUID playerId, Set<ChunkPosition> nextChunks) {
         commitWatcherUpdate(
                 watchedChunksByPlayer, watcherCounts, dirtyWatcherChunks,
                 playerId, nextChunks);
         drainWatcherChanges();
     }
 
+    private synchronized static void extendWatchedChunks(UUID playerId, ChunkPosition chunk) {
+        Set<ChunkPosition> watched = watchedChunksByPlayer.get(playerId);
+        if (watched == null || !watched.add(chunk)) {
+            return;
+        }
+        watchedChunkCentersByPlayer.remove(playerId);
+        incrementWatcherCount(watcherCounts, dirtyWatcherChunks, chunk);
+        drainWatcherChanges();
+    }
+
     private synchronized static void clearWatchedChunks(UUID playerId) {
+        watchedChunkCentersByPlayer.remove(playerId);
         if (!watchedChunksByPlayer.containsKey(playerId)) {
             return;
         }
-        updateWatchedChunks(playerId, Set.of());
+        replaceWatchedChunks(playerId, Set.of());
+    }
+
+    static <P> int shiftWatchedWindow(
+            Map<P, Set<ChunkPosition>> watchedByPlayer,
+            Map<ChunkPosition, Integer> counts, Set<ChunkPosition> dirty,
+            P playerId, World world,
+            int previousChunkX, int previousChunkZ,
+            int nextChunkX, int nextChunkZ, int range) {
+        Set<ChunkPosition> watched = watchedByPlayer.get(playerId);
+        if (watched == null) {
+            return 0;
+        }
+
+        UUID worldId = world.getUID();
+        int minX = nextChunkX - range;
+        int maxX = nextChunkX + range;
+        int minZ = nextChunkZ - range;
+        int maxZ = nextChunkZ + range;
+        Iterator<ChunkPosition> iterator = watched.iterator();
+        while (iterator.hasNext()) {
+            ChunkPosition chunk = iterator.next();
+            if (!worldId.equals(chunk.getWorldUID()) || chunk.getChunkX() < minX || chunk.getChunkX() > maxX
+                    || chunk.getChunkZ() < minZ || chunk.getChunkZ() > maxZ) {
+                iterator.remove();
+                decrementWatcherCount(counts, dirty, chunk);
+            }
+        }
+
+        int candidates = 0;
+        if (nextChunkX > previousChunkX) {
+            candidates += addWatcherStripe(watched, counts, dirty, world,
+                    previousChunkX + range + 1, nextChunkX + range, minZ, maxZ, true);
+        } else if (nextChunkX < previousChunkX) {
+            candidates += addWatcherStripe(watched, counts, dirty, world,
+                    nextChunkX - range, previousChunkX - range - 1, minZ, maxZ, true);
+        }
+        int zCrossStart = minX;
+        int zCrossEnd = maxX;
+        if (nextChunkX > previousChunkX) {
+            zCrossEnd--;
+        } else if (nextChunkX < previousChunkX) {
+            zCrossStart++;
+        }
+        if (nextChunkZ > previousChunkZ) {
+            candidates += addWatcherStripe(watched, counts, dirty, world,
+                    previousChunkZ + range + 1, nextChunkZ + range,
+                    zCrossStart, zCrossEnd, false);
+        } else if (nextChunkZ < previousChunkZ) {
+            candidates += addWatcherStripe(watched, counts, dirty, world,
+                    nextChunkZ - range, previousChunkZ - range - 1,
+                    zCrossStart, zCrossEnd, false);
+        }
+        return candidates;
+    }
+
+    private static int addWatcherStripe(
+            Set<ChunkPosition> watched, Map<ChunkPosition, Integer> counts,
+            Set<ChunkPosition> dirty, World world,
+            int stripeStart, int stripeEnd, int crossStart, int crossEnd,
+            boolean xStripe) {
+        int candidates = 0;
+        for (int stripe = stripeStart; stripe <= stripeEnd; stripe++) {
+            for (int cross = crossStart; cross <= crossEnd; cross++) {
+                candidates++;
+                ChunkPosition chunk = xStripe
+                        ? new ChunkPosition(world, stripe, cross)
+                        : new ChunkPosition(world, cross, stripe);
+                if (watched.add(chunk)) {
+                    incrementWatcherCount(counts, dirty, chunk);
+                }
+            }
+        }
+        return candidates;
+    }
+
+    private static void removeWatcherCounts(Collection<ChunkPosition> chunks) {
+        for (ChunkPosition chunk : chunks) {
+            decrementWatcherCount(watcherCounts, dirtyWatcherChunks, chunk);
+        }
+    }
+
+    private static void incrementWatcherCount(
+            Map<ChunkPosition, Integer> counts, Set<ChunkPosition> dirty,
+            ChunkPosition chunk) {
+        int count = counts.getOrDefault(chunk, 0);
+        counts.put(chunk, count + 1);
+        if (count == 0) {
+            dirty.add(chunk);
+        }
+    }
+
+    private static void decrementWatcherCount(
+            Map<ChunkPosition, Integer> counts, Set<ChunkPosition> dirty,
+            ChunkPosition chunk) {
+        int count = counts.getOrDefault(chunk, 0);
+        if (count <= 1) {
+            counts.remove(chunk);
+            dirty.add(chunk);
+        } else {
+            counts.put(chunk, count - 1);
+        }
     }
 
     static <P, K> void commitWatcherUpdate(
@@ -524,7 +674,7 @@ public class TileEntityManager implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onJoin(PlayerJoinEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates) {
-            updateWatchedChunks(event.getPlayer().getUniqueId(), getAllChunks(event.getPlayer().getLocation()));
+            updateWatchedChunks(event.getPlayer().getUniqueId(), event.getPlayer().getLocation());
         } else {
             addTileEntities(getAllChunks(event.getPlayer().getLocation()));
         }
@@ -538,13 +688,13 @@ public class TileEntityManager implements Listener {
 
     public void onRespawn(PlayerRespawnEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates) {
-            updateWatchedChunks(event.getPlayer().getUniqueId(), getAllChunks(event.getRespawnLocation()));
+            updateWatchedChunks(event.getPlayer().getUniqueId(), event.getRespawnLocation());
         }
     }
 
     public void onChangedWorld(PlayerChangedWorldEvent event) {
         if (InteractionVisualizer.eventDrivenBlockUpdates) {
-            updateWatchedChunks(event.getPlayer().getUniqueId(), getAllChunks(event.getPlayer().getLocation()));
+            updateWatchedChunks(event.getPlayer().getUniqueId(), event.getPlayer().getLocation());
         }
     }
 
@@ -555,9 +705,9 @@ public class TileEntityManager implements Listener {
             TileEntityType type = TileEntity.getTileEntityType(block.getType());
             if (type != null) {
                 if (InteractionVisualizer.eventDrivenBlockUpdates) {
-                    Set<ChunkPosition> chunks = getAllChunks(event.getPlayer().getLocation());
-                    chunks.add(getChunk(block.getLocation()));
-                    updateWatchedChunks(event.getPlayer().getUniqueId(), chunks);
+                    UUID playerId = event.getPlayer().getUniqueId();
+                    updateWatchedChunks(playerId, event.getPlayer().getLocation());
+                    extendWatchedChunks(playerId, getChunk(block.getLocation()));
                 }
                 if (!active.get(type).contains(block)) {
                     addTileEntities(getChunk(block.getLocation()));
@@ -572,7 +722,7 @@ public class TileEntityManager implements Listener {
         Location to = event.getTo();
         if (!from.getWorld().equals(to.getWorld()) || from.getBlockX() >> 4 != to.getBlockX() >> 4 || from.getBlockZ() >> 4 != to.getBlockZ() >> 4) {
             if (InteractionVisualizer.eventDrivenBlockUpdates) {
-                updateWatchedChunks(event.getPlayer().getUniqueId(), getAllChunks(to));
+                updateWatchedChunks(event.getPlayer().getUniqueId(), to);
             } else {
                 addTileEntities(getAllChunks(to));
             }
@@ -585,14 +735,14 @@ public class TileEntityManager implements Listener {
         Location to = event.getTo();
         if (!from.getWorld().equals(to.getWorld())) {
             if (InteractionVisualizer.eventDrivenBlockUpdates) {
-                updateWatchedChunks(event.getPlayer().getUniqueId(), getAllChunks(to));
+                updateWatchedChunks(event.getPlayer().getUniqueId(), to);
             } else {
                 addTileEntities(getAllChunks(to));
             }
         } else if (from.getBlockX() >> 4 != to.getBlockX() >> 4 || from.getBlockZ() >> 4 != to.getBlockZ() >> 4) {
             if (!isMovingTooFast(event.getPlayer(), from, to)) {
                 if (InteractionVisualizer.eventDrivenBlockUpdates) {
-                    updateWatchedChunks(event.getPlayer().getUniqueId(), getAllChunks(to));
+                    updateWatchedChunks(event.getPlayer().getUniqueId(), to);
                 } else {
                     addTileEntities(getAllChunks(to));
                 }
@@ -611,10 +761,9 @@ public class TileEntityManager implements Listener {
                 if (InteractionVisualizer.eventDrivenBlockUpdates) {
                     boolean movingTooFast = !changedWorld && isMovingTooFast(null, from, to);
                     if (!movingTooFast) {
-                        Set<ChunkPosition> chunks = getAllChunks(to);
                         for (org.bukkit.entity.Entity passenger : event.getVehicle().getPassengers()) {
                             if (passenger instanceof Player player) {
-                                updateWatchedChunks(player.getUniqueId(), chunks);
+                                updateWatchedChunks(player.getUniqueId(), to);
                             }
                         }
                     }
@@ -642,6 +791,14 @@ public class TileEntityManager implements Listener {
                 event.getWorld(), event.getChunk().getX(), event.getChunk().getZ());
         unloadTileEntities(chunk);
         Scheduler.runTask(plugin, () -> finishChunkUnload(chunk));
+    }
+
+    private record WatchedChunkCenter(UUID worldId, int chunkX, int chunkZ, int range) {
+
+        private boolean matches(World world, int x, int z, int expectedRange) {
+            return worldId.equals(world.getUID()) && chunkX == x && chunkZ == z
+                    && range == expectedRange;
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
