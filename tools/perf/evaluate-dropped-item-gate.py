@@ -31,6 +31,9 @@ CANONICAL_WINDOWS = {
 FORMAL_RUN_COUNT = 12
 FORMAL_SAMPLING_MODE = "paired-adjacent"
 FORMAL_PAIR_COUNT = 6
+MINIMUM_TARGET_IMPROVEMENT = 0.05
+MAXIMUM_TARGET_MEDIAN_RATIO = 1.0 - MINIMUM_TARGET_IMPROVEMENT
+MAXIMUM_CANDIDATE_WORK_RATIO = 0.10
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -468,8 +471,10 @@ def evaluate(manifest_path: Path, evidence_root: Path, expected_items: int,
     candidate_viewer_ratio = candidate_viewer_checks / baseline_full_scan
 
     checks = {
-        "droppedItemMedianRatioAtMost0_50": dropped["medianBRatioToA"] <= 0.50,
-        "droppedItemCiExcludesRegression": dropped["ratioBootstrap95Ci"][1] < 1.0,
+        "droppedItemMedianImprovementAtLeast5Percent":
+            dropped["medianBRatioToA"] <= MAXIMUM_TARGET_MEDIAN_RATIO,
+        "droppedItemBootstrap95CiUpperBelow1_00":
+            dropped["ratioBootstrap95Ci"][1] < 1.0,
         "msptP95CiUpperAtMost1_02": p95["ratioBootstrap95Ci"][1] <= 1.02,
         "msptP99CiUpperAtMost1_05": p99["ratioBootstrap95Ci"][1] <= 1.05,
         "allRunsRetainedGlobalPopulation": all(
@@ -482,18 +487,29 @@ def evaluate(manifest_path: Path, evidence_root: Path, expected_items: int,
             run["fullScanCandidates"] > 0 for run in runs if run["variant"] == "A"),
         "candidateTreatmentIsolated": all(
             run["sourceOwned"] is (run["variant"] == "B") for run in runs),
-        "candidateSpatialCandidatesAtMost10PercentOfBaseline": candidate_spatial_ratio <= 0.10,
-        "candidateViewerChecksAtMost10PercentOfBaseline": candidate_viewer_ratio <= 0.10,
+        "candidateSpatialCandidatesAtMost10PercentOfBaseline":
+            candidate_spatial_ratio <= MAXIMUM_CANDIDATE_WORK_RATIO,
+        "candidateViewerChecksAtMost10PercentOfBaseline":
+            candidate_viewer_ratio <= MAXIMUM_CANDIDATE_WORK_RATIO,
     }
     formal_complete = all(
         result.get("formalComplete") is True for result in analyses.values())
     passed = formal_complete and all(checks.values())
     gate = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "scenario": SCENARIO,
         "abFactor": AB_FACTOR,
         "formalComplete": formal_complete,
         "serverRuntimeGatePassed": passed,
+        "acceptancePolicy": {
+            "targetMetric": "droppedItemMs",
+            "minimumMedianImprovementPercent": MINIMUM_TARGET_IMPROVEMENT * 100.0,
+            "bootstrap95CiUpperMustBeBelow": 1.0,
+            "msptP95CiUpperAtMost": 1.02,
+            "msptP99CiUpperAtMost": 1.05,
+            "candidateWorkRatioAtMost": MAXIMUM_CANDIDATE_WORK_RATIO,
+            "basis": "docs/phase2-performance-validation.md section 7",
+        },
         "workload": {
             "trackedItems": expected_items,
             "nearbyLabels": expected_nearby_items,
@@ -532,9 +548,11 @@ def evaluate(manifest_path: Path, evidence_root: Path, expected_items: int,
                 f"Workload: `{expected_items}` tracked / `{expected_nearby_items}` nearby labels.\n\n")
             stream.write(
                 f"droppedItemMs B/A: `{dropped['medianBRatioToA']}` "
-                f"(95% CI `{dropped['ratioBootstrap95Ci']}`).\n\n")
+                f"(95% CI `{dropped['ratioBootstrap95Ci']}`; required median "
+                f"`<= {MAXIMUM_TARGET_MEDIAN_RATIO:.2f}` and CI upper `< 1.0`).\n\n")
             stream.write(
-                f"Candidate/full-scan ratio: `{candidate_spatial_ratio:.6f}`.\n\n")
+                f"Candidate/full-scan ratio: `{candidate_spatial_ratio:.6f}` "
+                f"(required `<= {MAXIMUM_CANDIDATE_WORK_RATIO:.2f}`).\n\n")
             stream.write(
                 f"MSPT p95 CI upper: `{p95['ratioBootstrap95Ci'][1]}`; "
                 f"p99 CI upper: `{p99['ratioBootstrap95Ci'][1]}`.\n")
@@ -700,7 +718,7 @@ def self_test() -> None:
         write_manifest()
 
         analysis_parameters = {
-            "droppedItemMs": (0.40, [0.35, 0.45]),
+            "droppedItemMs": (0.90, [0.85, 0.94]),
             "msptP95": (0.99, [0.98, 1.01]),
             "msptP99": (1.00, [0.99, 1.04]),
         }
@@ -773,8 +791,34 @@ def self_test() -> None:
         summary = os.environ.pop("GITHUB_STEP_SUMMARY", None)
         try:
             gate = evaluate(manifest_path, root, 2_048, 128, root / "gate.json")
+            assert gate["schemaVersion"] == 3
             assert gate["serverRuntimeGatePassed"] is True
+            assert gate["checks"]["droppedItemMedianImprovementAtLeast5Percent"] is True
+            assert gate["checks"]["droppedItemBootstrap95CiUpperBelow1_00"] is True
             assert gate["ratios"]["candidateSpatialToBaselineFullScan"] == 0.0625
+
+            analysis_parameters["droppedItemMs"] = (0.96, [0.92, 0.99])
+            write_analyses()
+            small_effect_gate = evaluate(
+                manifest_path, root, 2_048, 128, root / "small-effect-gate.json")
+            assert small_effect_gate["serverRuntimeGatePassed"] is False
+            assert small_effect_gate["checks"][
+                "droppedItemMedianImprovementAtLeast5Percent"] is False
+            assert small_effect_gate["checks"][
+                "droppedItemBootstrap95CiUpperBelow1_00"] is True
+
+            analysis_parameters["droppedItemMs"] = (0.90, [0.85, 1.01])
+            write_analyses()
+            uncertain_effect_gate = evaluate(
+                manifest_path, root, 2_048, 128, root / "uncertain-effect-gate.json")
+            assert uncertain_effect_gate["serverRuntimeGatePassed"] is False
+            assert uncertain_effect_gate["checks"][
+                "droppedItemMedianImprovementAtLeast5Percent"] is True
+            assert uncertain_effect_gate["checks"][
+                "droppedItemBootstrap95CiUpperBelow1_00"] is False
+
+            analysis_parameters["droppedItemMs"] = (0.90, [0.85, 0.94])
+            write_analyses()
 
             declining_metrics_path = run_roots[0] / "iv-perf.json"
             declining_metrics = read_json(declining_metrics_path)
@@ -864,6 +908,9 @@ def self_test() -> None:
     print(json.dumps({
         "passed": True,
         "analysisSchemaVersion": 2,
+        "gateSchemaVersion": 3,
+        "documentedEffectSizeGate": True,
+        "confidenceIntervalImprovementGate": True,
         "canonicalWindowGate": True,
         "analysisEvidenceClosure": True,
         "mixedStackPaperClientRejected": True,
