@@ -43,6 +43,8 @@ public final class PerformanceMetrics implements Listener {
 
     private final double[] tickDurations = new double[MAX_TICK_SAMPLES];
     private final SlowestTickTracker slowestTickTracker = new SlowestTickTracker();
+    private final PopulationTracker droppedTrackedItems = new PopulationTracker();
+    private final PopulationTracker droppedLabels = new PopulationTracker();
 
     private volatile boolean collecting;
     private String label = "";
@@ -88,8 +90,6 @@ public final class PerformanceMetrics implements Listener {
     private long droppedViewerDistanceChecks;
     private long droppedSpatialCandidates;
     private long droppedFullScanCandidates;
-    private int droppedTrackedItemsMax;
-    private int droppedLabelsMax;
     private long blockUpdateChecks;
     private long blockUpdateNanos;
     private int blockUpdateCoordinatorLanesMax;
@@ -171,8 +171,8 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.droppedViewerDistanceChecks = 0;
         INSTANCE.droppedSpatialCandidates = 0;
         INSTANCE.droppedFullScanCandidates = 0;
-        INSTANCE.droppedTrackedItemsMax = 0;
-        INSTANCE.droppedLabelsMax = 0;
+        INSTANCE.droppedTrackedItems.reset();
+        INSTANCE.droppedLabels.reset();
         INSTANCE.blockUpdateChecks = 0;
         INSTANCE.blockUpdateNanos = 0;
         INSTANCE.blockUpdateCoordinatorLanesMax = 0;
@@ -357,8 +357,8 @@ public final class PerformanceMetrics implements Listener {
 
     public static void droppedItemState(int trackedItems, int labels) {
         if (INSTANCE.collecting) {
-            INSTANCE.droppedTrackedItemsMax = Math.max(INSTANCE.droppedTrackedItemsMax, trackedItems);
-            INSTANCE.droppedLabelsMax = Math.max(INSTANCE.droppedLabelsMax, labels);
+            INSTANCE.droppedTrackedItems.sample(trackedItems);
+            INSTANCE.droppedLabels.sample(labels);
         }
     }
 
@@ -504,7 +504,9 @@ public final class PerformanceMetrics implements Listener {
                 retainedCullingRegistrations,
                 itemAnimationNanos, droppedItemNanos, droppedViewerDistanceChecks,
                 droppedSpatialCandidates, droppedFullScanCandidates,
-                droppedTrackedItemsMax, droppedLabelsMax,
+                droppedTrackedItems.min(), droppedTrackedItems.max(), droppedTrackedItems.end(),
+                droppedTrackedItems.sampleCount(),
+                droppedLabels.min(), droppedLabels.max(), droppedLabels.end(), droppedLabels.sampleCount(),
                 blockUpdateChecks, blockUpdateNanos,
                 blockUpdateCoordinatorLanesMax, blockUpdateDirtyQueueMax, blockUpdateActiveQueueMax,
                 preferenceIoOperations, preferenceIoFailures, preferenceIoQueueDepthMax,
@@ -657,8 +659,14 @@ public final class PerformanceMetrics implements Listener {
             long droppedViewerDistanceChecks,
             long droppedSpatialCandidates,
             long droppedFullScanCandidates,
+            int droppedTrackedItemsMin,
             int droppedTrackedItemsMax,
+            int droppedTrackedItemsEnd,
+            long droppedTrackedItemsSampleCount,
+            int droppedLabelsMin,
             int droppedLabelsMax,
+            int droppedLabelsEnd,
+            long droppedLabelsSampleCount,
             long blockUpdateChecks,
             long blockUpdateNanos,
             int blockUpdateCoordinatorLanesMax,
@@ -746,8 +754,14 @@ public final class PerformanceMetrics implements Listener {
                             "\"droppedViewerDistanceChecks\":%d," +
                             "\"droppedSpatialCandidates\":%d," +
                             "\"droppedFullScanCandidates\":%d," +
+                            "\"droppedTrackedItemsMin\":%d," +
                             "\"droppedTrackedItemsMax\":%d," +
+                            "\"droppedTrackedItemsEnd\":%d," +
+                            "\"droppedTrackedItemsSampleCount\":%d," +
+                            "\"droppedLabelsMin\":%d," +
                             "\"droppedLabelsMax\":%d," +
+                            "\"droppedLabelsEnd\":%d," +
+                            "\"droppedLabelsSampleCount\":%d," +
                             "\"blockUpdateChecks\":%d,\"blockUpdateMs\":%.6f," +
                             "\"blockUpdateCoordinatorLanesMax\":%d," +
                             "\"blockUpdateDirtyQueueMax\":%d," +
@@ -781,13 +795,68 @@ public final class PerformanceMetrics implements Listener {
                     craftEngineCullingRetainedRegistrations,
                     itemAnimationNanos / 1_000_000.0D, droppedItemNanos / 1_000_000.0D,
                     droppedViewerDistanceChecks, droppedSpatialCandidates,
-                    droppedFullScanCandidates, droppedTrackedItemsMax, droppedLabelsMax,
+                    droppedFullScanCandidates,
+                    droppedTrackedItemsMin, droppedTrackedItemsMax, droppedTrackedItemsEnd,
+                    droppedTrackedItemsSampleCount,
+                    droppedLabelsMin, droppedLabelsMax, droppedLabelsEnd, droppedLabelsSampleCount,
                     blockUpdateChecks, blockUpdateNanos / 1_000_000.0D,
                     blockUpdateCoordinatorLanesMax, blockUpdateDirtyQueueMax, blockUpdateActiveQueueMax,
                     preferenceIoOperations, preferenceIoFailures, preferenceIoQueueDepthMax,
                     preferenceSqlStatements, preferenceDatabaseReconnects,
                     legacyTextCacheRequests, legacyTextCacheMisses, legacyTextCacheHits(),
                     legacyTextCacheHitRate(), legacyTextSameRawFastPaths);
+        }
+    }
+
+    /**
+     * Constant-space population summary for a complete measurement window.
+     * Package visibility keeps first-sample and reset behavior unit-testable
+     * without starting a server.
+     */
+    static final class PopulationTracker {
+
+        private int min;
+        private int max;
+        private int end;
+        private long sampleCount;
+
+        PopulationTracker() {
+            reset();
+        }
+
+        void reset() {
+            min = 0;
+            max = 0;
+            end = 0;
+            sampleCount = 0;
+        }
+
+        void sample(int population) {
+            if (sampleCount == 0) {
+                min = population;
+                max = population;
+            } else {
+                min = Math.min(min, population);
+                max = Math.max(max, population);
+            }
+            end = population;
+            sampleCount++;
+        }
+
+        int min() {
+            return min;
+        }
+
+        int max() {
+            return max;
+        }
+
+        int end() {
+            return end;
+        }
+
+        long sampleCount() {
+            return sampleCount;
         }
     }
 

@@ -19,6 +19,8 @@ import java.util.Random;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DroppedItemCandidateWindowTest {
 
@@ -99,6 +101,16 @@ class DroppedItemCandidateWindowTest {
                 }
             }
         }
+    }
+
+    @Test
+    void disabledWorldViewerGroupKeepsTrackedItemsScheduled() {
+        assertTrue(DroppedItemDisplay.shouldScheduleUpdate(true, false, false, true),
+                "an online unfiltered viewer must keep the low-frequency update alive");
+        assertFalse(DroppedItemDisplay.shouldScheduleUpdate(true, false, false, false),
+                "without active or underlying viewers the display may sleep");
+        assertFalse(DroppedItemDisplay.shouldScheduleUpdate(false, true, true, true),
+                "there is no update work without tracked items");
     }
 
     private static int bruteClassification(Point point, double viewDistance, boolean hasLabel) {

@@ -41,9 +41,11 @@ import org.bukkit.entity.Player;
 import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
+import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityRemoveEvent;
 import org.bukkit.event.entity.ItemSpawnEvent;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.world.EntitiesLoadEvent;
 import org.bukkit.event.world.EntitiesUnloadEvent;
 import org.bukkit.inventory.ItemStack;
@@ -80,6 +82,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     private final Map<UUID, Item> trackedItems = new HashMap<>();
     private final Map<UUID, TextDisplay> labels = new HashMap<>();
+    private final Map<UUID, TextDisplay> pendingRemovalLabels = new HashMap<>();
     private final Map<UUID, CachedItemContent> contentCache = new HashMap<>();
     private final Set<UUID> eligibleViewers = new HashSet<>();
     private final Map<UUID, Player> desiredViewers = new HashMap<>();
@@ -106,6 +109,7 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
     private ScheduledTask updateTask;
     private ScheduledTask visibilityDrainTask;
     private Runnable viewerGroupUnsubscribe;
+    private volatile boolean closed;
 
     public DroppedItemDisplay() {
         visualEntityKey = new NamespacedKey(InteractionVisualizer.plugin, "visual_entity");
@@ -114,6 +118,9 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     @EventHandler
     public void onReload(InteractionVisualizerReloadEvent event) {
+        if (closed) {
+            return;
+        }
         DroppedItemVisibilityPolicy previousVisibilityPolicy = visibilityPolicy;
         String regularFormatting = configString("Entities.Item.Options.RegularFormat");
         String singularFormatting = configString("Entities.Item.Options.SingularFormat");
@@ -190,6 +197,9 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     @Override
     public ScheduledTask run() {
+        if (closed) {
+            return null;
+        }
         for (World world : Bukkit.getWorlds()) {
             for (Item item : world.getEntitiesByClass(Item.class)) {
                 if (!isOwned(item)) {
@@ -203,6 +213,9 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     @EventHandler(ignoreCancelled = true)
     public void onItemSpawn(ItemSpawnEvent event) {
+        if (closed) {
+            return;
+        }
         Item item = event.getEntity();
         if (!isOwned(item)) {
             track(item);
@@ -212,6 +225,9 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     @EventHandler
     public void onEntitiesLoad(EntitiesLoadEvent event) {
+        if (closed) {
+            return;
+        }
         boolean added = false;
         for (Entity entity : event.getEntities()) {
             if (entity instanceof Item item && !isOwned(item)) {
@@ -226,6 +242,9 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     @EventHandler
     public void onEntitiesUnload(EntitiesUnloadEvent event) {
+        if (closed) {
+            return;
+        }
         for (Entity entity : event.getEntities()) {
             if (entity instanceof Item item) {
                 remove(item.getUniqueId());
@@ -235,6 +254,9 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onEntityRemove(EntityRemoveEvent event) {
+        if (closed) {
+            return;
+        }
         if (event.getEntity() instanceof Item item) {
             UUID itemId = item.getUniqueId();
             trackedItems.remove(itemId);
@@ -243,20 +265,36 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             if (label != null) {
                 // EntityRemoveEvent is monitoring-only. Defer entity mutation
                 // until Paper has finished removing the item's passengers.
+                pendingRemovalLabels.put(itemId, label);
                 Scheduler.runTask(InteractionVisualizer.plugin, () -> {
-                    forgetLabelVisibility(itemId, label);
-                    removeLabel(label);
+                    if (pendingRemovalLabels.remove(itemId, label)) {
+                        forgetLabelVisibility(itemId, label);
+                        removeLabel(label);
+                    }
                 });
             }
         }
     }
 
+    @EventHandler
+    public void onPlayerChangedWorld(PlayerChangedWorldEvent event) {
+        if (closed || trackedItems.isEmpty()) {
+            return;
+        }
+        if (InteractionVisualizerAPI.getPlayerModuleList(Modules.HOLOGRAM, KEY, false)
+                .contains(event.getPlayer())) {
+            wakeUpdateImmediately();
+        }
+    }
+
     private void track(Item item) {
-        trackedItems.put(item.getUniqueId(), item);
+        if (!closed) {
+            trackedItems.put(item.getUniqueId(), item);
+        }
     }
 
     private void scheduleUpdate(long delay) {
-        if (updateTask == null || updateTask.isCancelled()) {
+        if (!closed && (updateTask == null || updateTask.isCancelled())) {
             updateTask = Scheduler.runTaskLater(
                     InteractionVisualizer.plugin, this::runScheduledUpdate, delay);
         }
@@ -268,29 +306,70 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
         scheduleUpdate(1L);
     }
 
+    private void wakeUpdateImmediately() {
+        if (closed) {
+            return;
+        }
+        if (updateTask != null && !updateTask.isCancelled()) {
+            updateTask.cancel();
+        }
+        updateTask = null;
+        scheduleUpdate(1L);
+    }
+
     private void runScheduledUpdate() {
         updateTask = null;
+        if (closed) {
+            return;
+        }
         ensureViewerGroupListener();
         tickAll();
-        if (!trackedItems.isEmpty() && (viewerGroupUnsubscribe == null
-                || !desiredViewers.isEmpty() || !pendingVisibilityViewers.isEmpty()
-                || !labels.isEmpty())) {
+        boolean hasActiveViewerState = !desiredViewers.isEmpty()
+                || !pendingVisibilityViewers.isEmpty() || !labels.isEmpty();
+        boolean hasOnlineViewerGroupMember = !hasActiveViewerState
+                && hasOnlineViewerGroupMember();
+        if (shouldScheduleUpdate(!trackedItems.isEmpty(), viewerGroupUnsubscribe == null,
+                hasActiveViewerState, hasOnlineViewerGroupMember)) {
             scheduleUpdate(updateRate);
         }
     }
 
+    static boolean shouldScheduleUpdate(boolean hasTrackedItems,
+                                        boolean viewerGroupListenerMissing,
+                                        boolean hasActiveViewerState,
+                                        boolean hasOnlineViewerGroupMember) {
+        return hasTrackedItems && (viewerGroupListenerMissing
+                || hasActiveViewerState || hasOnlineViewerGroupMember);
+    }
+
+    private boolean hasOnlineViewerGroupMember() {
+        for (Player player : InteractionVisualizerAPI.getPlayerModuleList(
+                Modules.HOLOGRAM, KEY, false)) {
+            if (player.isOnline()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void ensureViewerGroupListener() {
-        if (viewerGroupUnsubscribe != null || InteractionVisualizer.preferenceManager == null) {
+        if (closed || viewerGroupUnsubscribe != null
+                || InteractionVisualizer.preferenceManager == null) {
             return;
         }
         viewerGroupUnsubscribe = InteractionVisualizer.preferenceManager
                 .addViewerGroupChangeListener(Modules.HOLOGRAM, KEY,
-                        () -> Scheduler.executeOrScheduleSync(
-                                InteractionVisualizer.plugin, this::wakeUpdate));
+                        this::onViewerGroupChanged);
+    }
+
+    private synchronized void onViewerGroupChanged() {
+        if (!closed) {
+            Scheduler.executeOrScheduleSync(InteractionVisualizer.plugin, this::wakeUpdate);
+        }
     }
 
     private void scheduleVisibilityDrain() {
-        if (pendingVisibilityViewers.isEmpty()
+        if (closed || pendingVisibilityViewers.isEmpty()
                 || visibilityDrainTask != null && !visibilityDrainTask.isCancelled()) {
             return;
         }
@@ -300,6 +379,9 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
 
     private void runVisibilityDrain() {
         visibilityDrainTask = null;
+        if (closed) {
+            return;
+        }
         drainVisibilityQueues();
         scheduleVisibilityDrain();
     }
@@ -1020,6 +1102,122 @@ public final class DroppedItemDisplay extends VisualizerRunnableDisplay implemen
             }
             PerformanceMetrics.bukkitEntityRemove();
             label.remove();
+        }
+    }
+
+    @Override
+    protected void onUnregister() {
+        closed = true;
+        ScheduledTask pendingUpdate = updateTask;
+        ScheduledTask pendingVisibilityDrain = visibilityDrainTask;
+        Runnable unsubscribe = viewerGroupUnsubscribe;
+        updateTask = null;
+        visibilityDrainTask = null;
+        viewerGroupUnsubscribe = null;
+
+        Throwable failure = null;
+        if (pendingUpdate != null) {
+            try {
+                pendingUpdate.cancel();
+            } catch (Throwable throwable) {
+                failure = appendFailure(failure, throwable);
+            }
+        }
+        if (pendingVisibilityDrain != null) {
+            try {
+                pendingVisibilityDrain.cancel();
+            } catch (Throwable throwable) {
+                failure = appendFailure(failure, throwable);
+            }
+        }
+        if (unsubscribe != null) {
+            try {
+                unsubscribe.run();
+            } catch (Throwable throwable) {
+                failure = appendFailure(failure, throwable);
+            }
+        }
+        try {
+            HandlerList.unregisterAll(this);
+        } catch (Throwable throwable) {
+            failure = appendFailure(failure, throwable);
+        }
+        try {
+            for (Map.Entry<UUID, TextDisplay> entry : new ArrayList<>(labels.entrySet())) {
+                failure = removeLabelOnUnregister(entry.getKey(), entry.getValue(), failure);
+            }
+            for (Map.Entry<UUID, TextDisplay> entry : new ArrayList<>(pendingRemovalLabels.entrySet())) {
+                failure = removeLabelOnUnregister(entry.getKey(), entry.getValue(), failure);
+            }
+        } finally {
+            trackedItems.clear();
+            labels.clear();
+            pendingRemovalLabels.clear();
+            contentCache.clear();
+            eligibleViewers.clear();
+            desiredViewers.clear();
+            visibilityStates.clear();
+            viewersByLabel.clear();
+            pendingVisibilityViewers.clear();
+            candidateItems.clear();
+            crampIndexedItems.clear();
+            crampIndex.clear();
+        }
+        rethrow(failure);
+    }
+
+    private Throwable removeLabelOnUnregister(UUID itemId, TextDisplay label, Throwable failure) {
+        if (label == null) {
+            return failure;
+        }
+        Set<UUID> viewers = new HashSet<>();
+        if (visibilityPolicy.controlsPerViewerVisibility()) {
+            for (Map.Entry<UUID, VisibilityState> entry : visibilityStates.entrySet()) {
+                if (entry.getValue().shown.contains(itemId)) {
+                    viewers.add(entry.getKey());
+                }
+            }
+        } else {
+            viewers.addAll(eligibleViewers);
+        }
+        for (UUID viewerId : viewers) {
+            try {
+                Player player = Bukkit.getPlayer(viewerId);
+                if (player != null && label.isValid()) {
+                    setLabelVisible(player, label, false);
+                }
+            } catch (Throwable throwable) {
+                failure = appendFailure(failure, throwable);
+            }
+        }
+        try {
+            PerformanceMetrics.bukkitEntityRemove();
+            label.remove();
+        } catch (Throwable throwable) {
+            failure = appendFailure(failure, throwable);
+        }
+        return failure;
+    }
+
+    private static Throwable appendFailure(Throwable current, Throwable addition) {
+        if (current == null) {
+            return addition;
+        }
+        if (current != addition) {
+            current.addSuppressed(addition);
+        }
+        return current;
+    }
+
+    private static void rethrow(Throwable failure) {
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure != null) {
+            throw new RuntimeException(failure);
         }
     }
 

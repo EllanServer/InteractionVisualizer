@@ -55,24 +55,27 @@ permissions:
 
 jobs:
   clean-runtime-ab:
-    name: Paper runtime ABBA
+    name: >-
+      ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' && 'Dropped-item formal runtime gate' || github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-formal' && 'Paper runtime formal ABBA' || github.event_name == 'workflow_dispatch' && inputs.spark_profile_mode == 'alloc' && 'Allocation diagnostic runtime ABBA' || github.event_name == 'workflow_dispatch' && inputs.spark_profile_mode != 'none' && 'Profile diagnostic runtime ABBA' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates' && 'Dropped-item formal runtime gate' || 'Paper runtime ABBA smoke' }}
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.action != 'labeled' ||
-      github.event.label.name == 'phase2-runtime-formal'
+      github.event.label.name == 'phase2-runtime-formal' ||
+      github.event.label.name == 'phase2-runtime-dropped-item-formal'
     runs-on: ubuntu-latest
     timeout-minutes: 130
     env:
-      CAMPAIGN_AB_FACTOR: ${{ github.event_name == 'workflow_dispatch' && inputs.ab_factor || 'scenario-config' }}
+      CAMPAIGN_AB_FACTOR: ${{ github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' && 'dropped-item-section-candidates' || github.event_name == 'workflow_dispatch' && inputs.ab_factor || 'scenario-config' }}
       CAMPAIGN_PAPER_VERSION: "26.1.2"
-      CAMPAIGN_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario || 'static-steady' }}
-      CAMPAIGN_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || github.event.action == 'labeled' && '12' || '4' }}
-      CAMPAIGN_ITEMS: ${{ github.event_name == 'workflow_dispatch' && inputs.items || github.event.action == 'labeled' && '4096' || '1024' }}
+      CAMPAIGN_PAPER_BUILD_ID: "74"
+      CAMPAIGN_SCENARIO: ${{ (github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates') && 'dropped-items' || github.event_name == 'workflow_dispatch' && inputs.scenario || 'static-steady' }}
+      CAMPAIGN_RUNS: ${{ (github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates' && inputs.spark_profile_mode == 'none') && '12' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates' && '4' || github.event_name == 'workflow_dispatch' && inputs.runs || github.event.action == 'labeled' && '12' || '4' }}
+      CAMPAIGN_ITEMS: ${{ (github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates') && '2048' || github.event_name == 'workflow_dispatch' && inputs.items || github.event.action == 'labeled' && '4096' || '1024' }}
       CAMPAIGN_DROPPED_NEARBY_ITEMS: "128"
-      CAMPAIGN_WARMUP_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.warmup_seconds || github.event.action == 'labeled' && '120' || '10' }}
-      CAMPAIGN_SETTLE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.settle_seconds || github.event.action == 'labeled' && '20' || '5' }}
-      CAMPAIGN_MEASURE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_seconds || github.event.action == 'labeled' && '180' || '10' }}
-      CAMPAIGN_SPARK_PROFILE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.spark_profile_mode || 'none' }}
+      CAMPAIGN_WARMUP_SECONDS: ${{ (github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates' && inputs.spark_profile_mode == 'none') && '120' || github.event_name == 'workflow_dispatch' && inputs.warmup_seconds || github.event.action == 'labeled' && '120' || '10' }}
+      CAMPAIGN_SETTLE_SECONDS: ${{ (github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates' && inputs.spark_profile_mode == 'none') && '20' || github.event_name == 'workflow_dispatch' && inputs.settle_seconds || github.event.action == 'labeled' && '20' || '5' }}
+      CAMPAIGN_MEASURE_SECONDS: ${{ (github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates' && inputs.spark_profile_mode == 'none') && '180' || github.event_name == 'workflow_dispatch' && inputs.measure_seconds || github.event.action == 'labeled' && '180' || '10' }}
+      CAMPAIGN_SPARK_PROFILE_MODE: ${{ github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' && 'none' || github.event_name == 'workflow_dispatch' && inputs.spark_profile_mode || 'none' }}
       CAMPAIGN_EVIDENCE_KIND: ${{ github.event_name == 'workflow_dispatch' && inputs.spark_profile_mode != 'none' && 'diagnostic' || 'clean' }}
 
     steps:
@@ -112,28 +115,30 @@ jobs:
         env:
           PAPER_USER_AGENT: InteractionVisualizer-Phase2/1.0 (https://github.com/EllanServer/InteractionVisualizer)
           PAPER_VERSION: ${{ env.CAMPAIGN_PAPER_VERSION }}
+          PINNED_PAPER_BUILD_ID: ${{ env.CAMPAIGN_PAPER_BUILD_ID }}
         run: |
           mkdir -p phase2-dependencies
           case "$PAPER_VERSION" in
             26.1.2) PAPER_CHANNEL=STABLE ;;
-            26.2) PAPER_CHANNEL=BETA ;;
             *) echo "Unsupported Paper version: $PAPER_VERSION" >&2; exit 64 ;;
           esac
           BUILDS=$(curl --fail --silent --show-error \
             -H "User-Agent: $PAPER_USER_AGENT" \
             "https://fill.papermc.io/v3/projects/paper/versions/$PAPER_VERSION/builds")
-          PAPER_RECORD=$(echo "$BUILDS" | jq -c --arg channel "$PAPER_CHANNEL" \
-            'first(.[] | select(.channel == $channel)) // empty')
+          PAPER_RECORD=$(echo "$BUILDS" | jq -c \
+            --arg channel "$PAPER_CHANNEL" --argjson build_id "$PINNED_PAPER_BUILD_ID" \
+            'first(.[] | select(.channel == $channel and .id == $build_id)) // empty')
           test -n "$PAPER_RECORD"
           PAPER_URL=$(echo "$PAPER_RECORD" | jq -r '.downloads."server:default".url')
           PAPER_SHA256=$(echo "$PAPER_RECORD" | jq -r '.downloads."server:default".checksums.sha256')
-          PAPER_BUILD_ID=$(echo "$PAPER_RECORD" | jq -r '.id')
+          SELECTED_PAPER_BUILD_ID=$(echo "$PAPER_RECORD" | jq -r '.id')
+          [[ "$SELECTED_PAPER_BUILD_ID" == "$PINNED_PAPER_BUILD_ID" ]]
           curl --fail --location --show-error \
             -H "User-Agent: $PAPER_USER_AGENT" \
             --output phase2-dependencies/paper.jar "$PAPER_URL"
           echo "$PAPER_SHA256  phase2-dependencies/paper.jar" | sha256sum --check
           echo "SELECTED_PAPER_CHANNEL=$PAPER_CHANNEL" >> "$GITHUB_ENV"
-          echo "SELECTED_PAPER_BUILD_ID=$PAPER_BUILD_ID" >> "$GITHUB_ENV"
+          echo "SELECTED_PAPER_BUILD_ID=$SELECTED_PAPER_BUILD_ID" >> "$GITHUB_ENV"
 
       - name: Prepare immutable protocol client artifact
         run: bash tools/perf/prepare-phase2-protocol-client.sh phase2-dependencies/protocol-client
@@ -199,11 +204,17 @@ jobs:
               echo "dropped-item-section-candidates A/B is isolated to dropped-items" >&2
               exit 64
             fi
-            if [[ "$SPARK_PROFILE_MODE" == none && "$RUNS" != 12 ]]; then
-              echo "clean dropped-item-section-candidates evidence is formal-only and requires runs=12" >&2
-              exit 64
-            fi
-            if [[ "$SPARK_PROFILE_MODE" != none && "$RUNS" != 4 ]]; then
+            if [[ "$SPARK_PROFILE_MODE" == none ]]; then
+              if [[ "$RUNS" != 12 ]]; then
+                echo "clean dropped-item-section-candidates evidence is formal-only and requires runs=12" >&2
+                exit 64
+              fi
+              if [[ "$WARMUP_SECONDS" != 120 || "$SETTLE_SECONDS" != 20 || \
+                    "$MEASURE_SECONDS" != 180 ]]; then
+                echo "clean dropped-item-section-candidates evidence requires canonical 120/20/180 windows" >&2
+                exit 64
+              fi
+            elif [[ "$RUNS" != 4 ]]; then
               echo "profiled dropped-item-section-candidates diagnostics require runs=4" >&2
               exit 64
             fi

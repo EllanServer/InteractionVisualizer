@@ -1003,7 +1003,7 @@ fi
 python3 - "$server_log" "$run_id" "$run_directory/iv-perf.json" "$scenario" "$variant" \
   "$item_count" "$dropped_nearby_item_count" "$ab_factor" "$legacy_text_cache_disable_property" \
   "$legacy_text_cache_enabled" "$jvm_arguments_sha256" \
-  "$jvm_arguments_normalized_sha256" <<'PY'
+  "$jvm_arguments_normalized_sha256" "$spark_profile_mode" <<'PY'
 import json
 import math
 import sys
@@ -1020,6 +1020,7 @@ import sys
     expected_cache_enabled_text,
     jvm_arguments_sha256,
     jvm_arguments_normalized_sha256,
+    spark_profile_mode,
 ) = sys.argv[1:]
 item_count = int(item_count_text)
 dropped_nearby_item_count = int(dropped_nearby_item_count_text)
@@ -1157,8 +1158,22 @@ if scenario == "dropped-items":
     distance_checks = metrics.get("droppedViewerDistanceChecks")
     spatial_candidates = metrics.get("droppedSpatialCandidates")
     full_scan_candidates = metrics.get("droppedFullScanCandidates")
-    tracked_max = metrics.get("droppedTrackedItemsMax")
-    labels_max = metrics.get("droppedLabelsMax")
+    population_fields = {
+        "tracked": {
+            "min": metrics.get("droppedTrackedItemsMin"),
+            "max": metrics.get("droppedTrackedItemsMax"),
+            "end": metrics.get("droppedTrackedItemsEnd"),
+            "samples": metrics.get("droppedTrackedItemsSampleCount"),
+            "expected": item_count,
+        },
+        "labels": {
+            "min": metrics.get("droppedLabelsMin"),
+            "max": metrics.get("droppedLabelsMax"),
+            "end": metrics.get("droppedLabelsEnd"),
+            "samples": metrics.get("droppedLabelsSampleCount"),
+            "expected": dropped_nearby_item_count,
+        },
+    }
     if (isinstance(dropped_ms, bool) or not isinstance(dropped_ms, (int, float))
             or not math.isfinite(dropped_ms) or dropped_ms <= 0):
         raise SystemExit(f"invalid droppedItemMs={dropped_ms!r}")
@@ -1166,19 +1181,30 @@ if scenario == "dropped-items":
         ("droppedViewerDistanceChecks", distance_checks),
         ("droppedSpatialCandidates", spatial_candidates),
         ("droppedFullScanCandidates", full_scan_candidates),
-        ("droppedTrackedItemsMax", tracked_max),
-        ("droppedLabelsMax", labels_max),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise SystemExit(f"invalid {field}={value!r}")
+    for population, values in population_fields.items():
+        for statistic in ("min", "max", "end", "samples"):
+            value = values[statistic]
+            field = f"dropped{population.title()}{'SampleCount' if statistic == 'samples' else statistic.title()}"
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise SystemExit(f"invalid {field}={value!r}")
+        if values["samples"] <= 0:
+            raise SystemExit(f"dropped-item {population} population has no samples")
+        if not values["min"] <= values["end"] <= values["max"]:
+            raise SystemExit(
+                f"dropped-item {population} population summary is inconsistent: {values!r}"
+            )
+        if spark_profile_mode == "none" and any(
+                values[statistic] != values["expected"] for statistic in ("min", "max", "end")):
+            raise SystemExit(
+                f"clean dropped-item sample did not retain its {population} population: "
+                f"min/max/end={values['min']}/{values['max']}/{values['end']} "
+                f"expected={values['expected']}"
+            )
     if distance_checks <= 0 or spatial_candidates <= 0:
         raise SystemExit("dropped-item workload performed no candidate checks")
-    if tracked_max != item_count or labels_max != dropped_nearby_item_count:
-        raise SystemExit(
-            "dropped-item workload did not retain its global/local split: "
-            f"tracked={tracked_max}/{item_count} "
-            f"labels={labels_max}/{dropped_nearby_item_count}"
-        )
     if variant == "A" and full_scan_candidates <= 0:
         raise SystemExit("legacy dropped-item path performed no full candidate scans")
     if variant == "B" and full_scan_candidates != 0:
@@ -1828,7 +1854,16 @@ python3 - \
   "$jvm_arguments_normalized_sha256" \
   "$spark_profile_mode" \
   "$spark_profile_metadata" \
-  "$spark_profile_output" <<'PY'
+  "$spark_profile_output" \
+  "$scenario" \
+  "$variant" \
+  "$run_id" \
+  "$item_count" \
+  "$dropped_nearby_item_count" \
+  "$paper_version" \
+  "$warmup_seconds" \
+  "$settle_seconds" \
+  "$measure_seconds" <<'PY'
 from pathlib import Path
 import hashlib
 import json
@@ -1847,12 +1882,59 @@ expected_jvm_arguments_normalized_sha = sys.argv[10]
 spark_mode = sys.argv[11]
 spark_metadata_path = Path(sys.argv[12])
 spark_profile_path = Path(sys.argv[13])
+expected_scenario = sys.argv[14]
+expected_variant = sys.argv[15]
+expected_run_id = sys.argv[16]
+expected_item_count = int(sys.argv[17])
+expected_nearby_item_count = int(sys.argv[18])
+expected_paper_version = sys.argv[19]
+expected_warmup_seconds = int(sys.argv[20])
+expected_settle_seconds = int(sys.argv[21])
+expected_measure_seconds = int(sys.argv[22])
 with manifest_path.open(encoding="utf-8") as stream:
     manifest = json.load(stream)
 with metadata_path.open(encoding="utf-8") as stream:
     metadata = json.load(stream)
 with metrics_path.open(encoding="utf-8") as stream:
     metrics = json.load(stream)
+
+expected_manifest_fields = {
+    "schemaVersion": 7,
+    "runId": expected_run_id,
+    "scenario": expected_scenario,
+    "paperVersion": expected_paper_version,
+    "paperChannel": "STABLE",
+    "paperBuildId": 74,
+    "variant": expected_variant,
+    "abFactor": expected_ab_factor,
+    "itemCount": expected_item_count,
+    "workloadCount": expected_item_count,
+    "warmupSeconds": expected_warmup_seconds,
+    "settleSeconds": expected_settle_seconds,
+    "measureSeconds": expected_measure_seconds,
+    "droppedNearbyItemCount": (
+        expected_nearby_item_count if expected_scenario == "dropped-items" else None
+    ),
+}
+for field, expected in expected_manifest_fields.items():
+    if manifest.get(field) != expected:
+        raise SystemExit(
+            f"run manifest {field} mismatch: {manifest.get(field)!r} != {expected!r}"
+        )
+if expected_paper_version != "26.1.2":
+    raise SystemExit("run manifest is not pinned to canonical Paper 26.1.2")
+for field in (
+    "pluginSha256",
+    "paperSha256",
+    "clientManifestSha256",
+    "configSha256",
+    "jvmArgumentsSha256",
+    "jvmArgumentsNormalizedSha256",
+):
+    value = manifest.get(field)
+    if (not isinstance(value, str) or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)):
+        raise SystemExit(f"run manifest has invalid {field} provenance")
 
 actual_metadata_sha = hashlib.sha256(metadata_path.read_bytes()).hexdigest()
 if actual_metadata_sha != expected_metadata_sha:
@@ -1926,7 +2008,10 @@ if not isinstance(embedded_spark, dict):
 if spark_mode == "none":
     if (embedded_spark.get("enabled") is not False
             or embedded_spark.get("mode") != "none"
-            or embedded_spark.get("performanceEvidenceReady") is not True):
+            or embedded_spark.get("profileEvidenceReady") is not None
+            or embedded_spark.get("performanceEvidenceReady") is not True
+            or embedded_spark.get("metadataPath") is not None
+            or embedded_spark.get("metadataSha256") is not None):
         raise SystemExit("run manifest incorrectly enables Spark profiling")
 else:
     if embedded_spark.get("enabled") is not True or embedded_spark.get("mode") != spark_mode:

@@ -35,7 +35,8 @@ public abstract class VisualizerRunnableDisplay implements VisualizerDisplay {
     /**
      * DO NOT CHANGE THESE FIELD
      */
-    private Set<ScheduledTask> tasks;
+    private Set<ScheduledTask> tasks = new HashSet<>();
+    private boolean unregistered;
 
     /**
      * This method is used for cleaning up, return the ScheduledTask, return null to disable.
@@ -56,6 +57,7 @@ public abstract class VisualizerRunnableDisplay implements VisualizerDisplay {
         }
         InteractionVisualizerAPI.getPreferenceManager().registerEntry(key());
         TaskManager.runnables.add(this);
+        this.unregistered = false;
         this.tasks = new HashSet<>();
         ScheduledTask gc = gc();
         if (gc != null) {
@@ -70,6 +72,7 @@ public abstract class VisualizerRunnableDisplay implements VisualizerDisplay {
     @Deprecated
     public final EntryKey registerNative() {
         TaskManager.runnables.add(this);
+        this.unregistered = false;
         this.tasks = new HashSet<>();
         ScheduledTask gc = gc();
         if (gc != null) {
@@ -83,13 +86,66 @@ public abstract class VisualizerRunnableDisplay implements VisualizerDisplay {
     }
 
     /**
+     * Called once while this display is being unregistered, after the tasks
+     * returned by {@link #gc()} and {@link #run()} have been cancelled.
+     */
+    protected void onUnregister() {
+    }
+
+    /**
      * Unregister this custom display to InteractionVisualizer.
      * You don't have to use this normally.
      */
     @Deprecated
-    public final void unregister() {
-        TaskManager.runnables.remove(this);
-        this.tasks.forEach(each -> each.cancel());
+    public final synchronized void unregister() {
+        if (unregistered) {
+            return;
+        }
+        unregistered = true;
+
+        Throwable failure = null;
+        Set<ScheduledTask> registeredTasks = tasks;
+        tasks = new HashSet<>();
+        for (ScheduledTask task : registeredTasks) {
+            try {
+                task.cancel();
+            } catch (Throwable throwable) {
+                failure = appendFailure(failure, throwable);
+            }
+        }
+        try {
+            onUnregister();
+        } catch (Throwable throwable) {
+            failure = appendFailure(failure, throwable);
+        }
+        try {
+            TaskManager.runnables.removeIf(each -> each == this);
+        } catch (Throwable throwable) {
+            failure = appendFailure(failure, throwable);
+        }
+        rethrow(failure);
+    }
+
+    private static Throwable appendFailure(Throwable current, Throwable addition) {
+        if (current == null) {
+            return addition;
+        }
+        if (current != addition) {
+            current.addSuppressed(addition);
+        }
+        return current;
+    }
+
+    private static void rethrow(Throwable failure) {
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure != null) {
+            throw new RuntimeException(failure);
+        }
     }
 
 }

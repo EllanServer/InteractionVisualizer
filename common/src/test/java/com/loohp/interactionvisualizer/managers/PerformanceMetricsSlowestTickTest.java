@@ -74,6 +74,32 @@ class PerformanceMetricsSlowestTickTest {
     }
 
     @Test
+    void populationTrackerInitializesFromFirstSampleAndSummarizesWindow() {
+        PerformanceMetrics.PopulationTracker tracker = new PerformanceMetrics.PopulationTracker();
+
+        tracker.sample(128);
+        assertPopulation(tracker, 128, 128, 128, 1L);
+
+        tracker.sample(96);
+        tracker.sample(160);
+        tracker.sample(144);
+
+        assertPopulation(tracker, 96, 160, 144, 4L);
+    }
+
+    @Test
+    void populationTrackerResetRestoresEmptyWindow() {
+        PerformanceMetrics.PopulationTracker tracker = new PerformanceMetrics.PopulationTracker();
+        tracker.sample(32);
+
+        tracker.reset();
+
+        assertPopulation(tracker, 0, 0, 0, 0L);
+        tracker.sample(7);
+        assertPopulation(tracker, 7, 7, 7, 1L);
+    }
+
+    @Test
     void snapshotJsonPublishesSlowestTickAttributionInMilliseconds() {
         PerformanceMetrics.Snapshot snapshot = new PerformanceMetrics.Snapshot(
                 "diagnostic", false, false, false, false, 128, 32,
@@ -87,7 +113,9 @@ class PerformanceMetricsSlowestTickTest {
                 0L, 0L, 0L, 0L, 0L,
                 0L, 0L, 0L, 0L, 0L, 0L,
                 0L, 0L, 0L, 0L, 0L, 0,
-                0L, 0L, 0L, 0L, 0L, 2048, 2048, 7L, 12_345_678L, 0, 0, 0,
+                0L, 0L, 0L, 0L, 0L,
+                2048, 2048, 2048, 3L, 128, 128, 128, 3L,
+                7L, 12_345_678L, 0, 0, 0,
                 0L, 0L, 0, 0L, 0L, 100L, 5L, 200L);
 
         String json = snapshot.json();
@@ -106,13 +134,27 @@ class PerformanceMetricsSlowestTickTest {
         assertTrue(json.contains("\"viewerFullReconciles\":0"));
         assertTrue(json.contains("\"craftEngineCullingRetainedRegistrations\":0"));
         assertTrue(json.contains("\"droppedSpatialCandidates\":0"));
+        assertTrue(json.contains("\"droppedTrackedItemsMin\":2048"));
         assertTrue(json.contains("\"droppedTrackedItemsMax\":2048"));
-        assertTrue(json.contains("\"droppedLabelsMax\":2048"));
+        assertTrue(json.contains("\"droppedTrackedItemsEnd\":2048"));
+        assertTrue(json.contains("\"droppedTrackedItemsSampleCount\":3"));
+        assertTrue(json.contains("\"droppedLabelsMin\":128"));
+        assertTrue(json.contains("\"droppedLabelsMax\":128"));
+        assertTrue(json.contains("\"droppedLabelsEnd\":128"));
+        assertTrue(json.contains("\"droppedLabelsSampleCount\":3"));
         assertTrue(json.contains("\"blockUpdateDirtyQueueMax\":0"));
         assertTrue(json.contains("\"preferenceSqlStatements\":0"));
         assertTrue(json.contains("\"legacyTextCacheHits\":95"));
         assertTrue(json.contains("\"legacyTextCacheHitRate\":0.950000"));
         assertTrue(json.contains("\"legacyTextSameRawFastPaths\":200"));
+    }
+
+    private static void assertPopulation(PerformanceMetrics.PopulationTracker tracker,
+                                         int min, int max, int end, long sampleCount) {
+        assertEquals(min, tracker.min());
+        assertEquals(max, tracker.max());
+        assertEquals(end, tracker.end());
+        assertEquals(sampleCount, tracker.sampleCount());
     }
 
     private static void assertSlowest(PerformanceMetrics.SlowestTickTracker tracker,
