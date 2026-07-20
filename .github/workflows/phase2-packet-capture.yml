@@ -63,6 +63,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 100
     env:
+      CAMPAIGN_PAPER_VERSION: "26.1.2"
+      CAMPAIGN_PAPER_BUILD_ID: "74"
+      CAMPAIGN_PAPER_CHANNEL: STABLE
       CAMPAIGN_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario || contains(github.event.label.name, 'visibility-itemdisplay') && 'visibility-itemdisplay-return' || contains(github.event.label.name, 'visibility-textdisplay') && 'visibility-textdisplay-return' || contains(github.event.label.name, 'visibility') && 'visibility-return' || 'static-spawn' }}
       CAMPAIGN_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || contains(github.event.label.name, '-formal') && '12' || '4' }}
       CAMPAIGN_ITEMS: ${{ github.event_name == 'workflow_dispatch' && inputs.items || contains(github.event.label.name, '-formal') && '4096' || '1024' }}
@@ -114,19 +117,29 @@ jobs:
       - name: Build and test the production plugin
         run: ./gradlew clean check shadowJar --no-daemon --no-build-cache --rerun-tasks
 
-      - name: Download stable Paper 26.1.2
+      - name: Download pinned stable Paper 26.1.2 build 74
         env:
           PAPER_USER_AGENT: InteractionVisualizer-Phase2/1.0 (https://github.com/EllanServer/InteractionVisualizer)
+          PAPER_VERSION: ${{ env.CAMPAIGN_PAPER_VERSION }}
+          PAPER_BUILD_ID: ${{ env.CAMPAIGN_PAPER_BUILD_ID }}
+          PAPER_CHANNEL: ${{ env.CAMPAIGN_PAPER_CHANNEL }}
         run: |
           mkdir -p phase2-dependencies
           BUILDS=$(curl --fail --silent --show-error \
             -H "User-Agent: $PAPER_USER_AGENT" \
-            https://fill.papermc.io/v3/projects/paper/versions/26.1.2/builds)
-          PAPER_URL=$(echo "$BUILDS" | jq -r 'first(.[] | select(.channel == "STABLE") | .downloads."server:default".url) // empty')
-          test -n "$PAPER_URL"
+            "https://fill.papermc.io/v3/projects/paper/versions/$PAPER_VERSION/builds")
+          PAPER_RECORD=$(echo "$BUILDS" | jq -c \
+            --arg channel "$PAPER_CHANNEL" --argjson build_id "$PAPER_BUILD_ID" \
+            'first(.[] | select(.channel == $channel and .id == $build_id)) // empty')
+          test -n "$PAPER_RECORD"
+          [[ "$(echo "$PAPER_RECORD" | jq -r '.id')" == "$PAPER_BUILD_ID" ]]
+          [[ "$(echo "$PAPER_RECORD" | jq -r '.channel')" == "$PAPER_CHANNEL" ]]
+          PAPER_URL=$(echo "$PAPER_RECORD" | jq -r '.downloads."server:default".url')
+          PAPER_SHA256=$(echo "$PAPER_RECORD" | jq -r '.downloads."server:default".checksums.sha256')
           curl --fail --location --show-error \
             -H "User-Agent: $PAPER_USER_AGENT" \
             --output phase2-dependencies/paper.jar "$PAPER_URL"
+          echo "$PAPER_SHA256  phase2-dependencies/paper.jar" | sha256sum --check
 
       - name: Prepare immutable protocol client artifact
         run: bash tools/perf/prepare-phase2-protocol-client.sh phase2-dependencies/protocol-client
@@ -134,6 +147,9 @@ jobs:
       - name: Run restart-isolated packet ABBA campaign
         id: packet_campaign
         env:
+          PAPER_VERSION: ${{ env.CAMPAIGN_PAPER_VERSION }}
+          PAPER_BUILD_ID: ${{ env.CAMPAIGN_PAPER_BUILD_ID }}
+          PAPER_CHANNEL: ${{ env.CAMPAIGN_PAPER_CHANNEL }}
           SCENARIO: ${{ env.CAMPAIGN_SCENARIO }}
           RUNS: ${{ env.CAMPAIGN_RUNS }}
           ITEMS: ${{ env.CAMPAIGN_ITEMS }}
@@ -189,6 +205,9 @@ jobs:
 
             PHASE2_PLUGIN_JAR="$PLUGIN_JAR" \
             PHASE2_PAPER_JAR=phase2-dependencies/paper.jar \
+            PHASE2_PAPER_VERSION="$PAPER_VERSION" \
+            PHASE2_PAPER_CHANNEL="$PAPER_CHANNEL" \
+            PHASE2_PAPER_BUILD_ID="$PAPER_BUILD_ID" \
             PHASE2_CLIENT_ROOT=phase2-dependencies/protocol-client \
             PHASE2_OUTPUT_ROOT=phase2-results/packet \
             PHASE2_RUN_ID="$run_id" \
