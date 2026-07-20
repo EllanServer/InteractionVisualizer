@@ -18,50 +18,54 @@ import org.bukkit.event.inventory.InventoryType;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TaskManagerShutdownTest {
 
     @Test
-    void clearsRegistriesAndPendingPlayerRequests() {
+    @SuppressWarnings("deprecation")
+    void clearsRegistriesAndInvokesRunnableShutdownHooks() {
         UUID playerId = UUID.randomUUID();
         Map<InventoryType, List<com.loohp.interactionvisualizer.api.VisualizerInteractDisplay>> originalProcesses =
                 TaskManager.processes;
-        Map<InventoryType, List<com.loohp.interactionvisualizer.api.VisualizerInteractDisplay>> originalProcessEntries =
-                new HashMap<>();
-        originalProcesses.forEach((type, displays) ->
-                originalProcessEntries.put(type, new ArrayList<>(displays)));
-        List<VisualizerRunnableDisplay> originalRunnables = new ArrayList<>(TaskManager.runnables);
+        List<VisualizerRunnableDisplay> originalRunnables = TaskManager.runnables;
         TrackingMap<InventoryType, List<com.loohp.interactionvisualizer.api.VisualizerInteractDisplay>> processes =
                 new TrackingMap<>();
+        AtomicInteger failingUnregisterCalls = new AtomicInteger();
+        AtomicInteger successfulUnregisterCalls = new AtomicInteger();
         try {
             TaskManager.processes = processes;
-            TaskManager.runnables.add(runnableDisplay());
+            TaskManager.runnables = new ArrayList<>();
+            runnableDisplay(failingUnregisterCalls, true).registerNative();
+            runnableDisplay(successfulUnregisterCalls, false).registerNative();
             assertTrue(TaskManager.markInventoryOpenProcessQueued(playerId));
 
-            TaskManager.clearRuntimeState();
+            assertDoesNotThrow(TaskManager::clearRuntimeState);
 
             assertTrue(processes.cleared);
             assertTrue(TaskManager.processes.isEmpty());
             assertTrue(TaskManager.runnables.isEmpty());
+            assertEquals(1, failingUnregisterCalls.get());
+            assertEquals(1, successfulUnregisterCalls.get());
             assertTrue(TaskManager.markInventoryOpenProcessQueued(playerId),
                     "shutdown must release the pending request token");
         } finally {
             TaskManager.clearRuntimeState();
             TaskManager.processes = originalProcesses;
-            originalProcesses.clear();
-            originalProcesses.putAll(originalProcessEntries);
-            TaskManager.runnables.addAll(originalRunnables);
+            TaskManager.runnables = originalRunnables;
         }
     }
 
-    private static VisualizerRunnableDisplay runnableDisplay() {
+    private static VisualizerRunnableDisplay runnableDisplay(AtomicInteger unregisterCalls,
+                                                               boolean failOnUnregister) {
         return new VisualizerRunnableDisplay() {
             @Override
             public EntryKey key() {
@@ -76,6 +80,14 @@ class TaskManagerShutdownTest {
             @Override
             public ScheduledTask run() {
                 return null;
+            }
+
+            @Override
+            protected void onUnregister() {
+                unregisterCalls.incrementAndGet();
+                if (failOnUnregister) {
+                    throw new AssertionError("expected shutdown test failure");
+                }
             }
         };
     }

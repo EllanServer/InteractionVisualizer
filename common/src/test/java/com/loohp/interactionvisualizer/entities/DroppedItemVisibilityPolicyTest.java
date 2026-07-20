@@ -73,7 +73,9 @@ class DroppedItemVisibilityPolicyTest {
                     "      VisibilityCulling:\n"
                             + "        #Independent rollback switch; existing explicit false values are preserved during migration\n"
                             + "        Enabled: true\n"
-                            + "        ViewDistance: 64\n"));
+                            + "        ViewDistance: 64\n"
+                            + "        #Use Paper's movement-maintained entity sections instead of rebuilding a global IV candidate pass\n"
+                            + "        SourceOwnedSectionCandidates: false\n"));
             assertTrue(droppedItemOptions.contains(
                     "      VisibilityRateLimit:\n"
                             + "        #Independent from Settings.Performance.VisibilityRateLimit\n"

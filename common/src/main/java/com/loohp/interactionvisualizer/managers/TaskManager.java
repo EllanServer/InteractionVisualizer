@@ -471,6 +471,7 @@ public class TaskManager {
         }
     }
 
+    @SuppressWarnings("deprecation")
     static void clearRuntimeState() {
         pendingInventoryOpenProcesses.clear();
         pendingInventoryRefreshes.clear();
@@ -478,9 +479,33 @@ public class TaskManager {
             displays.clear();
         }
         processes.clear();
-        runnables.clear();
+        List<VisualizerRunnableDisplay> runnableSnapshot = new ArrayList<>(runnables);
+        Throwable failure = null;
+        try {
+            for (VisualizerRunnableDisplay runnable : runnableSnapshot) {
+                try {
+                    runnable.unregister();
+                } catch (Throwable throwable) {
+                    if (failure == null) {
+                        failure = throwable;
+                    } else if (failure != throwable) {
+                        failure.addSuppressed(throwable);
+                    }
+                }
+            }
+        } finally {
+            runnables.clear();
+        }
         EnderchestDisplay.shutdown();
         EnchantmentTableAnimation.shutdown();
+        if (failure != null && plugin != null) {
+            try {
+                plugin.getLogger().log(java.util.logging.Level.SEVERE,
+                        "One or more runnable displays failed while releasing shutdown state", failure);
+            } catch (Throwable ignored) {
+                // Cleanup diagnostics must not interrupt the remaining shutdown sequence.
+            }
+        }
     }
 
     /** Number of display registrations or delayed inventory requests retained. */

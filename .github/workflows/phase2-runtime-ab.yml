@@ -6,17 +6,17 @@ on:
   workflow_dispatch:
     inputs:
       ab_factor:
-        description: "Independent A/B factor (text cache requires block-active)"
+        description: "Independent A/B factor with an isolated matching workload"
         required: true
         default: "scenario-config"
         type: choice
-        options: ["scenario-config", "legacy-text-component-cache"]
+        options: ["scenario-config", "legacy-text-component-cache", "dropped-item-section-candidates"]
       scenario:
-        description: "Runtime workload (choose block-active for text cache)"
+        description: "Runtime workload (factor-specific scenarios are isolated)"
         required: true
         default: "static-steady"
         type: choice
-        options: ["static-steady", "block-idle", "block-active", "block-direct-write"]
+        options: ["static-steady", "dropped-items", "block-idle", "block-active", "block-direct-write"]
       runs:
         description: "Restart-isolated runs (4, 8, or formal 12)"
         required: true
@@ -24,7 +24,7 @@ on:
         type: choice
         options: ["4", "8", "12"]
       items:
-        description: "Logical items (max 8192) or fully tracked workload blocks (max 1024)"
+        description: "Logical/dropped items (max 8192) or fully tracked workload blocks (max 1024)"
         required: true
         default: "1024"
         type: string
@@ -55,22 +55,27 @@ permissions:
 
 jobs:
   clean-runtime-ab:
-    name: Paper 26.1.2 runtime ABBA
+    name: >-
+      ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' && 'Dropped-item formal runtime gate' || github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-formal' && 'Paper runtime formal ABBA' || github.event_name == 'workflow_dispatch' && inputs.spark_profile_mode == 'alloc' && 'Allocation diagnostic runtime ABBA' || github.event_name == 'workflow_dispatch' && inputs.spark_profile_mode != 'none' && 'Profile diagnostic runtime ABBA' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates' && 'Dropped-item formal runtime gate' || 'Paper runtime ABBA smoke' }}
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.action != 'labeled' ||
-      github.event.label.name == 'phase2-runtime-formal'
+      github.event.label.name == 'phase2-runtime-formal' ||
+      github.event.label.name == 'phase2-runtime-dropped-item-formal'
     runs-on: ubuntu-latest
     timeout-minutes: 130
     env:
-      CAMPAIGN_AB_FACTOR: ${{ github.event_name == 'workflow_dispatch' && inputs.ab_factor || 'scenario-config' }}
-      CAMPAIGN_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario || 'static-steady' }}
-      CAMPAIGN_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || github.event.action == 'labeled' && '12' || '4' }}
-      CAMPAIGN_ITEMS: ${{ github.event_name == 'workflow_dispatch' && inputs.items || github.event.action == 'labeled' && '4096' || '1024' }}
-      CAMPAIGN_WARMUP_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.warmup_seconds || github.event.action == 'labeled' && '120' || '10' }}
-      CAMPAIGN_SETTLE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.settle_seconds || github.event.action == 'labeled' && '20' || '5' }}
-      CAMPAIGN_MEASURE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_seconds || github.event.action == 'labeled' && '180' || '10' }}
-      CAMPAIGN_SPARK_PROFILE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.spark_profile_mode || 'none' }}
+      CAMPAIGN_AB_FACTOR: ${{ github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' && 'dropped-item-section-candidates' || github.event_name == 'workflow_dispatch' && inputs.ab_factor || 'scenario-config' }}
+      CAMPAIGN_PAPER_VERSION: "26.1.2"
+      CAMPAIGN_PAPER_BUILD_ID: "74"
+      CAMPAIGN_SCENARIO: ${{ (github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates') && 'dropped-items' || github.event_name == 'workflow_dispatch' && inputs.scenario || 'static-steady' }}
+      CAMPAIGN_RUNS: ${{ (github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates' && inputs.spark_profile_mode == 'none') && '12' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates' && '4' || github.event_name == 'workflow_dispatch' && inputs.runs || github.event.action == 'labeled' && '12' || '4' }}
+      CAMPAIGN_ITEMS: ${{ (github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates') && '2048' || github.event_name == 'workflow_dispatch' && inputs.items || github.event.action == 'labeled' && '4096' || '1024' }}
+      CAMPAIGN_DROPPED_NEARBY_ITEMS: "128"
+      CAMPAIGN_WARMUP_SECONDS: ${{ (github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates' && inputs.spark_profile_mode == 'none') && '120' || github.event_name == 'workflow_dispatch' && inputs.warmup_seconds || github.event.action == 'labeled' && '120' || '10' }}
+      CAMPAIGN_SETTLE_SECONDS: ${{ (github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates' && inputs.spark_profile_mode == 'none') && '20' || github.event_name == 'workflow_dispatch' && inputs.settle_seconds || github.event.action == 'labeled' && '20' || '5' }}
+      CAMPAIGN_MEASURE_SECONDS: ${{ (github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' || github.event_name == 'workflow_dispatch' && inputs.ab_factor == 'dropped-item-section-candidates' && inputs.spark_profile_mode == 'none') && '180' || github.event_name == 'workflow_dispatch' && inputs.measure_seconds || github.event.action == 'labeled' && '180' || '10' }}
+      CAMPAIGN_SPARK_PROFILE_MODE: ${{ github.event.action == 'labeled' && github.event.label.name == 'phase2-runtime-dropped-item-formal' && 'none' || github.event_name == 'workflow_dispatch' && inputs.spark_profile_mode || 'none' }}
       CAMPAIGN_EVIDENCE_KIND: ${{ github.event_name == 'workflow_dispatch' && inputs.spark_profile_mode != 'none' && 'diagnostic' || 'clean' }}
 
     steps:
@@ -97,6 +102,8 @@ jobs:
         run: |
           bash -n tools/perf/prepare-phase2-protocol-client.sh
           bash -n tools/perf/run-phase2-runtime-once.sh
+          bash tools/perf/run-phase2-runtime-once.sh --self-test
+          python3 tools/perf/evaluate-dropped-item-gate.py --self-test
           node --check tools/perf/phase2-protocol-client.js
           pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 -SelfTest
           pwsh -NoProfile -File tools/perf/analyze-phase2-pcap.ps1 -SelfTest
@@ -104,19 +111,34 @@ jobs:
       - name: Build and test the production plugin
         run: ./gradlew clean check shadowJar --no-daemon --no-build-cache --rerun-tasks
 
-      - name: Download stable Paper 26.1.2
+      - name: Download selected Paper runtime
         env:
           PAPER_USER_AGENT: InteractionVisualizer-Phase2/1.0 (https://github.com/EllanServer/InteractionVisualizer)
+          PAPER_VERSION: ${{ env.CAMPAIGN_PAPER_VERSION }}
+          PINNED_PAPER_BUILD_ID: ${{ env.CAMPAIGN_PAPER_BUILD_ID }}
         run: |
           mkdir -p phase2-dependencies
+          case "$PAPER_VERSION" in
+            26.1.2) PAPER_CHANNEL=STABLE ;;
+            *) echo "Unsupported Paper version: $PAPER_VERSION" >&2; exit 64 ;;
+          esac
           BUILDS=$(curl --fail --silent --show-error \
             -H "User-Agent: $PAPER_USER_AGENT" \
-            https://fill.papermc.io/v3/projects/paper/versions/26.1.2/builds)
-          PAPER_URL=$(echo "$BUILDS" | jq -r 'first(.[] | select(.channel == "STABLE") | .downloads."server:default".url) // empty')
-          test -n "$PAPER_URL"
+            "https://fill.papermc.io/v3/projects/paper/versions/$PAPER_VERSION/builds")
+          PAPER_RECORD=$(echo "$BUILDS" | jq -c \
+            --arg channel "$PAPER_CHANNEL" --argjson build_id "$PINNED_PAPER_BUILD_ID" \
+            'first(.[] | select(.channel == $channel and .id == $build_id)) // empty')
+          test -n "$PAPER_RECORD"
+          PAPER_URL=$(echo "$PAPER_RECORD" | jq -r '.downloads."server:default".url')
+          PAPER_SHA256=$(echo "$PAPER_RECORD" | jq -r '.downloads."server:default".checksums.sha256')
+          SELECTED_PAPER_BUILD_ID=$(echo "$PAPER_RECORD" | jq -r '.id')
+          [[ "$SELECTED_PAPER_BUILD_ID" == "$PINNED_PAPER_BUILD_ID" ]]
           curl --fail --location --show-error \
             -H "User-Agent: $PAPER_USER_AGENT" \
             --output phase2-dependencies/paper.jar "$PAPER_URL"
+          echo "$PAPER_SHA256  phase2-dependencies/paper.jar" | sha256sum --check
+          echo "SELECTED_PAPER_CHANNEL=$PAPER_CHANNEL" >> "$GITHUB_ENV"
+          echo "SELECTED_PAPER_BUILD_ID=$SELECTED_PAPER_BUILD_ID" >> "$GITHUB_ENV"
 
       - name: Prepare immutable protocol client artifact
         run: bash tools/perf/prepare-phase2-protocol-client.sh phase2-dependencies/protocol-client
@@ -124,9 +146,13 @@ jobs:
       - name: Run restart-isolated runtime campaign
         env:
           AB_FACTOR: ${{ env.CAMPAIGN_AB_FACTOR }}
+          PAPER_VERSION: ${{ env.CAMPAIGN_PAPER_VERSION }}
+          PAPER_CHANNEL: ${{ env.SELECTED_PAPER_CHANNEL }}
+          PAPER_BUILD_ID: ${{ env.SELECTED_PAPER_BUILD_ID }}
           SCENARIO: ${{ env.CAMPAIGN_SCENARIO }}
           RUNS: ${{ env.CAMPAIGN_RUNS }}
           ITEMS: ${{ env.CAMPAIGN_ITEMS }}
+          DROPPED_NEARBY_ITEMS: ${{ env.CAMPAIGN_DROPPED_NEARBY_ITEMS }}
           WARMUP_SECONDS: ${{ env.CAMPAIGN_WARMUP_SECONDS }}
           SETTLE_SECONDS: ${{ env.CAMPAIGN_SETTLE_SECONDS }}
           MEASURE_SECONDS: ${{ env.CAMPAIGN_MEASURE_SECONDS }}
@@ -134,11 +160,15 @@ jobs:
           EVIDENCE_KIND: ${{ env.CAMPAIGN_EVIDENCE_KIND }}
         run: |
           set -euo pipefail
-          [[ "$AB_FACTOR" == scenario-config || "$AB_FACTOR" == legacy-text-component-cache ]]
+          [[ "$PAPER_VERSION" == 26.1.2 || "$PAPER_VERSION" == 26.2 ]]
+          [[ "$AB_FACTOR" == scenario-config || "$AB_FACTOR" == legacy-text-component-cache || \
+             "$AB_FACTOR" == dropped-item-section-candidates ]]
           [[ "$SCENARIO" == static-steady || "$SCENARIO" == block-idle || \
-             "$SCENARIO" == block-active || "$SCENARIO" == block-direct-write ]]
+             "$SCENARIO" == block-active || "$SCENARIO" == block-direct-write || \
+             "$SCENARIO" == dropped-items ]]
           [[ "$RUNS" =~ ^(4|8|12)$ ]]
           [[ "$ITEMS" =~ ^[0-9]+$ ]]
+          [[ "$DROPPED_NEARBY_ITEMS" =~ ^[0-9]+$ ]]
           if [[ "$SCENARIO" == block-* ]]; then
             # TileEntityUpdate.CheckingRange=1 covers the centered 32x32
             # block footprint completely; larger command scenes are valid but
@@ -169,14 +199,46 @@ jobs:
               exit 64
             fi
           fi
+          if [[ "$AB_FACTOR" == dropped-item-section-candidates ]]; then
+            if [[ "$SCENARIO" != dropped-items ]]; then
+              echo "dropped-item-section-candidates A/B is isolated to dropped-items" >&2
+              exit 64
+            fi
+            if [[ "$SPARK_PROFILE_MODE" == none ]]; then
+              if [[ "$RUNS" != 12 ]]; then
+                echo "clean dropped-item-section-candidates evidence is formal-only and requires runs=12" >&2
+                exit 64
+              fi
+              if [[ "$WARMUP_SECONDS" != 120 || "$SETTLE_SECONDS" != 20 || \
+                    "$MEASURE_SECONDS" != 180 ]]; then
+                echo "clean dropped-item-section-candidates evidence requires canonical 120/20/180 windows" >&2
+                exit 64
+              fi
+            elif [[ "$RUNS" != 4 ]]; then
+              echo "profiled dropped-item-section-candidates diagnostics require runs=4" >&2
+              exit 64
+            fi
+            if (( ITEMS != 2048 )); then
+              echo "dropped-item-section-candidates A/B requires exactly 2048 dropped items" >&2
+              exit 64
+            fi
+            if (( DROPPED_NEARBY_ITEMS != 128 )); then
+              echo "dropped-item-section-candidates A/B requires exactly 128 nearby labels" >&2
+              exit 64
+            fi
+          elif [[ "$SCENARIO" == dropped-items ]]; then
+            echo "dropped-items is reserved for dropped-item-section-candidates A/B" >&2
+            exit 64
+          fi
           if [[ "$SPARK_PROFILE_MODE" == cpu-all && \
-                "$SCENARIO" != block-active && "$SCENARIO" != block-direct-write ]]; then
-            echo "Spark cpu-all profiling is isolated to block-active or block-direct-write" >&2
+                "$SCENARIO" != block-active && "$SCENARIO" != block-direct-write && \
+                "$SCENARIO" != dropped-items ]]; then
+            echo "Spark cpu-all profiling is isolated to block-active, block-direct-write, or dropped-items" >&2
             exit 64
           fi
           if [[ "$SPARK_PROFILE_MODE" != none && "$SPARK_PROFILE_MODE" != cpu-all && \
-                "$SCENARIO" != block-direct-write ]]; then
-            echo "Spark cpu/alloc profiling is isolated to block-direct-write" >&2
+                "$SCENARIO" != block-direct-write && "$SCENARIO" != dropped-items ]]; then
+            echo "Spark cpu/alloc profiling is isolated to block-direct-write or dropped-items" >&2
             exit 64
           fi
           if [[ "$SPARK_PROFILE_MODE" != none && "$RUNS" != 4 ]]; then
@@ -202,16 +264,18 @@ jobs:
           EVIDENCE_ROOT="phase2-results/$EVIDENCE_KIND"
           mkdir -p "$EVIDENCE_ROOT"
           MANIFEST="$EVIDENCE_ROOT/abba-manifest.csv"
-          printf 'Scenario,Block,Position,Variant,RunId,AbFactor,LegacyTextComponentCacheDisableProperty,LegacyTextComponentCacheEnabled,LegacyTextCacheRequests,LegacyTextCacheMisses,LegacyTextCacheHits,LegacyTextCacheHitRate,LegacyTextSameRawFastPaths,ConfigSha256,JvmArgumentsSha256,JvmArgumentsNormalizedSha256,StackSha256,ArtifactSha256,CaptureMethod,SourcePath\n' > "$MANIFEST"
+          printf 'Scenario,Block,Position,Variant,RunId,AbFactor,DroppedSourceOwnedSectionCandidates,LegacyTextComponentCacheDisableProperty,LegacyTextComponentCacheEnabled,LegacyTextCacheRequests,LegacyTextCacheMisses,LegacyTextCacheHits,LegacyTextCacheHitRate,LegacyTextSameRawFastPaths,ConfigSha256,JvmArgumentsSha256,JvmArgumentsNormalizedSha256,StackSha256,ArtifactSha256,CaptureMethod,SourcePath\n' > "$MANIFEST"
           ARTIFACT_SHA=$(sha256sum "$PLUGIN_JAR" | awk '{print $1}')
           STACK_SHA=$(
             {
               sha256sum phase2-dependencies/paper.jar
               sha256sum phase2-dependencies/protocol-client/client-build-manifest.json
               sha256sum tools/perf/run-phase2-runtime-once.sh
+              sha256sum tools/perf/evaluate-dropped-item-gate.py
               java -version 2>&1
               printf '%s\n' \
-                "abFactor=$AB_FACTOR" "scenario=$SCENARIO" "sparkProfile=$SPARK_PROFILE_MODE"
+                "abFactor=$AB_FACTOR" "scenario=$SCENARIO" \
+                "droppedNearbyItems=$DROPPED_NEARBY_ITEMS" "sparkProfile=$SPARK_PROFILE_MODE"
             } | sha256sum | awk '{print $1}'
           )
 
@@ -220,14 +284,23 @@ jobs:
             position=$(( (run_number - 1) % 4 + 1 ))
             if (( block % 2 == 1 )); then pattern=ABBA; else pattern=BAAB; fi
             variant=${pattern:$((position - 1)):1}
-            if [[ "$AB_FACTOR" == scenario-config ]]; then
-              run_id=$(printf '%s_%s_%02d' "${SCENARIO//-/_}" "$variant" "$run_number")
-            else
-              run_id=$(printf '%s_text_cache_%s_%02d' "${SCENARIO//-/_}" "$variant" "$run_number")
-            fi
+            case "$AB_FACTOR" in
+              scenario-config)
+                run_id=$(printf '%s_%s_%02d' "${SCENARIO//-/_}" "$variant" "$run_number")
+                ;;
+              legacy-text-component-cache)
+                run_id=$(printf '%s_text_cache_%s_%02d' "${SCENARIO//-/_}" "$variant" "$run_number")
+                ;;
+              dropped-item-section-candidates)
+                run_id=$(printf '%s_section_candidates_%s_%02d' "${SCENARIO//-/_}" "$variant" "$run_number")
+                ;;
+            esac
 
             PHASE2_PLUGIN_JAR="$PLUGIN_JAR" \
             PHASE2_PAPER_JAR=phase2-dependencies/paper.jar \
+            PHASE2_PAPER_VERSION="$PAPER_VERSION" \
+            PHASE2_PAPER_CHANNEL="$PAPER_CHANNEL" \
+            PHASE2_PAPER_BUILD_ID="$PAPER_BUILD_ID" \
             PHASE2_CLIENT_ROOT=phase2-dependencies/protocol-client \
             PHASE2_OUTPUT_ROOT="$EVIDENCE_ROOT" \
             PHASE2_RUN_ID="$run_id" \
@@ -235,6 +308,7 @@ jobs:
             PHASE2_VARIANT="$variant" \
             PHASE2_AB_FACTOR="$AB_FACTOR" \
             PHASE2_ITEM_COUNT="$ITEMS" \
+            PHASE2_DROPPED_NEARBY_ITEM_COUNT="$DROPPED_NEARBY_ITEMS" \
             PHASE2_WARMUP_SECONDS="$WARMUP_SECONDS" \
             PHASE2_SETTLE_SECONDS="$SETTLE_SECONDS" \
             PHASE2_MEASURE_SECONDS="$MEASURE_SECONDS" \
@@ -273,6 +347,14 @@ jobs:
           cache = provenance.get("legacyTextComponentCache", {})
           if provenance.get("abFactor") != ab_factor or metrics.get("abFactor") != ab_factor:
               raise SystemExit(f"A/B factor provenance mismatch for {run_id}")
+          candidate_source = provenance.get("droppedSourceOwnedSectionCandidates")
+          if candidate_source is not metrics.get("droppedSourceOwnedSectionCandidates"):
+              raise SystemExit(f"dropped candidate-source provenance mismatch for {run_id}")
+          expected_candidate_source = (
+              ab_factor == "dropped-item-section-candidates" and variant == "B"
+          )
+          if candidate_source is not expected_candidate_source:
+              raise SystemExit(f"dropped candidate-source treatment mismatch for {run_id}")
           cache_metric_mapping = {
               "enabled": "legacyTextComponentCache",
               "requests": "legacyTextCacheRequests",
@@ -308,6 +390,7 @@ jobs:
               variant,
               run_id,
               ab_factor,
+              str(candidate_source).lower(),
               str(cache.get("disableProperty")).lower(),
               str(cache.get("enabled")).lower(),
               cache.get("requests"),
@@ -344,6 +427,17 @@ jobs:
               -Scenario "$SCENARIO" -Metric observedTps -Direction HigherIsBetter \
               -MinimumSeconds "$minimum_seconds" "${incomplete[@]}" \
               -OutputJson "$EVIDENCE_ROOT/observedTps.analysis.json" -Overwrite
+          fi
+
+          if [[ "$SCENARIO" == dropped-items && "$SPARK_PROFILE_MODE" == none ]]; then
+            pwsh -NoProfile -File tools/perf/analyze-phase2-abba.ps1 "$MANIFEST" \
+              -Scenario "$SCENARIO" -Metric droppedItemMs -Direction LowerIsBetter \
+              -MinimumSeconds "$minimum_seconds" "${incomplete[@]}" \
+              -OutputJson "$EVIDENCE_ROOT/droppedItemMs.analysis.json" -Overwrite
+
+            python3 tools/perf/evaluate-dropped-item-gate.py \
+              "$MANIFEST" "$EVIDENCE_ROOT" "$ITEMS" "$DROPPED_NEARBY_ITEMS" \
+              "$EVIDENCE_ROOT/dropped-item-section-candidates.gate.json"
           fi
 
           if [[ "$SCENARIO" == block-* ]]; then
@@ -756,7 +850,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase2-${{ env.CAMPAIGN_EVIDENCE_KIND }}-runtime-${{ env.CAMPAIGN_SCENARIO }}-${{ env.CAMPAIGN_AB_FACTOR }}-${{ github.sha }}-${{ github.run_id }}
+          name: phase2-${{ env.CAMPAIGN_EVIDENCE_KIND }}-runtime-paper-${{ env.CAMPAIGN_PAPER_VERSION }}-${{ env.CAMPAIGN_SCENARIO }}-${{ env.CAMPAIGN_AB_FACTOR }}-${{ github.sha }}-${{ github.run_id }}
           path: |
             phase2-results/${{ env.CAMPAIGN_EVIDENCE_KIND }}
             phase2-dependencies/protocol-client/client-build-manifest.json

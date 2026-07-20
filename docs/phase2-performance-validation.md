@@ -361,7 +361,7 @@ Get-NetTCPConnection -OwningProcess $serverPid -LocalPort 25566 -State Establish
 - `displaySyncs`、`itemSyncs`、`virtualViewerChecks`。
 - 通用限流的 `visibilityShowsQueued`、`visibilityShowsDrained`；旧 `DroppedItemDisplay` 标签桶不使用这两个计数器。
 - `blockUpdateChecks`、`blockUpdateMs` 只统计各 display type 子 updater 的实际检查/更新调用；legacy parent collection iteration 和旧 task scheduling 不在该计时器内，必须从 MSPT/整体热路径判断。`Settings.Performance.BlockUpdates.MaxDirtyPerTick` 是每个 display type 的独立 dirty budget，不是所有熔炉类型共享的全局上限。
-- `itemAnimationMs`、`droppedItemMs`，需要除以 seconds、item 数和 viewer 数后比较。
+- `itemAnimationMs`、`droppedItemMs`，需要除以 seconds、item 数和 viewer 数后比较。`droppedItemMs` 是整个标签刷新 pass 的累计耗时，既包含候选来源，也包含对保留标签的格式化与 Paper metadata 更新；候选来源专项必须同时用 full-scan/spatial/viewer-check 计数证明复杂度变化，不能把整个 pass 的任意固定降幅当作候选查询本身的代理。
 
 `knownVirtualPackets` 是插件已知的顶层 Sparrow 调用/Bundle 数，不等于 Bundle 内逻辑包数、TCP segment 数或编码后字节。
 
@@ -435,6 +435,7 @@ $json = "D:\iv-ab\2026-07-13\S2_A_01.presentmon.json"
 - 静止动画锚点：`bukkitEntityTeleports` 至少下降 95%；`virtualTeleportBundles` 与 A 相差不超过 1%；客户端轨迹和拾取终点一致。
 - 通用 128/32 可见性：每玩家首个 drain tick show 不超过 128，后续每 tick 不超过 32；2048 个 `DisplayManager` 实体不超过 63 ticks 完成；`visibilityShowsQueued/Drained` 与去重、取消结果一致；50ms 峰值下行 payload 至少下降 70%，完整收敛窗口总 payload 与 A 相差不超过 5%。
 - 旧 dropped-label 128/32 回归：同样满足 128/32 与 63-tick 收敛上限，但使用真实标签的 Bukkit show/hide、ghost 检查和抓包计数，不得引用通用队列计数器作为证据。
+- dropped-item section candidate source：固定 2048 个全局跟踪 item、128 个 nearby label；B 的 full-scan 必须为 0，B 的 spatial candidates 与 viewer distance checks 各自不超过 A full-scan 的 10%。整个 `droppedItemMs` pass 仍按统一目标门执行：配对中位数至少改善 5%，且 bootstrap 95% CI 上界低于 ratio 1.0；MSPT 继续使用 1.02/1.05 守门。allocation profiler 仅用于归因，不能冒充 clean effect size。
 - 事件驱动 idle：1024 idle block 的相关 CPU/累计耗时至少下降 70%；100% active 的 p95/p99 不超过通用守门；标准事件在 2 ticks 内反映，非标准直接写入在约定 fallback audit 周期内修正。
 - FPS：p95 frame time 不恶化超过 2%，1% low 不下降超过 3%，且没有视觉正确性回归。
 

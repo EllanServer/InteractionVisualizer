@@ -25,6 +25,10 @@ final class DroppedItemSpatialIndex {
 
     private final Map<Cell, List<Point>> itemCells = new HashMap<>();
 
+    void clear() {
+        itemCells.clear();
+    }
+
     void addItem(UUID worldId, double x, double y, double z) {
         itemCells.computeIfAbsent(itemCell(worldId, x, y, z), ignored -> new ArrayList<>())
                 .add(new Point(x, y, z));

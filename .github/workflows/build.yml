@@ -80,6 +80,9 @@ jobs:
         run: |
           bash -n tools/perf/prepare-phase2-protocol-client.sh
           bash -n tools/perf/run-phase2-runtime-once.sh
+          bash -n tools/perf/run-paper-compatibility-smoke.sh
+          bash tools/perf/run-phase2-runtime-once.sh --self-test
+          bash tools/perf/run-paper-compatibility-smoke.sh --self-test
           node --check tools/perf/phase2-protocol-client.js
 
       - name: Run checks and build production jar
@@ -92,4 +95,100 @@ jobs:
           name: InteractionVisualizer-${{ github.sha }}
           path: build/libs/InteractionVisualizer-*.jar
           if-no-files-found: error
+          retention-days: 14
+
+  paper-26-2-compatibility:
+    name: Paper 26.2 compatibility smoke
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PAPER_VERSION: "26.2"
+      PAPER_BUILD_ID: "62"
+      PAPER_CHANNEL: BETA
+      PAPER_SHA256: 597cb54eef27b318dfb7daef924f9bbe2816e6b0547f0f861b15b42337b6ccd5
+      PAPER_USER_AGENT: InteractionVisualizer-CI/1.0 (https://github.com/EllanServer/InteractionVisualizer)
+
+    steps:
+      - name: Check out compatibility harness
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Download current production jar
+        uses: actions/download-artifact@v4
+        with:
+          name: InteractionVisualizer-${{ github.sha }}
+          path: compatibility-dependencies/plugin
+
+      - name: Select production jar
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          candidates=()
+          for candidate in compatibility-dependencies/plugin/InteractionVisualizer-*.jar; do
+            case "$candidate" in
+              *-sources.jar|*-benchmark.jar|*-runtime-compare.jar) continue ;;
+            esac
+            candidates+=("$candidate")
+          done
+          if (( ${#candidates[@]} != 1 )); then
+            printf 'Expected exactly one production jar, found %d\n' "${#candidates[@]}" >&2
+            printf '%s\n' "${candidates[@]}" >&2
+            exit 1
+          fi
+          echo "PAPER_COMPAT_PLUGIN_JAR=${candidates[0]}" >> "$GITHUB_ENV"
+
+      - name: Download pinned Paper 26.2 build 62
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p compatibility-dependencies/paper
+          curl --fail --silent --show-error \
+            -H "User-Agent: $PAPER_USER_AGENT" \
+            --output compatibility-dependencies/paper/builds.json \
+            "https://fill.papermc.io/v3/projects/paper/versions/$PAPER_VERSION/builds"
+          PAPER_RECORD=$(jq -ce --argjson build_id "$PAPER_BUILD_ID" \
+            'first(.[] | select(.id == $build_id)) // error("pinned Paper build is missing")' \
+            compatibility-dependencies/paper/builds.json)
+          [[ "$(jq -r '.id' <<< "$PAPER_RECORD")" == "$PAPER_BUILD_ID" ]]
+          [[ "$(jq -r '.channel' <<< "$PAPER_RECORD")" == "$PAPER_CHANNEL" ]]
+          [[ "$(jq -r '.downloads."server:default".checksums.sha256' <<< "$PAPER_RECORD")" == "$PAPER_SHA256" ]]
+          [[ "$(jq -r '.downloads."server:default".name' <<< "$PAPER_RECORD")" == "paper-$PAPER_VERSION-$PAPER_BUILD_ID.jar" ]]
+          PAPER_URL=$(jq -er '.downloads."server:default".url' <<< "$PAPER_RECORD")
+          PAPER_COMMIT_SHA=$(jq -er '.commits[0].sha' <<< "$PAPER_RECORD")
+          [[ "$PAPER_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          curl --fail --location --show-error \
+            -H "User-Agent: $PAPER_USER_AGENT" \
+            --output compatibility-dependencies/paper/paper.jar \
+            "$PAPER_URL"
+          echo "$PAPER_SHA256  compatibility-dependencies/paper/paper.jar" | sha256sum --check
+          printf '%s\n' "$PAPER_RECORD" > compatibility-dependencies/paper/build-62.json
+          echo "PAPER_COMPAT_PAPER_COMMIT_SHA=$PAPER_COMMIT_SHA" >> "$GITHUB_ENV"
+
+      - name: Run real Paper 26.2 compatibility smoke
+        shell: bash
+        env:
+          PAPER_COMPAT_PAPER_JAR: compatibility-dependencies/paper/paper.jar
+          PAPER_COMPAT_OUTPUT_ROOT: compatibility-results
+          PAPER_COMPAT_SOURCE_SHA: ${{ github.sha }}
+        run: bash tools/perf/run-paper-compatibility-smoke.sh
+
+      - name: Upload Paper 26.2 compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-26.2-build-62-compatibility-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            compatibility-results/server.log
+            compatibility-results/compatibility-manifest.json
+            compatibility-dependencies/paper/build-62.json
+          if-no-files-found: warn
           retention-days: 14

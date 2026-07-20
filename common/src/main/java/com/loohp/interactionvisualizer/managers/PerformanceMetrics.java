@@ -43,6 +43,8 @@ public final class PerformanceMetrics implements Listener {
 
     private final double[] tickDurations = new double[MAX_TICK_SAMPLES];
     private final SlowestTickTracker slowestTickTracker = new SlowestTickTracker();
+    private final PopulationTracker droppedTrackedItems = new PopulationTracker();
+    private final PopulationTracker droppedLabels = new PopulationTracker();
 
     private volatile boolean collecting;
     private String label = "";
@@ -55,6 +57,8 @@ public final class PerformanceMetrics implements Listener {
     private DroppedLabelVisibilityConfig droppedLabelVisibilityConfig =
             new DroppedLabelVisibilityConfig(false, 64, false, 128, 32);
     private DroppedLabelVisibilityConfig configDroppedLabelVisibility = droppedLabelVisibilityConfig;
+    private boolean droppedSourceOwnedSectionCandidates;
+    private boolean configDroppedSourceOwnedSectionCandidates;
     private boolean configEventDrivenBlockUpdates;
     private int configBlockUpdateMaxDirtyPerTick;
     private long startedNanos;
@@ -117,6 +121,10 @@ public final class PerformanceMetrics implements Listener {
                 cullingEnabled, viewDistance, rateLimitEnabled, bucketSize, restorePerTick);
     }
 
+    public static void droppedLabelCandidateSource(boolean sourceOwnedSectionCandidates) {
+        INSTANCE.droppedSourceOwnedSectionCandidates = sourceOwnedSectionCandidates;
+    }
+
     public static boolean start(String requestedLabel) {
         if (INSTANCE.collecting) {
             return false;
@@ -130,6 +138,8 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.configVisibilityBucketSize = InteractionVisualizer.visibilityRateLimitBucketSize;
         INSTANCE.configVisibilityRestorePerTick = InteractionVisualizer.visibilityRateLimitRestorePerTick;
         INSTANCE.configDroppedLabelVisibility = INSTANCE.droppedLabelVisibilityConfig;
+        INSTANCE.configDroppedSourceOwnedSectionCandidates =
+                INSTANCE.droppedSourceOwnedSectionCandidates;
         INSTANCE.configEventDrivenBlockUpdates = InteractionVisualizer.eventDrivenBlockUpdates;
         INSTANCE.configBlockUpdateMaxDirtyPerTick = InteractionVisualizer.blockUpdateMaxDirtyPerTick;
         INSTANCE.startedNanos = System.nanoTime();
@@ -161,6 +171,8 @@ public final class PerformanceMetrics implements Listener {
         INSTANCE.droppedViewerDistanceChecks = 0;
         INSTANCE.droppedSpatialCandidates = 0;
         INSTANCE.droppedFullScanCandidates = 0;
+        INSTANCE.droppedTrackedItems.reset();
+        INSTANCE.droppedLabels.reset();
         INSTANCE.blockUpdateChecks = 0;
         INSTANCE.blockUpdateNanos = 0;
         INSTANCE.blockUpdateCoordinatorLanesMax = 0;
@@ -343,6 +355,13 @@ public final class PerformanceMetrics implements Listener {
         }
     }
 
+    public static void droppedItemState(int trackedItems, int labels) {
+        if (INSTANCE.collecting) {
+            INSTANCE.droppedTrackedItems.sample(trackedItems);
+            INSTANCE.droppedLabels.sample(labels);
+        }
+    }
+
     public static void blockUpdateChecks(int checks, long nanos) {
         if (INSTANCE.collecting) {
             INSTANCE.blockUpdateChecks += checks;
@@ -467,6 +486,7 @@ public final class PerformanceMetrics implements Listener {
         return new Snapshot(label, configStaticAnchor, configPacketOnlyStatic, configHideIfViewObstructed,
                 configVisibilityRateLimit,
                 configVisibilityBucketSize, configVisibilityRestorePerTick, configDroppedLabelVisibility,
+                configDroppedSourceOwnedSectionCandidates,
                 configEventDrivenBlockUpdates,
                 configBlockUpdateMaxDirtyPerTick, LegacyTextComponentCache.isEnabled(),
                 elapsedNanos, samples, tickSamplesDropped,
@@ -484,6 +504,9 @@ public final class PerformanceMetrics implements Listener {
                 retainedCullingRegistrations,
                 itemAnimationNanos, droppedItemNanos, droppedViewerDistanceChecks,
                 droppedSpatialCandidates, droppedFullScanCandidates,
+                droppedTrackedItems.min(), droppedTrackedItems.max(), droppedTrackedItems.end(),
+                droppedTrackedItems.sampleCount(),
+                droppedLabels.min(), droppedLabels.max(), droppedLabels.end(), droppedLabels.sampleCount(),
                 blockUpdateChecks, blockUpdateNanos,
                 blockUpdateCoordinatorLanesMax, blockUpdateDirtyQueueMax, blockUpdateActiveQueueMax,
                 preferenceIoOperations, preferenceIoFailures, preferenceIoQueueDepthMax,
@@ -591,6 +614,7 @@ public final class PerformanceMetrics implements Listener {
             int visibilityBucketSize,
             int visibilityRestorePerTick,
             DroppedLabelVisibilityConfig droppedLabelVisibility,
+            boolean droppedSourceOwnedSectionCandidates,
             boolean eventDrivenBlockUpdates,
             int blockUpdateMaxDirtyPerTick,
             boolean legacyTextComponentCache,
@@ -635,6 +659,14 @@ public final class PerformanceMetrics implements Listener {
             long droppedViewerDistanceChecks,
             long droppedSpatialCandidates,
             long droppedFullScanCandidates,
+            int droppedTrackedItemsMin,
+            int droppedTrackedItemsMax,
+            int droppedTrackedItemsEnd,
+            long droppedTrackedItemsSampleCount,
+            int droppedLabelsMin,
+            int droppedLabelsMax,
+            int droppedLabelsEnd,
+            long droppedLabelsSampleCount,
             long blockUpdateChecks,
             long blockUpdateNanos,
             int blockUpdateCoordinatorLanesMax,
@@ -695,6 +727,7 @@ public final class PerformanceMetrics implements Listener {
                             "\"droppedLabelVisibilityRateLimit\":%b," +
                             "\"droppedLabelVisibilityBucketSize\":%d," +
                             "\"droppedLabelVisibilityRestorePerTick\":%d," +
+                            "\"droppedSourceOwnedSectionCandidates\":%b," +
                             "\"eventDrivenBlockUpdates\":%b,\"blockUpdateMaxDirtyPerTick\":%d," +
                             "\"legacyTextComponentCache\":%b," +
                             "\"seconds\":%.3f,\"tickSamples\":%d,\"observedTps\":%.6f," +
@@ -721,6 +754,14 @@ public final class PerformanceMetrics implements Listener {
                             "\"droppedViewerDistanceChecks\":%d," +
                             "\"droppedSpatialCandidates\":%d," +
                             "\"droppedFullScanCandidates\":%d," +
+                            "\"droppedTrackedItemsMin\":%d," +
+                            "\"droppedTrackedItemsMax\":%d," +
+                            "\"droppedTrackedItemsEnd\":%d," +
+                            "\"droppedTrackedItemsSampleCount\":%d," +
+                            "\"droppedLabelsMin\":%d," +
+                            "\"droppedLabelsMax\":%d," +
+                            "\"droppedLabelsEnd\":%d," +
+                            "\"droppedLabelsSampleCount\":%d," +
                             "\"blockUpdateChecks\":%d,\"blockUpdateMs\":%.6f," +
                             "\"blockUpdateCoordinatorLanesMax\":%d," +
                             "\"blockUpdateDirtyQueueMax\":%d," +
@@ -738,7 +779,8 @@ public final class PerformanceMetrics implements Listener {
                     visibilityBucketSize, visibilityRestorePerTick,
                     droppedLabelVisibility.cullingEnabled(), droppedLabelVisibility.viewDistance(),
                     droppedLabelVisibility.rateLimitEnabled(), droppedLabelVisibility.bucketSize(),
-                    droppedLabelVisibility.restorePerTick(), eventDrivenBlockUpdates,
+                    droppedLabelVisibility.restorePerTick(), droppedSourceOwnedSectionCandidates,
+                    eventDrivenBlockUpdates,
                     blockUpdateMaxDirtyPerTick, legacyTextComponentCache,
                     seconds(), tickSamples, observedTps(), droppedTickSamples,
                     msptP50, msptP95, msptP99,
@@ -754,12 +796,67 @@ public final class PerformanceMetrics implements Listener {
                     itemAnimationNanos / 1_000_000.0D, droppedItemNanos / 1_000_000.0D,
                     droppedViewerDistanceChecks, droppedSpatialCandidates,
                     droppedFullScanCandidates,
+                    droppedTrackedItemsMin, droppedTrackedItemsMax, droppedTrackedItemsEnd,
+                    droppedTrackedItemsSampleCount,
+                    droppedLabelsMin, droppedLabelsMax, droppedLabelsEnd, droppedLabelsSampleCount,
                     blockUpdateChecks, blockUpdateNanos / 1_000_000.0D,
                     blockUpdateCoordinatorLanesMax, blockUpdateDirtyQueueMax, blockUpdateActiveQueueMax,
                     preferenceIoOperations, preferenceIoFailures, preferenceIoQueueDepthMax,
                     preferenceSqlStatements, preferenceDatabaseReconnects,
                     legacyTextCacheRequests, legacyTextCacheMisses, legacyTextCacheHits(),
                     legacyTextCacheHitRate(), legacyTextSameRawFastPaths);
+        }
+    }
+
+    /**
+     * Constant-space population summary for a complete measurement window.
+     * Package visibility keeps first-sample and reset behavior unit-testable
+     * without starting a server.
+     */
+    static final class PopulationTracker {
+
+        private int min;
+        private int max;
+        private int end;
+        private long sampleCount;
+
+        PopulationTracker() {
+            reset();
+        }
+
+        void reset() {
+            min = 0;
+            max = 0;
+            end = 0;
+            sampleCount = 0;
+        }
+
+        void sample(int population) {
+            if (sampleCount == 0) {
+                min = population;
+                max = population;
+            } else {
+                min = Math.min(min, population);
+                max = Math.max(max, population);
+            }
+            end = population;
+            sampleCount++;
+        }
+
+        int min() {
+            return min;
+        }
+
+        int max() {
+            return max;
+        }
+
+        int end() {
+            return end;
+        }
+
+        long sampleCount() {
+            return sampleCount;
         }
     }
 

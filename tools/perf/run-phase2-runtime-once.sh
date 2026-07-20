@@ -5,6 +5,28 @@ set -euo pipefail
 # invoke this script sequentially in the desired ABBA order; it deliberately
 # owns only one JVM/run so cleanup failures cannot leak state into the next one.
 
+plugin_enabled_log_marker() {
+  case "${1:-}" in
+    26.1.2)
+      printf '[InteractionVisualizer] Enabled for Paper %s!' "$1"
+      ;;
+    *)
+      return 64
+      ;;
+  esac
+}
+
+if [[ "${1:-}" == --self-test ]]; then
+  [[ "$(plugin_enabled_log_marker 26.1.2)" == \
+      '[InteractionVisualizer] Enabled for Paper 26.1.2!' ]]
+  if plugin_enabled_log_marker 26.2 >/dev/null 2>&1; then
+    echo 'runtime harness accepted a non-canonical Paper version' >&2
+    exit 1
+  fi
+  printf '{"passed":true,"canonicalPaperVersion":"26.1.2","paperEnableMarkers":["26.1.2"]}\n'
+  exit 0
+fi
+
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 protocol_client_source="$script_directory/phase2-protocol-client.js"
 protocol_trace_analyzer_source="$script_directory/analyze-phase2-protocol-trace.js"
@@ -25,6 +47,9 @@ done
 
 plugin_jar="$(realpath "$PHASE2_PLUGIN_JAR")"
 paper_jar="$(realpath "$PHASE2_PAPER_JAR")"
+paper_version="${PHASE2_PAPER_VERSION:-26.1.2}"
+paper_channel="${PHASE2_PAPER_CHANNEL:-UNKNOWN}"
+paper_build_id="${PHASE2_PAPER_BUILD_ID:-0}"
 client_root="$(realpath "$PHASE2_CLIENT_ROOT")"
 output_root="$(realpath -m "$PHASE2_OUTPUT_ROOT")"
 run_id="$PHASE2_RUN_ID"
@@ -32,6 +57,7 @@ scenario="$PHASE2_SCENARIO"
 variant="$PHASE2_VARIANT"
 server_port="${PHASE2_SERVER_PORT:-25566}"
 item_count="${PHASE2_ITEM_COUNT:-4096}"
+dropped_nearby_item_count="${PHASE2_DROPPED_NEARBY_ITEM_COUNT:-128}"
 warmup_seconds="${PHASE2_WARMUP_SECONDS:-120}"
 settle_seconds="${PHASE2_SETTLE_SECONDS:-20}"
 measure_seconds="${PHASE2_MEASURE_SECONDS:-180}"
@@ -51,19 +77,30 @@ case "$variant" in
   A|B) ;;
   *) echo "PHASE2_VARIANT must be A or B" >&2; exit 64 ;;
 esac
+case "$paper_version" in
+  26.1.2) ;;
+  *) echo "PHASE2_PAPER_VERSION must be the canonical benchmark version 26.1.2" >&2; exit 64 ;;
+esac
+case "$paper_channel" in
+  STABLE|BETA|UNKNOWN) ;;
+  *) echo "PHASE2_PAPER_CHANNEL must be STABLE, BETA, or UNKNOWN" >&2; exit 64 ;;
+esac
+[[ "$paper_build_id" =~ ^[0-9]+$ ]] \
+  || { echo "PHASE2_PAPER_BUILD_ID must be numeric" >&2; exit 64; }
 case "$scenario" in
-  static-steady|static-spawn|visibility-return|visibility-itemdisplay-return|visibility-textdisplay-return|block-idle|block-active|block-direct-write) ;;
+  static-steady|static-spawn|visibility-return|visibility-itemdisplay-return|visibility-textdisplay-return|dropped-items|block-idle|block-active|block-direct-write) ;;
   *) echo "Unsupported PHASE2_SCENARIO: $scenario" >&2; exit 64 ;;
 esac
 case "$ab_factor" in
-  scenario-config|legacy-text-component-cache) ;;
-  *) echo "PHASE2_AB_FACTOR must be scenario-config or legacy-text-component-cache" >&2; exit 64 ;;
+  scenario-config|legacy-text-component-cache|dropped-item-section-candidates) ;;
+  *) echo "PHASE2_AB_FACTOR must be scenario-config, legacy-text-component-cache, or dropped-item-section-candidates" >&2; exit 64 ;;
 esac
 if [[ "$ab_factor" == legacy-text-component-cache && "$scenario" != block-active ]]; then
   echo "legacy-text-component-cache A/B is isolated to block-active" >&2
   exit 64
 fi
-for value in "$server_port" "$item_count" "$warmup_seconds" "$settle_seconds" \
+for value in "$server_port" "$item_count" "$dropped_nearby_item_count" \
+  "$warmup_seconds" "$settle_seconds" \
   "$measure_seconds" "$capture_snaplen" "$protocol_trace_max_events"; do
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "Numeric input is invalid: $value" >&2; exit 64; }
 done
@@ -75,6 +112,11 @@ if [[ "$scenario" == block-* ]]; then
 fi
 (( item_count >= 1 && item_count <= maximum_item_count )) \
   || { echo "PHASE2_ITEM_COUNT is outside 1..$maximum_item_count for $scenario" >&2; exit 64; }
+if [[ "$scenario" == dropped-items ]] && \
+    (( dropped_nearby_item_count < 1 || dropped_nearby_item_count > item_count )); then
+  echo "PHASE2_DROPPED_NEARBY_ITEM_COUNT is outside 1..$item_count" >&2
+  exit 64
+fi
 if [[ "$ab_factor" == legacy-text-component-cache ]] && (( item_count < 100 )); then
   echo "legacy-text-component-cache A/B requires at least 100 workload blocks" >&2
   exit 64
@@ -112,13 +154,14 @@ case "$spark_profile_mode" in
   *) echo "PHASE2_SPARK_PROFILE_MODE must be none, cpu, cpu-all, or alloc" >&2; exit 64 ;;
 esac
 if [[ "$spark_profile_mode" == cpu-all && \
-      "$scenario" != block-active && "$scenario" != block-direct-write ]]; then
-  echo "Spark cpu-all profiling is isolated to block-active or block-direct-write" >&2
+      "$scenario" != block-active && "$scenario" != block-direct-write && \
+      "$scenario" != dropped-items ]]; then
+  echo "Spark cpu-all profiling is isolated to block-active, block-direct-write, or dropped-items" >&2
   exit 64
 fi
 if [[ "$spark_profile_mode" != none && "$spark_profile_mode" != cpu-all && \
-      "$scenario" != block-direct-write ]]; then
-  echo "Spark cpu/alloc profiling is isolated to block-direct-write" >&2
+      "$scenario" != block-direct-write && "$scenario" != dropped-items ]]; then
+  echo "Spark cpu/alloc profiling is isolated to block-direct-write or dropped-items" >&2
   exit 64
 fi
 [[ -f "$plugin_jar" && -f "$paper_jar" ]] \
@@ -163,6 +206,10 @@ fi
 legacy_text_cache_enabled=true
 if [[ "$legacy_text_cache_disable_property" == true ]]; then
   legacy_text_cache_enabled=false
+fi
+dropped_source_owned_candidates=false
+if [[ "$ab_factor" == dropped-item-section-candidates && "$variant" == B ]]; then
+  dropped_source_owned_candidates=true
 fi
 legacy_text_cache_jvm_argument="-Dinteractionvisualizer.disableLegacyTextComponentCache=$legacy_text_cache_disable_property"
 legacy_text_cache_jvm_argument_template="-Dinteractionvisualizer.disableLegacyTextComponentCache=<ab-variant>"
@@ -227,9 +274,17 @@ visibility_limit = scenario.startswith("visibility-") and variant == "B"
 event_driven = scenario.startswith("block-") and (
     ab_factor == "legacy-text-component-cache" or variant == "B"
 )
+source_owned_candidates = (
+    ab_factor == "dropped-item-section-candidates" and variant == "B"
+)
 replace_boolean_once("      PacketOnlyStatic: ", packet_only)
 replace_boolean_once("      Enabled: ", visibility_limit)
 replace_boolean_once("      EventDriven: ", event_driven)
+replace_boolean_once(
+    "        SourceOwnedSectionCandidates: ", source_owned_candidates
+)
+if scenario == "dropped-items":
+    replace_once("      DespawnTicks: 6000", "      DespawnTicks: 12000")
 replace_once("  Updater: true", "  Updater: false")
 replace_once("  DownloadLanguageFiles: true", "  DownloadLanguageFiles: false")
 path.write_text(text, encoding="utf-8", newline="\n")
@@ -564,7 +619,7 @@ fi
 ) > "$server_log" 2>&1 &
 server_pid=$!
 
-wait_for_log "[InteractionVisualizer] Enabled for Paper 26.1.2!" 240
+wait_for_log "$(plugin_enabled_log_marker "$paper_version")" 240
 wait_for_log "Done (" 240
 
 python3 - "/proc/$server_pid/cmdline" "$jvm_command_line_metadata" "$server_pid" \
@@ -658,6 +713,14 @@ if [[ "$protocol_trace_enabled" == 1 ]]; then
     "PHASE2_PROTOCOL_TRACE_AGGREGATE_PACKET_ALLOWLIST=$protocol_trace_aggregate_packet_allowlist"
   )
 fi
+if [[ "$ab_factor" == dropped-item-section-candidates && "$scenario" != dropped-items ]]; then
+  echo "dropped-item-section-candidates A/B is isolated to dropped-items" >&2
+  exit 64
+fi
+if [[ "$scenario" == dropped-items && "$ab_factor" != dropped-item-section-candidates ]]; then
+  echo "dropped-items is reserved for the dropped-item-section-candidates factor" >&2
+  exit 64
+fi
 env \
   "PHASE2_MC_PROTOCOL_MODULE=$client_root/node-minecraft-protocol" \
   PHASE2_SERVER_HOST=127.0.0.1 \
@@ -726,10 +789,17 @@ else
     scene_type=textdisplay
     scene_entity_label=entities
     ;;
+  dropped-items)
+    scene_type=dropped
+    ;;
   esac
   scene_spawn_log="Spawned $item_count $scene_type benchmark $scene_entity_label"
 
-  send_console "iv perf scene $scene_type $item_count $lifetime_ticks IVBench"
+  if [[ "$scenario" == dropped-items ]]; then
+    send_console "iv perf scene $scene_type $item_count $lifetime_ticks IVBench $dropped_nearby_item_count"
+  else
+    send_console "iv perf scene $scene_type $item_count $lifetime_ticks IVBench"
+  fi
   wait_for_log "$scene_spawn_log" 60
 fi
 sleep "$warmup_seconds"
@@ -931,9 +1001,9 @@ PY
 fi
 
 python3 - "$server_log" "$run_id" "$run_directory/iv-perf.json" "$scenario" "$variant" \
-  "$item_count" "$ab_factor" "$legacy_text_cache_disable_property" \
+  "$item_count" "$dropped_nearby_item_count" "$ab_factor" "$legacy_text_cache_disable_property" \
   "$legacy_text_cache_enabled" "$jvm_arguments_sha256" \
-  "$jvm_arguments_normalized_sha256" <<'PY'
+  "$jvm_arguments_normalized_sha256" "$spark_profile_mode" <<'PY'
 import json
 import math
 import sys
@@ -944,13 +1014,16 @@ import sys
     scenario,
     variant,
     item_count_text,
+    dropped_nearby_item_count_text,
     ab_factor,
     disable_property_text,
     expected_cache_enabled_text,
     jvm_arguments_sha256,
     jvm_arguments_normalized_sha256,
+    spark_profile_mode,
 ) = sys.argv[1:]
 item_count = int(item_count_text)
+dropped_nearby_item_count = int(dropped_nearby_item_count_text)
 disable_property = disable_property_text == "true"
 expected_cache_enabled = expected_cache_enabled_text == "true"
 matches = []
@@ -1006,12 +1079,19 @@ expected_limiter = visibility_scenario and variant == "B"
 expected_event_driven = block_scenario and (
     ab_factor == "legacy-text-component-cache" or variant == "B"
 )
+expected_dropped_source = (
+    ab_factor == "dropped-item-section-candidates" and variant == "B"
+)
 if metrics.get("packetOnlyStatic") is not expected_packet_only:
     raise SystemExit(f"packetOnlyStatic does not match {scenario}/{variant}")
 if metrics.get("visibilityRateLimit") is not expected_limiter:
     raise SystemExit(f"visibilityRateLimit does not match {scenario}/{variant}")
 if metrics.get("eventDrivenBlockUpdates") is not expected_event_driven:
     raise SystemExit(f"eventDrivenBlockUpdates does not match {scenario}/{variant}")
+if metrics.get("droppedSourceOwnedSectionCandidates") is not expected_dropped_source:
+    raise SystemExit(
+        f"droppedSourceOwnedSectionCandidates does not match {scenario}/{variant}"
+    )
 if metrics.get("legacyTextComponentCache") is not expected_cache_enabled:
     raise SystemExit(
         "legacyTextComponentCache does not match the injected disable property: "
@@ -1073,6 +1153,64 @@ if block_scenario:
         )
     if block_checks > 0 and block_ms <= 0:
         raise SystemExit(f"block updater recorded {block_checks} checks but no elapsed time")
+if scenario == "dropped-items":
+    dropped_ms = metrics.get("droppedItemMs")
+    distance_checks = metrics.get("droppedViewerDistanceChecks")
+    spatial_candidates = metrics.get("droppedSpatialCandidates")
+    full_scan_candidates = metrics.get("droppedFullScanCandidates")
+    population_fields = {
+        "tracked": {
+            "min": metrics.get("droppedTrackedItemsMin"),
+            "max": metrics.get("droppedTrackedItemsMax"),
+            "end": metrics.get("droppedTrackedItemsEnd"),
+            "samples": metrics.get("droppedTrackedItemsSampleCount"),
+            "expected": item_count,
+        },
+        "labels": {
+            "min": metrics.get("droppedLabelsMin"),
+            "max": metrics.get("droppedLabelsMax"),
+            "end": metrics.get("droppedLabelsEnd"),
+            "samples": metrics.get("droppedLabelsSampleCount"),
+            "expected": dropped_nearby_item_count,
+        },
+    }
+    if (isinstance(dropped_ms, bool) or not isinstance(dropped_ms, (int, float))
+            or not math.isfinite(dropped_ms) or dropped_ms <= 0):
+        raise SystemExit(f"invalid droppedItemMs={dropped_ms!r}")
+    for field, value in (
+        ("droppedViewerDistanceChecks", distance_checks),
+        ("droppedSpatialCandidates", spatial_candidates),
+        ("droppedFullScanCandidates", full_scan_candidates),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise SystemExit(f"invalid {field}={value!r}")
+    for population, values in population_fields.items():
+        for statistic in ("min", "max", "end", "samples"):
+            value = values[statistic]
+            field = f"dropped{population.title()}{'SampleCount' if statistic == 'samples' else statistic.title()}"
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise SystemExit(f"invalid {field}={value!r}")
+        if values["samples"] <= 0:
+            raise SystemExit(f"dropped-item {population} population has no samples")
+        if not values["min"] <= values["end"] <= values["max"]:
+            raise SystemExit(
+                f"dropped-item {population} population summary is inconsistent: {values!r}"
+            )
+        if spark_profile_mode == "none" and any(
+                values[statistic] != values["expected"] for statistic in ("min", "max", "end")):
+            raise SystemExit(
+                f"clean dropped-item sample did not retain its {population} population: "
+                f"min/max/end={values['min']}/{values['max']}/{values['end']} "
+                f"expected={values['expected']}"
+            )
+    if distance_checks <= 0 or spatial_candidates <= 0:
+        raise SystemExit("dropped-item workload performed no candidate checks")
+    if variant == "A" and full_scan_candidates <= 0:
+        raise SystemExit("legacy dropped-item path performed no full candidate scans")
+    if variant == "B" and full_scan_candidates != 0:
+        raise SystemExit(
+            f"section-candidate path performed {full_scan_candidates} full candidate scans"
+        )
 if scenario == "static-spawn":
     if variant == "B":
         if metrics.get("packetOnlyItemSyncs") != item_count or metrics.get("bukkitEntitySpawns") != 0:
@@ -1647,18 +1785,28 @@ print(json.dumps({
 PY
 )"
 
+dropped_nearby_manifest=null
+if [[ "$scenario" == dropped-items ]]; then
+  dropped_nearby_manifest="$dropped_nearby_item_count"
+fi
+
 cat > "$run_directory/run-manifest.json" <<EOF
 {
-  "schemaVersion": 6,
+  "schemaVersion": 7,
   "runId": "$run_id",
   "scenario": "$scenario",
+  "paperVersion": "$paper_version",
+  "paperChannel": "$paper_channel",
+  "paperBuildId": $paper_build_id,
   "variant": "$variant",
   "abFactor": "$ab_factor",
+  "droppedSourceOwnedSectionCandidates": $dropped_source_owned_candidates,
   "blockSceneMutationOptIn": true,
   "captureEnabled": $([[ "$capture_enabled" == 1 ]] && echo true || echo false),
   "captureSnaplen": $capture_snaplen,
   "serverPort": $server_port,
   "itemCount": $item_count,
+  "droppedNearbyItemCount": $dropped_nearby_manifest,
   "workloadCount": $item_count,
   "warmupSeconds": $warmup_seconds,
   "settleSeconds": $settle_seconds,
@@ -1706,7 +1854,16 @@ python3 - \
   "$jvm_arguments_normalized_sha256" \
   "$spark_profile_mode" \
   "$spark_profile_metadata" \
-  "$spark_profile_output" <<'PY'
+  "$spark_profile_output" \
+  "$scenario" \
+  "$variant" \
+  "$run_id" \
+  "$item_count" \
+  "$dropped_nearby_item_count" \
+  "$paper_version" \
+  "$warmup_seconds" \
+  "$settle_seconds" \
+  "$measure_seconds" <<'PY'
 from pathlib import Path
 import hashlib
 import json
@@ -1725,12 +1882,59 @@ expected_jvm_arguments_normalized_sha = sys.argv[10]
 spark_mode = sys.argv[11]
 spark_metadata_path = Path(sys.argv[12])
 spark_profile_path = Path(sys.argv[13])
+expected_scenario = sys.argv[14]
+expected_variant = sys.argv[15]
+expected_run_id = sys.argv[16]
+expected_item_count = int(sys.argv[17])
+expected_nearby_item_count = int(sys.argv[18])
+expected_paper_version = sys.argv[19]
+expected_warmup_seconds = int(sys.argv[20])
+expected_settle_seconds = int(sys.argv[21])
+expected_measure_seconds = int(sys.argv[22])
 with manifest_path.open(encoding="utf-8") as stream:
     manifest = json.load(stream)
 with metadata_path.open(encoding="utf-8") as stream:
     metadata = json.load(stream)
 with metrics_path.open(encoding="utf-8") as stream:
     metrics = json.load(stream)
+
+expected_manifest_fields = {
+    "schemaVersion": 7,
+    "runId": expected_run_id,
+    "scenario": expected_scenario,
+    "paperVersion": expected_paper_version,
+    "paperChannel": "STABLE",
+    "paperBuildId": 74,
+    "variant": expected_variant,
+    "abFactor": expected_ab_factor,
+    "itemCount": expected_item_count,
+    "workloadCount": expected_item_count,
+    "warmupSeconds": expected_warmup_seconds,
+    "settleSeconds": expected_settle_seconds,
+    "measureSeconds": expected_measure_seconds,
+    "droppedNearbyItemCount": (
+        expected_nearby_item_count if expected_scenario == "dropped-items" else None
+    ),
+}
+for field, expected in expected_manifest_fields.items():
+    if manifest.get(field) != expected:
+        raise SystemExit(
+            f"run manifest {field} mismatch: {manifest.get(field)!r} != {expected!r}"
+        )
+if expected_paper_version != "26.1.2":
+    raise SystemExit("run manifest is not pinned to canonical Paper 26.1.2")
+for field in (
+    "pluginSha256",
+    "paperSha256",
+    "clientManifestSha256",
+    "configSha256",
+    "jvmArgumentsSha256",
+    "jvmArgumentsNormalizedSha256",
+):
+    value = manifest.get(field)
+    if (not isinstance(value, str) or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)):
+        raise SystemExit(f"run manifest has invalid {field} provenance")
 
 actual_metadata_sha = hashlib.sha256(metadata_path.read_bytes()).hexdigest()
 if actual_metadata_sha != expected_metadata_sha:
@@ -1751,6 +1955,14 @@ if embedded.get("gcSafepointLog", {}).get("sha256") != expected_log_sha:
     raise SystemExit("run manifest has the wrong finalized JVM diagnostic log SHA")
 if manifest.get("abFactor") != expected_ab_factor:
     raise SystemExit("run manifest has the wrong A/B factor")
+expected_dropped_source = (
+    expected_ab_factor == "dropped-item-section-candidates"
+    and manifest.get("variant") == "B"
+)
+if manifest.get("droppedSourceOwnedSectionCandidates") is not expected_dropped_source:
+    raise SystemExit("run manifest has the wrong dropped-item candidate source")
+if metrics.get("droppedSourceOwnedSectionCandidates") is not expected_dropped_source:
+    raise SystemExit("IV_PERF evidence has the wrong dropped-item candidate source")
 if manifest.get("jvmArgumentsSha256") != expected_jvm_arguments_sha:
     raise SystemExit("run manifest has the wrong JVM argument SHA")
 if embedded.get("jvmArgumentsSha256") != expected_jvm_arguments_sha:
@@ -1796,7 +2008,10 @@ if not isinstance(embedded_spark, dict):
 if spark_mode == "none":
     if (embedded_spark.get("enabled") is not False
             or embedded_spark.get("mode") != "none"
-            or embedded_spark.get("performanceEvidenceReady") is not True):
+            or embedded_spark.get("profileEvidenceReady") is not None
+            or embedded_spark.get("performanceEvidenceReady") is not True
+            or embedded_spark.get("metadataPath") is not None
+            or embedded_spark.get("metadataSha256") is not None):
         raise SystemExit("run manifest incorrectly enables Spark profiling")
 else:
     if embedded_spark.get("enabled") is not True or embedded_spark.get("mode") != spark_mode:

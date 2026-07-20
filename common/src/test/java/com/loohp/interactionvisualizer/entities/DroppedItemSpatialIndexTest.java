@@ -45,6 +45,20 @@ class DroppedItemSpatialIndexTest {
     }
 
     @Test
+    void reusableCrampIndexDoesNotRetainThePreviousRefresh() {
+        UUID world = UUID.randomUUID();
+        DroppedItemSpatialIndex index = new DroppedItemSpatialIndex();
+        index.addItem(world, 0.0D, 64.0D, 0.0D);
+        index.addItem(world, 0.25D, 64.0D, 0.25D);
+        assertTrue(index.exceedsItemLimit(world, 0.0D, 64.0D, 0.0D, 1));
+
+        index.clear();
+        index.addItem(world, 0.0D, 64.0D, 0.0D);
+
+        assertFalse(index.exceedsItemLimit(world, 0.0D, 64.0D, 0.0D, 1));
+    }
+
+    @Test
     void findsViewersAcrossChunkBoundariesUsingExactDistance() {
         UUID world = UUID.randomUUID();
         DroppedItemSpatialIndex.ViewerIndex viewers = new DroppedItemSpatialIndex.ViewerIndex();
